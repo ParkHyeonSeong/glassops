@@ -49,6 +49,21 @@ async def init_db() -> None:
         ON metrics (agent_id, timestamp)
     """)
 
+    # Downsampled metrics for long-term storage
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS metrics_downsampled (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            timestamp REAL NOT NULL,
+            resolution TEXT NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    await db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_ds_unique
+        ON metrics_downsampled (agent_id, resolution, timestamp)
+    """)
+
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
@@ -101,12 +116,146 @@ async def get_recent_metrics(agent_id: str, limit: int = 60) -> list[dict]:
     return list(reversed(result))
 
 
-async def cleanup_old_metrics(max_age_hours: int = 24) -> int:
-    cutoff = time.time() - (max_age_hours * 3600)
+async def get_metrics_range(
+    agent_id: str, start: float, end: float, max_points: int = 500
+) -> list[dict]:
+    """Get metrics between start and end timestamps. Auto-selects resolution."""
     db = await get_db()
-    cursor = await db.execute("DELETE FROM metrics WHERE timestamp < ?", (cutoff,))
+    duration = end - start
+
+    # < 1 hour: raw data
+    if duration <= 3600:
+        cursor = await db.execute(
+            "SELECT timestamp, data FROM metrics WHERE agent_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            (agent_id, start, end),
+        )
+    # 1h - 24h: 1min downsampled
+    elif duration <= 86400:
+        cursor = await db.execute(
+            "SELECT timestamp, data FROM metrics_downsampled WHERE agent_id = ? AND resolution = '1m' AND timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            (agent_id, start, end),
+        )
+    # > 24h: 5min downsampled
+    else:
+        cursor = await db.execute(
+            "SELECT timestamp, data FROM metrics_downsampled WHERE agent_id = ? AND resolution = '5m' AND timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            (agent_id, start, end),
+        )
+
+    rows = await cursor.fetchall()
+    result = []
+    # Thin out if too many points
+    step = max(1, len(rows) // max_points)
+    for i, row in enumerate(rows):
+        if i % step == 0:
+            entry = json.loads(row["data"])
+            entry["timestamp"] = row["timestamp"]
+            result.append(entry)
+    return result
+
+
+async def downsample_metrics(resolution_seconds: int, resolution_label: str) -> int:
+    """Aggregate raw metrics into downsampled buckets."""
+    db = await get_db()
+    now = time.time()
+
+    # Find the latest downsampled timestamp for this resolution
+    cursor = await db.execute(
+        "SELECT MAX(timestamp) FROM metrics_downsampled WHERE resolution = ?",
+        (resolution_label,),
+    )
+    row = await cursor.fetchone()
+    last_ds = row[0] if row and row[0] else 0
+
+    # Start after last downsampled bucket to avoid duplicates
+    start = max(last_ds + resolution_seconds, now - 7 * 86400) if last_ds else now - 7 * 86400
+
+    # Get raw metrics in buckets
+    cursor = await db.execute(
+        "SELECT agent_id, timestamp, data FROM metrics WHERE timestamp > ? ORDER BY timestamp",
+        (start,),
+    )
+    rows = await cursor.fetchall()
+
+    if not rows:
+        return 0
+
+    # Group by (agent_id, bucket)
+    buckets: dict[tuple[str, int], list[dict]] = {}
+    for row in rows:
+        aid = row["agent_id"]
+        bucket = int(row["timestamp"] // resolution_seconds) * resolution_seconds
+        key = (aid, bucket)
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append(json.loads(row["data"]))
+
+    # Average each bucket and insert
+    count = 0
+    for (aid, bucket_ts), entries in buckets.items():
+        if bucket_ts > now - resolution_seconds:
+            continue  # Skip current incomplete bucket
+
+        avg = _average_metrics(entries)
+        if avg:
+            await db.execute(
+                "INSERT OR REPLACE INTO metrics_downsampled (agent_id, timestamp, resolution, data) VALUES (?, ?, ?, ?)",
+                (aid, float(bucket_ts), resolution_label, json.dumps(avg)),
+            )
+            count += 1
+
     await db.commit()
-    return cursor.rowcount
+    return count
+
+
+def _average_metrics(entries: list[dict]) -> dict | None:
+    """Average numeric fields from a list of metric snapshots."""
+    if not entries:
+        return None
+
+    # Use first entry as template, average CPU/MEM/Disk
+    result = json.loads(json.dumps(entries[0]))  # deep copy
+    n = len(entries)
+
+    try:
+        result["cpu"]["percent_total"] = sum(e.get("cpu", {}).get("percent_total", 0) for e in entries) / n
+        result["memory"]["percent"] = sum(e.get("memory", {}).get("percent", 0) for e in entries) / n
+        result["disk"]["percent"] = sum(e.get("disk", {}).get("percent", 0) for e in entries) / n
+
+        # Average per-core
+        cores = len(result.get("cpu", {}).get("percent_per_core", []))
+        if cores:
+            for ci in range(cores):
+                result["cpu"]["percent_per_core"][ci] = sum(
+                    e.get("cpu", {}).get("percent_per_core", [0] * cores)[ci] for e in entries
+                ) / n
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    # Drop heavy fields for downsampled data
+    result.pop("processes", None)
+    result.pop("containers", None)
+    result.pop("network", None)
+
+    return result
+
+
+async def cleanup_old_metrics(max_age_hours: int = 1) -> int:
+    """Delete raw metrics older than max_age_hours. Downsampled data kept for 7 days."""
+    now = time.time()
+    db = await get_db()
+
+    # Raw: keep last 1 hour only (downsampled covers the rest)
+    raw_cutoff = now - (max_age_hours * 3600)
+    cursor = await db.execute("DELETE FROM metrics WHERE timestamp < ?", (raw_cutoff,))
+    raw_deleted = cursor.rowcount
+
+    # Downsampled: keep 7 days
+    ds_cutoff = now - (7 * 86400)
+    await db.execute("DELETE FROM metrics_downsampled WHERE timestamp < ?", (ds_cutoff,))
+
+    await db.commit()
+    return raw_deleted
 
 
 # ── Users ────────────────────────────────────────────

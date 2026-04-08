@@ -15,6 +15,7 @@ services:
     environment:
       - HOST_PROC=/host/proc
       - HOST_LOG=/host/log
+      - GLASSOPS_TERMINAL_USER=${GLASSOPS_TERMINAL_USER:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7440/health"]

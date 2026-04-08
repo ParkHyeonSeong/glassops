@@ -1,12 +1,11 @@
-"""JWT authentication middleware for FastAPI."""
+"""JWT authentication middleware — ASGI-level to properly handle WebSocket."""
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse
+import json
+
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.services.auth_service import verify_token
 
-# Paths that don't require authentication
 PUBLIC_PATHS = {
     "/health",
     "/api/auth/login",
@@ -15,9 +14,8 @@ PUBLIC_PATHS = {
     "/api/time",
 }
 
-# Prefixes that don't require authentication
 PUBLIC_PREFIXES = (
-    "/ws/",       # WebSocket endpoints have their own auth
+    "/ws/",
     "/api/auth/login",
     "/api/auth/refresh",
     "/api/auth/logout",
@@ -25,42 +23,73 @@ PUBLIC_PREFIXES = (
 )
 
 
-class JWTAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+class JWTAuthMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Skip auth for public paths
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Only check HTTP requests to /api/ paths
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+
+        # Skip non-API paths (static files, health)
+        if not path.startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        # Skip public paths
         if path in PUBLIC_PATHS:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         for prefix in PUBLIC_PREFIXES:
             if path.startswith(prefix):
-                return await call_next(request)
+                await self.app(scope, receive, send)
+                return
 
-        # Skip for static files (frontend)
-        if not path.startswith("/api/"):
-            return await call_next(request)
-
-        # Extract token: Authorization header first, then cookie fallback
-        auth_header = request.headers.get("authorization", "")
+        # Extract token from headers
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
         token = ""
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
         else:
-            token = request.cookies.get("access_token", "")
+            # Cookie fallback
+            cookie_header = headers.get(b"cookie", b"").decode()
+            for part in cookie_header.split(";"):
+                part = part.strip()
+                if part.startswith("access_token="):
+                    token = part[13:]
+                    break
 
         if not token:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Not authenticated"},
-            )
+            await self._send_401(send, "Not authenticated")
+            return
+
         email = verify_token(token)
         if not email:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or expired token"},
-            )
+            await self._send_401(send, "Invalid or expired token")
+            return
 
-        # Attach user to request state
-        request.state.user_email = email
-        return await call_next(request)
+        # Attach to scope state
+        if "state" not in scope:
+            scope["state"] = {}
+        scope["state"]["user_email"] = email
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _send_401(send: Send, detail: str) -> None:
+        body = json.dumps({"detail": detail}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                [b"content-type", b"application/json"],
+                [b"content-length", str(len(body)).encode()],
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})

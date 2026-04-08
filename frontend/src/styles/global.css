@@ -767,6 +767,7 @@ body {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
+  min-height: 150px;
 }
 
 .sysmon-chart-title {
@@ -775,6 +776,50 @@ body {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.sysmon-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sysmon-loading {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Tabs */
+.sysmon-tabs {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 2px;
+  align-self: flex-start;
+}
+
+.sysmon-tab {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sysmon-tab-active {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.sysmon-full-chart {
+  flex: 1;
+  min-height: 150px;
 }
 
 /* ========================================

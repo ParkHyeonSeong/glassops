@@ -42,8 +42,17 @@ class TerminalSession:
 
         # Detect if we can access host via nsenter (pid=host mode)
         use_nsenter = os.path.exists("/host/proc/1/ns/pid")
+        terminal_user = os.environ.get("GLASSOPS_TERMINAL_USER", "")
+
         if use_nsenter:
-            cmd = ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "/bin/bash", "--login"]
+            if terminal_user:
+                # nsenter to host, then su to user (will prompt for password)
+                cmd = ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
+                       "su", "-", terminal_user]
+            else:
+                # No user specified — drop to login prompt
+                cmd = ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
+                       "login"]
         else:
             cmd = [os.environ.get("SHELL", "/bin/bash"), "--login"]
 

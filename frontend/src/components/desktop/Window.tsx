@@ -37,7 +37,8 @@ export default function Window({ window: win, children }: WindowProps) {
   if (win.isMinimized) return null;
 
   const isMax = win.isMaximized;
-  const position = isMax ? { x: 0, y: MENU_BAR_HEIGHT } : { x: win.x, y: win.y };
+  // window-manager is already positioned below menubar, so max position is 0,0
+  const position = isMax ? { x: 0, y: 0 } : { x: win.x, y: win.y };
   const size = isMax
     ? {
         width: globalThis.innerWidth,

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
@@ -9,7 +10,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, get_recent_metrics
+from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -27,19 +28,33 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     await init_db()
     logger.info("Database initialized: %s", settings.db_path)
 
-    async def periodic_cleanup() -> None:
+    async def periodic_maintenance() -> None:
+        cycle = 0
         while True:
             try:
-                await asyncio.sleep(3600)
-                deleted = await cleanup_old_metrics(max_age_hours=24)
-                if deleted:
-                    logger.info("Cleaned up %d old metric records", deleted)
+                await asyncio.sleep(60)
+                cycle += 1
+
+                # Every 60s: downsample 1-minute averages
+                ds1 = await downsample_metrics(60, "1m")
+                if ds1:
+                    logger.debug("Downsampled %d 1m buckets", ds1)
+
+                # Every 5min: downsample 5-minute averages + cleanup
+                if cycle % 5 == 0:
+                    ds5 = await downsample_metrics(300, "5m")
+                    if ds5:
+                        logger.debug("Downsampled %d 5m buckets", ds5)
+
+                    deleted = await cleanup_old_metrics(max_age_hours=1)
+                    if deleted:
+                        logger.debug("Cleaned up %d raw metrics", deleted)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Error in periodic cleanup")
+                logger.exception("Error in periodic maintenance")
 
-    cleanup_task = asyncio.create_task(periodic_cleanup())
+    cleanup_task = asyncio.create_task(periodic_maintenance())
     yield
     cleanup_task.cancel()
     await close_db()
@@ -65,7 +80,7 @@ app.add_middleware(
 )
 
 from app.middleware.auth import JWTAuthMiddleware
-app.add_middleware(JWTAuthMiddleware)
+app.add_middleware(JWTAuthMiddleware)  # ASGI-level, WebSocket-safe
 
 app.include_router(docker_router)
 app.include_router(logs_router)
@@ -112,6 +127,16 @@ async def list_agents():
 async def metrics_history(agent_id: str, limit: int = 60):
     data = await get_recent_metrics(agent_id, min(limit, 300))
     return {"agent_id": agent_id, "metrics": data}
+
+
+@app.get("/api/metrics/{agent_id}/range")
+async def metrics_range(agent_id: str, duration: str = "1h"):
+    """Get metrics for a time range. duration: 5m, 1h, 6h, 24h, 7d"""
+    now = time.time()
+    durations = {"5m": 300, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+    seconds = durations.get(duration, 3600)
+    data = await get_metrics_range(agent_id, now - seconds, now)
+    return {"agent_id": agent_id, "duration": duration, "points": len(data), "metrics": data}
 
 
 # ── WebSocket endpoints ─────────────────────────────────
