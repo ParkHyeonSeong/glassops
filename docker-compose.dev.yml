@@ -1,0 +1,14 @@
+services:
+  glassops:
+    build: .
+    ports:
+      - "127.0.0.1:${GLASSOPS_PORT:-7440}:7440"
+    volumes:
+      - glassops_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backend/app:/app/app
+    env_file: .env
+    restart: unless-stopped
+
+volumes:
+  glassops_data:

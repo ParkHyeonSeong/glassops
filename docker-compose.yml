@@ -1,0 +1,26 @@
+services:
+  glassops:
+    build: .
+    ports:
+      - "127.0.0.1:${GLASSOPS_PORT:-7440}:7440"
+    pid: host           # See host processes
+    privileged: true    # Required for nsenter (host terminal access)
+    volumes:
+      - glassops_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log:/host/log:ro          # Host logs
+      - /proc:/host/proc:ro            # Host /proc for psutil
+      - /etc/os-release:/host/os-release:ro
+    env_file: .env
+    environment:
+      - HOST_PROC=/host/proc
+      - HOST_LOG=/host/log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7440/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  glassops_data:
