@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, RefreshCw, ArrowDown } from "lucide-react";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+import { fetchWithAuth } from "../../utils/api";
 
 interface LogSource {
   type: string;
@@ -21,7 +20,7 @@ export default function LogViewer() {
 
   // Fetch sources
   useEffect(() => {
-    fetch(`${BACKEND_URL}/api/logs/sources`)
+    fetchWithAuth("/api/logs/sources")
       .then((r) => r.json())
       .then((d) => {
         setSources(d.sources || []);
@@ -44,7 +43,7 @@ export default function LogViewer() {
         tail: "500",
         search,
       });
-      const res = await fetch(`${BACKEND_URL}/api/logs/read?${params}`);
+      const res = await fetchWithAuth(`/api/logs/read?${params}`);
       if (res.ok) {
         const data = await res.json();
         setLines(data.lines?.length ? data.lines : ["No logs available"]);

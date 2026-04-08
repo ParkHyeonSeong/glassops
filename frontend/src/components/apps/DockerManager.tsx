@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Play, Square, RotateCw, FileText, ChevronLeft } from "lucide-react";
 import { useMetricsStore, type ContainerInfo } from "../../stores/metricsStore";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+import { fetchWithAuth } from "../../utils/api";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -46,9 +45,8 @@ export default function DockerManager() {
     setActionLoading(containerId);
     setActionError(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/docker/containers/${containerId}/action`, {
+      const res = await fetchWithAuth(`/api/docker/containers/${containerId}/action`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
       if (!res.ok) {
@@ -67,7 +65,7 @@ export default function DockerManager() {
     setLogsLoading(true);
     setLogs(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/docker/containers/${containerId}/logs?tail=300`);
+      const res = await fetchWithAuth(`/api/docker/containers/${containerId}/logs?tail=300`);
       if (res.ok) {
         const data = await res.json();
         setLogs(data.logs || "No logs available.");

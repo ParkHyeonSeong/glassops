@@ -64,6 +64,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.middleware.auth import JWTAuthMiddleware
+app.add_middleware(JWTAuthMiddleware)
+
 app.include_router(docker_router)
 app.include_router(logs_router)
 app.include_router(auth_router)

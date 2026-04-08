@@ -2,24 +2,52 @@ import { create } from "zustand";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
 
+// Restore session from sessionStorage on load
+function loadSession() {
+  try {
+    const data = sessionStorage.getItem("glassops_auth");
+    if (data) return JSON.parse(data);
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveSession(state: { email: string; accessToken: string; refreshToken: string }) {
+  try {
+    sessionStorage.setItem("glassops_auth", JSON.stringify(state));
+  } catch { /* ignore */ }
+}
+
+function clearSession() {
+  try {
+    sessionStorage.removeItem("glassops_auth");
+  } catch { /* ignore */ }
+}
+
+const saved = loadSession();
+
 interface AuthStore {
   isAuthenticated: boolean;
   email: string | null;
   accessToken: string | null;
   refreshToken: string | null;
   requiresTotp: boolean;
+  mustChangePassword: boolean;
+  cookieMode: boolean;
 
   login: (email: string, password: string, totpCode?: string) => Promise<{ ok: boolean; requiresTotp?: boolean; error?: string }>;
   logout: () => void;
   refresh: () => Promise<boolean>;
+  clearMustChangePassword: () => void;
 }
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  isAuthenticated: false,
-  email: null,
-  accessToken: null,
-  refreshToken: null,
+  isAuthenticated: !!saved,
+  email: saved?.email ?? null,
+  accessToken: saved?.accessToken ?? null,
+  refreshToken: saved?.refreshToken ?? null,
   requiresTotp: false,
+  mustChangePassword: false,
+  cookieMode: false,
 
   login: async (email, password, totpCode) => {
     try {
@@ -27,6 +55,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, totp_code: totpCode || null }),
+        credentials: "include",
       });
 
       const data = await res.json();
@@ -40,13 +69,30 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         return { ok: false, requiresTotp: true };
       }
 
-      set({
+      const authState = {
         isAuthenticated: true,
         email: data.email,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
         requiresTotp: false,
-      });
+        mustChangePassword: data.must_change_password ?? false,
+        cookieMode: data.cookie_mode ?? false,
+      };
+
+      set(authState);
+
+      // Only store tokens in sessionStorage if NOT in cookie mode
+      if (!data.cookie_mode) {
+        saveSession({
+          email: data.email,
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token,
+        });
+      } else {
+        // Cookie mode: only store email for UI (no tokens)
+        saveSession({ email: data.email, accessToken: "", refreshToken: "" });
+      }
+
       return { ok: true };
     } catch {
       return { ok: false, error: "Cannot connect to server" };
@@ -54,12 +100,20 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: () => {
+    fetch(`${BACKEND_URL}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+
+    clearSession();
     set({
       isAuthenticated: false,
       email: null,
       accessToken: null,
       refreshToken: null,
       requiresTotp: false,
+      mustChangePassword: false,
+      cookieMode: false,
     });
   },
 
@@ -72,13 +126,23 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        credentials: "include",
       });
       if (!res.ok) return false;
       const data = await res.json();
       set({ accessToken: data.access_token });
+      const session = loadSession();
+      if (session) {
+        session.accessToken = data.access_token;
+        saveSession(session);
+      }
       return true;
     } catch {
       return false;
     }
+  },
+
+  clearMustChangePassword: () => {
+    set({ mustChangePassword: false });
   },
 }));
