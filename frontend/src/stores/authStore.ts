@@ -40,17 +40,19 @@ interface AuthStore {
   clearMustChangePassword: () => void;
 }
 
-// Only restore if we have an actual token
-const hasValidSession = saved?.accessToken && saved.accessToken.split(".").length === 3;
+// Restore session: token mode (JWT in storage) OR cookie mode (email only, tokens in httpOnly cookies)
+const hasTokenSession = saved?.accessToken && saved.accessToken.split(".").length === 3;
+const hasCookieSession = saved?.email && !saved.accessToken; // cookie mode stores empty token
+const hasValidSession = hasTokenSession || hasCookieSession;
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
   isAuthenticated: !!hasValidSession,
   email: hasValidSession ? saved.email : null,
-  accessToken: hasValidSession ? saved.accessToken : null,
-  refreshToken: hasValidSession ? saved.refreshToken : null,
+  accessToken: hasTokenSession ? saved.accessToken : null,
+  refreshToken: hasTokenSession ? saved.refreshToken : null,
   requiresTotp: false,
   mustChangePassword: false,
-  cookieMode: false,
+  cookieMode: !!hasCookieSession,
 
   login: async (email, password, totpCode) => {
     try {
@@ -129,14 +131,15 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     return async () => {
       if (pending) return pending;
       pending = (async () => {
-    const { refreshToken } = get();
-    if (!refreshToken) return false;
+    const { refreshToken, cookieMode } = get();
+    // Cookie mode: refresh via httpOnly cookie; token mode: send refresh_token in body
+    if (!refreshToken && !cookieMode) return false;
 
     try {
       const res = await fetch(`${BACKEND_URL}/api/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        body: JSON.stringify({ refresh_token: refreshToken || "" }),
         credentials: "include",
       });
       if (!res.ok) return false;
