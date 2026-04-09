@@ -20,7 +20,7 @@ function useSessionValidation() {
 
     fetch(`${BACKEND_URL}/api/auth/me`, {
       headers,
-      credentials: "include",  // Always send cookies
+      credentials: "include",
     }).then((res) => {
       if (res.status === 401) {
         refresh().then((ok) => {
