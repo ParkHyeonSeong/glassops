@@ -13,7 +13,7 @@ async def restart_service(service: str) -> dict:
     if service not in ALLOWED_SERVICES:
         return {"ok": False, "error": f"Invalid service: {service}"}
 
-    cmd = ["supervisorctl", "restart", service]
+    cmd = ["supervisorctl", "-c", "/etc/supervisor/conf.d/glassops.conf", "restart", service]
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -41,7 +41,7 @@ async def get_service_status() -> dict:
     """Get supervisord status for all services."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "supervisorctl", "status",
+            "supervisorctl", "-c", "/etc/supervisor/conf.d/glassops.conf", "status",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

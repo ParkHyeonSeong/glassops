@@ -69,16 +69,24 @@ async def handle_agent_ws(ws: WebSocket) -> None:
             if not isinstance(timestamp, (int, float)) or timestamp <= 0:
                 continue
 
-            await store_metric(agent_id, timestamp, data)
-            await broadcast_to_clients(agent_id, data)
+            try:
+                await store_metric(agent_id, timestamp, data)
+            except Exception:
+                logger.exception("Failed to store metric for %s", agent_id)
 
-            # Check thresholds and send email alerts (non-blocking)
+            try:
+                await broadcast_to_clients(agent_id, data)
+            except Exception:
+                logger.exception("Failed to broadcast for %s", agent_id)
+
             try:
                 await check_and_alert(agent_id, data)
             except Exception:
                 logger.debug("Alert check failed for %s", agent_id, exc_info=True)
     except WebSocketDisconnect:
         logger.info("Agent disconnected: %s", agent_id)
+    except Exception:
+        logger.exception("Agent handler error for %s", agent_id)
     finally:
         if connected_agents.get(agent_id) is ws:
             connected_agents.pop(agent_id, None)
