@@ -12,12 +12,15 @@ function useSessionValidation() {
     validatedRef.current = true;
 
     const { isAuthenticated, accessToken, refresh, logout } = useAuthStore.getState();
-    if (!isAuthenticated || !accessToken) return;
+    if (!isAuthenticated) return;
 
     const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+    const headers: Record<string, string> = {};
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+
     fetch(`${BACKEND_URL}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      credentials: "include",
+      headers,
+      credentials: "include",  // Always send cookies
     }).then((res) => {
       if (res.status === 401) {
         refresh().then((ok) => {

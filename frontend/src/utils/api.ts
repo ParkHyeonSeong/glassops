@@ -21,12 +21,14 @@ export async function fetchWithAuth(
 
   let res = await fetch(`${BACKEND_URL}${path}`, { ...options, headers, credentials: "include" });
 
-  // If 401, try refresh once
-  if (res.status === 401 && accessToken) {
+  // If 401, try refresh once (token mode or cookie mode)
+  if (res.status === 401) {
     const refreshed = await refresh();
     if (refreshed) {
       const newToken = useAuthStore.getState().accessToken;
-      headers.set("Authorization", `Bearer ${newToken}`);
+      if (newToken) {
+        headers.set("Authorization", `Bearer ${newToken}`);
+      }
       res = await fetch(`${BACKEND_URL}${path}`, { ...options, headers, credentials: "include" });
     } else {
       logout();
