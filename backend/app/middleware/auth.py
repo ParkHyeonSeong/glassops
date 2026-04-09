@@ -1,8 +1,11 @@
 """JWT authentication middleware — ASGI-level to properly handle WebSocket."""
 
 import json
+import logging
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger("glassops.auth_mw")
 
 from app.services.auth_service import verify_token
 
@@ -51,14 +54,20 @@ class JWTAuthMiddleware:
                 return
 
         # Extract token from headers
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
+        # ASGI headers are list of (name, value) byte tuples
+        raw_headers = scope.get("headers", [])
+        auth_header = ""
+        cookie_header = ""
+        for name, value in raw_headers:
+            if name == b"authorization":
+                auth_header = value.decode()
+            elif name == b"cookie":
+                cookie_header = value.decode()
+
         token = ""
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-        else:
-            # Cookie fallback
-            cookie_header = headers.get(b"cookie", b"").decode()
+        elif cookie_header:
             for part in cookie_header.split(";"):
                 part = part.strip()
                 if part.startswith("access_token="):
