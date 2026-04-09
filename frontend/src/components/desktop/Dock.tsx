@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import {
   BarChart3,
   Box,
+  Cpu,
   Container,
   Globe,
   ListTree,
@@ -13,6 +14,7 @@ import { APP_DEFINITIONS, useWindowStore } from "../../stores/windowStore";
 
 const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   BarChart3,
+  Cpu,
   Container,
   Globe,
   ListTree,

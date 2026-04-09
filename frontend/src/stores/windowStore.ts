@@ -12,6 +12,15 @@ export const APP_DEFINITIONS: AppDefinition[] = [
     minHeight: 300,
   },
   {
+    id: "gpu-monitor",
+    title: "GPU Monitor",
+    icon: "Cpu",
+    defaultWidth: 780,
+    defaultHeight: 520,
+    minWidth: 500,
+    minHeight: 360,
+  },
+  {
     id: "docker",
     title: "Docker",
     icon: "Container",

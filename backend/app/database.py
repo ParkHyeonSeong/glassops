@@ -262,6 +262,15 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 result["cpu"]["percent_per_core"][ci] = sum(
                     e.get("cpu", {}).get("percent_per_core", [0] * cores)[ci] for e in entries
                 ) / n
+
+        # Average GPU metrics per device
+        gpus = result.get("gpu", [])
+        for gi, gpu in enumerate(gpus):
+            for field in ("gpu_util", "mem_util", "temperature", "power_watts", "clock_sm_mhz"):
+                vals = [e.get("gpu", [{}] * (gi + 1))[gi].get(field, 0) for e in entries if len(e.get("gpu", [])) > gi]
+                gpu[field] = sum(vals) / len(vals) if vals else 0
+            # Remove per-snapshot process data from downsampled
+            gpu.pop("processes", None)
     except (KeyError, IndexError, TypeError):
         pass
 

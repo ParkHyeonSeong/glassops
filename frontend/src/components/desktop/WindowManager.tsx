@@ -1,6 +1,7 @@
 import { useWindowStore } from "../../stores/windowStore";
 import Window from "./Window";
 import SystemMonitor from "../apps/SystemMonitor";
+import GpuMonitor from "../apps/GpuMonitor";
 import DockerManager from "../apps/DockerManager";
 import NetworkAnalyzer from "../apps/NetworkAnalyzer";
 import ProcessViewer from "../apps/ProcessViewer";
@@ -13,6 +14,8 @@ function AppContent({ appId, title }: { appId: string; title: string }) {
   switch (appId) {
     case "system-monitor":
       return <SystemMonitor />;
+    case "gpu-monitor":
+      return <GpuMonitor />;
     case "docker":
       return <DockerManager />;
     case "network":

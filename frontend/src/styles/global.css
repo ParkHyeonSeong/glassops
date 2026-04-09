@@ -871,6 +871,21 @@ body {
   letter-spacing: 0.5px;
 }
 
+.sysmon-gpu-link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-family);
+  color: inherit;
+  padding: 0;
+  width: 100%;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.sysmon-gpu-link:hover { opacity: 1; }
+
 .sysmon-controls {
   display: flex;
   align-items: center;
@@ -1398,6 +1413,160 @@ body {
 .log-line-error { background: rgba(248, 80, 50, 0.1); color: var(--color-danger); }
 .log-line-warn { background: rgba(247, 151, 30, 0.08); color: var(--color-warning); }
 .log-line-info { color: var(--text-primary); }
+
+/* ========================================
+   GPU MONITOR APP
+   ======================================== */
+.gpu-monitor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 12px;
+}
+
+.gpu-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gpu-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.gpu-empty-title { font-size: 15px; font-weight: 500; color: var(--text-primary); }
+.gpu-empty-sub { font-size: 12px; }
+
+/* GPU Card Grid */
+.gpu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.gpu-card {
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  transition: border-color 0.15s;
+}
+
+.gpu-card:hover { border-color: var(--color-gpu); }
+.gpu-card-selected { border-color: var(--color-gpu); box-shadow: 0 0 0 1px var(--color-gpu); }
+
+.gpu-card-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.gpu-card-index {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-gpu);
+  text-transform: uppercase;
+}
+
+.gpu-card-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.gpu-card-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gpu-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.gpu-card-label {
+  width: 36px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.gpu-card-bar-track {
+  flex: 1;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gpu-card-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s;
+}
+
+.gpu-card-val {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 80px;
+  text-align: right;
+}
+
+.gpu-card-detail {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* GPU Detail Charts */
+.gpu-detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gpu-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.gpu-detail-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  min-height: 120px;
+}
+
+.gpu-footer {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: right;
+}
 
 /* ========================================
    NETWORK ANALYZER APP

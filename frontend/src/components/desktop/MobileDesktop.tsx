@@ -16,6 +16,7 @@ import type { ConnectionStatus } from "../../types";
 import { useServerTime } from "../../hooks/useServerTime";
 import AppPlaceholder from "../apps/AppPlaceholder";
 import SystemMonitor from "../apps/SystemMonitor";
+import GpuMonitor from "../apps/GpuMonitor";
 import DockerManager from "../apps/DockerManager";
 import NetworkAnalyzer from "../apps/NetworkAnalyzer";
 import ProcessViewer from "../apps/ProcessViewer";
@@ -93,6 +94,8 @@ export default function MobileDesktop({
         <div className="mobile-app-content">
           {activeAppId === "system-monitor" ? (
             <SystemMonitor />
+          ) : activeAppId === "gpu-monitor" ? (
+            <GpuMonitor />
           ) : activeAppId === "docker" ? (
             <DockerManager />
           ) : activeAppId === "network" ? (

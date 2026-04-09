@@ -28,15 +28,27 @@ export interface DiskMetrics {
   write_bytes: number;
 }
 
+export interface GpuProcess {
+  pid: number;
+  vram_bytes: number;
+}
+
 export interface GpuMetrics {
   index: number;
   name: string;
+  uuid: string;
+  driver_version: string;
   gpu_util: number;
   mem_util: number;
   mem_total: number;
   mem_used: number;
   temperature: number;
   power_watts: number;
+  power_limit_watts: number;
+  clock_sm_mhz: number;
+  clock_mem_mhz: number;
+  fan_speed: number;
+  processes: GpuProcess[];
 }
 
 export interface ContainerInfo {

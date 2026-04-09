@@ -9,6 +9,7 @@ import {
   Legend,
 } from "recharts";
 import { useMetricsStore } from "../../stores/metricsStore";
+import { useWindowStore } from "../../stores/windowStore";
 import { fetchWithAuth } from "../../utils/api";
 
 type Tab = "overview" | "cores" | "processes";
@@ -240,6 +241,7 @@ export default function SystemMonitor() {
 
   const { cpu, memory, disk, gpu } = current;
   const hasGpu = gpu && gpu.length > 0;
+  const openWindow = useWindowStore((s) => s.openWindow);
 
   return (
     <div className="sysmon">
@@ -251,8 +253,10 @@ export default function SystemMonitor() {
         <Gauge label="Disk" value={disk.percent} color="var(--color-warning)"
           detail={`${formatBytes(disk.used)} / ${formatBytes(disk.total)}`} />
         {hasGpu && (
-          <Gauge label={`GPU ${gpu[0].name}`} value={gpu[0].gpu_util} color="var(--color-gpu)"
-            detail={`${gpu[0].temperature}°C · ${gpu[0].power_watts.toFixed(0)}W`} />
+          <button className="sysmon-gpu-link" onClick={() => openWindow("gpu-monitor")}>
+            <Gauge label={`GPU ×${gpu.length}`} value={gpu[0].gpu_util} color="var(--color-gpu)"
+              detail="Open GPU Monitor →" />
+          </button>
         )}
       </div>
 
@@ -287,12 +291,10 @@ export default function SystemMonitor() {
             <span className="sysmon-chart-title">Memory</span>
             <MiniChart data={chartData.map((d) => ({ t: d.t, value: d.mem }))} dataKey="mem" color="var(--color-success)" range={timeRange} />
           </div>
-          {hasGpu && (
-            <div className="sysmon-chart-card">
-              <span className="sysmon-chart-title">GPU</span>
-              <MiniChart data={chartData.map((d) => ({ t: d.t, value: d.gpu }))} dataKey="gpu" color="var(--color-gpu)" range={timeRange} />
-            </div>
-          )}
+          <div className="sysmon-chart-card">
+            <span className="sysmon-chart-title">Disk</span>
+            <MiniChart data={chartData.map((d) => ({ t: d.t, value: d.disk }))} dataKey="disk" color="var(--color-warning)" range={timeRange} />
+          </div>
         </div>
       )}
 
