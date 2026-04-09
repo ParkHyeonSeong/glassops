@@ -75,11 +75,14 @@ class JWTAuthMiddleware:
                     token = part[13:]
                     break
 
+        logger.warning("AUTH MW token=%s (len=%d)", token[:20] if token else "NONE", len(token))
+
         if not token:
             await self._send_401(send, "Not authenticated")
             return
 
         email = verify_token(token)
+        logger.warning("AUTH MW verify result: %s", email or "FAILED")
         if not email:
             await self._send_401(send, "Invalid or expired token")
             return
