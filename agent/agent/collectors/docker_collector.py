@@ -1,15 +1,20 @@
 """Collects Docker container info via Docker SDK. Gracefully returns empty if unavailable."""
 
 import logging
+import threading
+import time as _time
 from typing import Optional
 
 logger = logging.getLogger("glassops.agent")
 
-import time as _time
-
 _client = None
 _last_fail: float = 0
-_RETRY_INTERVAL = 60  # seconds before retrying after failure
+_RETRY_INTERVAL = 60
+
+# Cached stats — updated in background thread
+_stats_cache: dict[str, dict] = {}  # container_id -> {cpu_percent, mem_usage, mem_limit}
+_stats_thread: threading.Thread | None = None
+_stats_running = False
 
 
 def _ensure_client() -> bool:
@@ -31,15 +36,57 @@ def _ensure_client() -> bool:
         return False
 
 
+def _update_stats_background():
+    """Background thread that collects container stats without blocking the main loop."""
+    global _stats_running
+    _stats_running = True
+
+    while _stats_running and _client:
+        try:
+            containers = _client.containers.list()
+            new_cache: dict[str, dict] = {}
+            for c in containers:
+                if c.status != "running":
+                    continue
+                try:
+                    stats = c.stats(stream=False)
+                    new_cache[c.short_id] = {
+                        "cpu_percent": _calc_cpu_percent(stats),
+                        "mem_usage": stats.get("memory_stats", {}).get("usage", 0),
+                        "mem_limit": stats.get("memory_stats", {}).get("limit", 0),
+                    }
+                except Exception:
+                    pass
+
+            _stats_cache.clear()
+            _stats_cache.update(new_cache)
+        except Exception:
+            logger.debug("Stats background update failed", exc_info=True)
+
+        # Wait 10s between full stats cycles
+        _time.sleep(10)
+
+
+def _ensure_stats_thread():
+    global _stats_thread
+    if _stats_thread is None or not _stats_thread.is_alive():
+        _stats_thread = threading.Thread(target=_update_stats_background, daemon=True)
+        _stats_thread.start()
+
+
 def collect_containers() -> Optional[list[dict]]:
     if not _ensure_client():
         return None
+
+    _ensure_stats_thread()
 
     try:
         containers = _client.containers.list(all=True)
         result = []
         for c in containers:
             labels = c.labels or {}
+            cached = _stats_cache.get(c.short_id, {})
+
             info: dict = {
                 "id": c.short_id,
                 "name": c.name,
@@ -50,24 +97,10 @@ def collect_containers() -> Optional[list[dict]]:
                 "ports": _parse_ports(c.attrs.get("NetworkSettings", {}).get("Ports", {})),
                 "compose_project": labels.get("com.docker.compose.project", ""),
                 "compose_service": labels.get("com.docker.compose.service", ""),
+                "cpu_percent": cached.get("cpu_percent", 0),
+                "mem_usage": cached.get("mem_usage", 0),
+                "mem_limit": cached.get("mem_limit", 0),
             }
-
-            # Get resource stats for running containers
-            if c.status == "running":
-                try:
-                    stats = c.stats(stream=False)
-                    info["cpu_percent"] = _calc_cpu_percent(stats)
-                    info["mem_usage"] = stats.get("memory_stats", {}).get("usage", 0)
-                    info["mem_limit"] = stats.get("memory_stats", {}).get("limit", 0)
-                except Exception:
-                    info["cpu_percent"] = 0
-                    info["mem_usage"] = 0
-                    info["mem_limit"] = 0
-            else:
-                info["cpu_percent"] = 0
-                info["mem_usage"] = 0
-                info["mem_limit"] = 0
-
             result.append(info)
         return result
     except Exception:
