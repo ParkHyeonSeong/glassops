@@ -1311,11 +1311,12 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
-.proc-cell-pid { font-family: monospace; width: 60px; color: var(--text-secondary); }
-.proc-cell-name { font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proc-cell-num { font-family: monospace; font-variant-numeric: tabular-nums; width: 100px; }
-.proc-cell-user { color: var(--text-secondary); font-size: 10px; }
-.proc-cell-status { color: var(--text-secondary); font-size: 10px; }
+.proc-table { table-layout: fixed; }
+.proc-cell-pid { font-family: monospace; width: 80px; color: var(--text-secondary); }
+.proc-cell-name { font-weight: 500; width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-cell-num { font-family: monospace; font-variant-numeric: tabular-nums; width: 120px; }
+.proc-cell-user { color: var(--text-secondary); font-size: 10px; width: 100px; }
+.proc-cell-status { color: var(--text-secondary); font-size: 10px; width: 80px; }
 
 .proc-bar-wrap {
   display: inline-block;
