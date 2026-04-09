@@ -40,11 +40,14 @@ interface AuthStore {
   clearMustChangePassword: () => void;
 }
 
+// Only restore if we have an actual token
+const hasValidSession = saved?.accessToken && saved.accessToken.split(".").length === 3;
+
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  isAuthenticated: !!saved,
-  email: saved?.email ?? null,
-  accessToken: saved?.accessToken ?? null,
-  refreshToken: saved?.refreshToken ?? null,
+  isAuthenticated: !!hasValidSession,
+  email: hasValidSession ? saved.email : null,
+  accessToken: hasValidSession ? saved.accessToken : null,
+  refreshToken: hasValidSession ? saved.refreshToken : null,
   requiresTotp: false,
   mustChangePassword: false,
   cookieMode: false,
@@ -120,7 +123,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     });
   },
 
-  refresh: async () => {
+  refresh: (() => {
+    // Singleton: prevent concurrent refresh calls
+    let pending: Promise<boolean> | null = null;
+    return async () => {
+      if (pending) return pending;
+      pending = (async () => {
     const { refreshToken } = get();
     if (!refreshToken) return false;
 
@@ -147,7 +155,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     } catch {
       return false;
     }
-  },
+      })();
+      pending.finally(() => { pending = null; });
+      return pending;
+    };
+  })(),
 
   clearMustChangePassword: () => {
     set({ mustChangePassword: false });
