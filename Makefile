@@ -12,6 +12,10 @@ build: ## Build the GlassOps image
 up: ## Start GlassOps (build if needed)
 	docker compose down --remove-orphans 2>/dev/null || true
 	docker compose up -d --build
+
+up-gpu: ## Start with NVIDIA GPU support
+	docker compose down --remove-orphans 2>/dev/null || true
+	docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 	@echo ""
 	@echo "  GlassOps is running at http://localhost:$(PORT)"
 	@echo ""

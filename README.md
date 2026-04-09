@@ -84,6 +84,7 @@ cp .env.example .env
 
 ```bash
 make up        # Build + start
+make up-gpu    # Build + start with NVIDIA GPU support
 make down      # Stop
 make logs      # Follow logs
 make restart   # Restart
