@@ -54,7 +54,6 @@ class JWTAuthMiddleware:
                 return
 
         # Extract token from headers
-        # ASGI headers are list of (name, value) byte tuples
         raw_headers = scope.get("headers", [])
         auth_header = ""
         cookie_header = ""
@@ -63,6 +62,8 @@ class JWTAuthMiddleware:
                 auth_header = value.decode()
             elif name == b"cookie":
                 cookie_header = value.decode()
+
+        logger.warning("AUTH MW path=%s auth=%s cookie=%s", path, auth_header[:20] if auth_header else "NONE", cookie_header[:80] if cookie_header else "NONE")
 
         token = ""
         if auth_header.startswith("Bearer "):
