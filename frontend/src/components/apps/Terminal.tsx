@@ -44,6 +44,7 @@ export default function TerminalApp() {
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
     fitAddon.fit();
+    term.focus();
     termRef.current = term;
 
     // WebSocket connection with JWT token
