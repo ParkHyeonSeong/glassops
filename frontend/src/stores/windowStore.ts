@@ -84,6 +84,7 @@ interface WindowStore {
     height: number
   ) => void;
   updateWindowOpacity: (windowId: string, opacity: number) => void;
+  snapWindow: (windowId: string, side: "left" | "right") => void;
   closeFocusedWindow: () => void;
 }
 
@@ -214,6 +215,31 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
       windows: state.windows.map((w) =>
         w.id === windowId ? { ...w, opacity: Math.max(0.3, Math.min(1, opacity)) } : w
       ),
+    }));
+  },
+
+  snapWindow: (windowId: string, side: "left" | "right") => {
+    const { nextZIndex } = get();
+    const screenW = globalThis.innerWidth;
+    const menuH = 36;
+    const dockH = 72;
+    const availH = globalThis.innerHeight - menuH - dockH;
+
+    set((state) => ({
+      windows: state.windows.map((w) => {
+        if (w.id !== windowId) return w;
+        return {
+          ...w,
+          x: side === "left" ? 0 : screenW / 2,
+          y: 0,
+          width: screenW / 2,
+          height: availH,
+          isMaximized: false,
+          preMaximizeBounds: w.preMaximizeBounds ?? { x: w.x, y: w.y, width: w.width, height: w.height },
+          zIndex: nextZIndex,
+        };
+      }),
+      nextZIndex: nextZIndex + 1,
     }));
   },
 

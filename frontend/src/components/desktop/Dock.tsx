@@ -27,6 +27,9 @@ export default function Dock() {
   const windows = useWindowStore((s) => s.windows);
   const openWindow = useWindowStore((s) => s.openWindow);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [dockVisible, setDockVisible] = useState(true);
+
+  const hasMaximized = windows.some((w) => w.isMaximized);
 
   const getScale = useCallback(
     (index: number) => {
@@ -43,41 +46,60 @@ export default function Dock() {
   const isAppOpen = (appId: string) =>
     windows.some((w) => w.appId === appId);
 
-  return (
-    <div className="dock-wrapper">
-      <div
-        className="dock"
-        onMouseLeave={() => setHoveredIndex(null)}
-      >
-        {APP_DEFINITIONS.map((app, index) => {
-          const Icon = ICON_MAP[app.icon] ?? FallbackIcon;
-          const scale = getScale(index);
-          const open = isAppOpen(app.id);
-          const lift = (scale - 1) * 28;
+  // Auto-hide when a window is maximized
+  const shouldHide = hasMaximized && !dockVisible;
 
-          return (
-            <div key={app.id} className="dock-item-col">
-              <div
-                className="dock-item-lift"
-                style={{ transform: `translateY(-${lift}px)` }}
-              >
-                <button
-                  className="dock-item"
-                  style={{ transform: `scale(${scale})` }}
-                  onClick={() => openWindow(app.id)}
-                  onMouseEnter={() => setHoveredIndex(index)}
-                  title={app.title}
+  return (
+    <>
+      {/* Invisible hover zone at bottom to trigger dock */}
+      {hasMaximized && (
+        <div
+          className="dock-trigger-zone"
+          onMouseEnter={() => setDockVisible(true)}
+        />
+      )}
+
+      <div
+        className={`dock-wrapper ${shouldHide ? "dock-hidden" : ""}`}
+        onMouseLeave={() => {
+          setHoveredIndex(null);
+          if (hasMaximized) setDockVisible(false);
+        }}
+      >
+        <div className="dock">
+          {APP_DEFINITIONS.map((app, index) => {
+            const Icon = ICON_MAP[app.icon] ?? FallbackIcon;
+            const scale = getScale(index);
+            const open = isAppOpen(app.id);
+            const lift = (scale - 1) * 28;
+            const isHovered = hoveredIndex === index;
+
+            return (
+              <div key={app.id} className="dock-item-col">
+                {isHovered && (
+                  <div className="dock-tooltip">{app.title}</div>
+                )}
+                <div
+                  className="dock-item-lift"
+                  style={{ transform: `translateY(-${lift}px)` }}
                 >
-                  <Icon size={26} />
-                </button>
+                  <button
+                    className="dock-item"
+                    style={{ transform: `scale(${scale})` }}
+                    onClick={() => openWindow(app.id)}
+                    onMouseEnter={() => setHoveredIndex(index)}
+                  >
+                    <Icon size={30} />
+                  </button>
+                </div>
+                <div className="dock-indicator-slot">
+                  {open && <div className="dock-indicator" />}
+                </div>
               </div>
-              <div className="dock-indicator-slot">
-                {open && <div className="dock-indicator" />}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

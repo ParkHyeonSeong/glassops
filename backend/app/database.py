@@ -75,16 +75,35 @@ async def init_db() -> None:
         )
     """)
 
-    # Create default admin if not exists
-    cursor = await db.execute("SELECT email FROM users WHERE email = ?", ("admin@glassops.local",))
-    if not await cursor.fetchone():
-        default_pw = os.getenv("GLASSOPS_ADMIN_PASSWORD", "admin")
-        pw_hash = bcrypt.hashpw(default_pw.encode(), bcrypt.gensalt()).decode()
+    # Create default admin if no users exist at all
+    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    user_count = (await cursor.fetchone())[0]
+
+    if user_count == 0:
+        import secrets
+        default_email = os.getenv("GLASSOPS_ADMIN_EMAIL", "admin@glassops.local")
+        env_pw = os.getenv("GLASSOPS_ADMIN_PASSWORD", "")
+
+        if env_pw:
+            # Explicit password set by admin
+            password = env_pw
+            must_change = False
+        else:
+            # No password configured — generate random one-time password
+            password = secrets.token_urlsafe(16)
+            must_change = True
+            logger.warning("=" * 60)
+            logger.warning("  INITIAL ADMIN PASSWORD (change immediately!)")
+            logger.warning("  Email:    %s", default_email)
+            logger.warning("  Password: %s", password)
+            logger.warning("=" * 60)
+
+        pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         await db.execute(
             "INSERT INTO users (email, password_hash, must_change_password, created_at) VALUES (?, ?, ?, ?)",
-            ("admin@glassops.local", pw_hash, 1 if default_pw == "admin" else 0, time.time()),
+            (default_email, pw_hash, 1 if must_change else 0, time.time()),
         )
-        logger.info("Default admin user created: admin@glassops.local")
+        logger.info("Admin user created: %s", default_email)
 
     await db.commit()
 
