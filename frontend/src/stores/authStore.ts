@@ -100,8 +100,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: () => {
+    const rt = get().refreshToken;
     fetch(`${BACKEND_URL}/api/auth/logout`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: rt || "" }),
       credentials: "include",
     }).catch(() => {});
 
@@ -130,10 +133,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       });
       if (!res.ok) return false;
       const data = await res.json();
-      set({ accessToken: data.access_token });
+      set({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? get().refreshToken,
+      });
       const session = loadSession();
       if (session) {
         session.accessToken = data.access_token;
+        if (data.refresh_token) session.refreshToken = data.refresh_token;
         saveSession(session);
       }
       return true;

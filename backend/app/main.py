@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range
+from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, cleanup_blacklist
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -51,6 +51,8 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                     deleted = await cleanup_old_metrics(max_age_hours=1)
                     if deleted:
                         logger.debug("Cleaned up %d raw metrics", deleted)
+
+                    await cleanup_blacklist()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -82,7 +84,9 @@ app.add_middleware(
 )
 
 from app.middleware.auth import JWTAuthMiddleware
-app.add_middleware(JWTAuthMiddleware)  # ASGI-level, WebSocket-safe
+from app.middleware.rate_limit import RateLimitMiddleware
+app.add_middleware(JWTAuthMiddleware)
+app.add_middleware(RateLimitMiddleware)  # Runs before auth
 
 app.include_router(docker_router)
 app.include_router(logs_router)

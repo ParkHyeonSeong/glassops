@@ -1,5 +1,6 @@
 """Authentication service — JWT + optional TOTP 2FA, backed by SQLite."""
 
+import hashlib
 import logging
 import re
 import time
@@ -9,7 +10,7 @@ import pyotp
 from jose import jwt, JWTError
 
 from app.config import settings
-from app.database import get_user, update_user
+from app.database import get_user, update_user, blacklist_token, is_token_blacklisted
 
 logger = logging.getLogger("glassops.auth")
 
@@ -92,7 +93,12 @@ def create_refresh_token(email: str) -> str:
     )
 
 
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def verify_token(token: str, token_type: str = "access") -> str | None:
+    """Sync token verification (used by ASGI middleware). No blacklist check."""
     try:
         payload = jwt.decode(
             token, settings.secret_key, algorithms=[ALGORITHM],
@@ -105,6 +111,29 @@ def verify_token(token: str, token_type: str = "access") -> str | None:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+async def verify_refresh_token(token: str) -> str | None:
+    """Async refresh token verification with blacklist check."""
+    email = verify_token(token, token_type="refresh")
+    if not email:
+        return None
+    if await is_token_blacklisted(_hash_token(token)):
+        return None
+    return email
+
+
+async def revoke_refresh_token(token: str) -> None:
+    """Add refresh token to blacklist."""
+    try:
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+        expires = payload.get("exp", time.time() + REFRESH_TOKEN_EXPIRE)
+        await blacklist_token(_hash_token(token), expires)
+    except JWTError:
+        pass
 
 
 async def change_password(email: str, old_password: str, new_password: str) -> dict:

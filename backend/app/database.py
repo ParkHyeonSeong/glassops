@@ -65,6 +65,13 @@ async def init_db() -> None:
     """)
 
     await db.execute("""
+        CREATE TABLE IF NOT EXISTS token_blacklist (
+            token_hash TEXT PRIMARY KEY,
+            expires_at REAL NOT NULL
+        )
+    """)
+
+    await db.execute("""
         CREATE TABLE IF NOT EXISTS alert_config (
             id INTEGER PRIMARY KEY DEFAULT 1,
             config TEXT NOT NULL
@@ -301,6 +308,37 @@ async def get_user(email: str) -> dict | None:
         "must_change_password": bool(row["must_change_password"]),
     }
 
+
+# ── Token Blacklist ──────────────────────────────────
+
+
+async def blacklist_token(token_hash: str, expires_at: float) -> None:
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO token_blacklist (token_hash, expires_at) VALUES (?, ?)",
+        (token_hash, expires_at),
+    )
+    await db.commit()
+
+
+async def is_token_blacklisted(token_hash: str) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT 1 FROM token_blacklist WHERE token_hash = ?", (token_hash,)
+    )
+    return await cursor.fetchone() is not None
+
+
+async def cleanup_blacklist() -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        "DELETE FROM token_blacklist WHERE expires_at < ?", (time.time(),)
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+# ── Users ────────────────────────────────────────────
 
 _ALLOWED_USER_FIELDS = {"password_hash", "totp_secret", "totp_enabled", "must_change_password"}
 

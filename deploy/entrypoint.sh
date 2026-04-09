@@ -15,4 +15,26 @@ fi
 mkdir -p /app/data
 chown appuser:appuser /app/data
 
+# Generate IP whitelist nginx config
+ALLOWED_IPS="${GLASSOPS_ALLOWED_IPS:-}"
+IP_CONF="/etc/nginx/conf.d/ip-whitelist.conf"
+
+if [ -n "$ALLOWED_IPS" ]; then
+  echo "# Auto-generated IP whitelist" > "$IP_CONF"
+  echo "geo \$ip_whitelist {" >> "$IP_CONF"
+  echo "  default 0;" >> "$IP_CONF"
+  echo "  127.0.0.1 1;" >> "$IP_CONF"
+  echo "  ::1 1;" >> "$IP_CONF"
+  IFS=','
+  for ip in $ALLOWED_IPS; do
+    ip=$(echo "$ip" | xargs)  # trim
+    [ -n "$ip" ] && echo "  $ip 1;" >> "$IP_CONF"
+  done
+  echo "}" >> "$IP_CONF"
+  echo "IP whitelist enabled: 127.0.0.1, $ALLOWED_IPS"
+else
+  # No whitelist — allow all
+  echo "geo \$ip_whitelist { default 1; }" > "$IP_CONF"
+fi
+
 exec "$@"

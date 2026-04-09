@@ -14,6 +14,8 @@ from app.services.auth_service import (
     create_access_token,
     create_refresh_token,
     verify_token,
+    verify_refresh_token,
+    revoke_refresh_token,
     change_password,
     force_change_password,
     validate_password,
@@ -74,14 +76,22 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
 
 @router.post("/login")
 async def login(body: LoginRequest, request: Request, response: Response):
+    from app.middleware.rate_limit import record_login_failure, clear_login_failures
+
+    client_ip = request.headers.get("x-real-ip", "") or (request.client.host if request.client else "unknown")
+
     if not await verify_password(body.email, body.password):
+        record_login_failure(client_ip)
         raise HTTPException(401, "Invalid credentials")
 
     if await is_totp_enabled(body.email):
         if not body.totp_code:
             return {"requires_totp": True}
         if not await verify_totp(body.email, body.totp_code):
+            record_login_failure(client_ip)
             raise HTTPException(401, "Invalid TOTP code")
+
+    clear_login_failures(client_ip)
 
     access = create_access_token(body.email)
     refresh = create_refresh_token(body.email)
@@ -98,8 +108,16 @@ async def login(body: LoginRequest, request: Request, response: Response):
     }
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str = ""
+
+
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(response: Response, body: LogoutRequest | None = None):
+    # Revoke refresh token if provided
+    if body and body.refresh_token:
+        await revoke_refresh_token(body.refresh_token)
+
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/api/auth/refresh")
     return {"ok": True}
@@ -132,10 +150,18 @@ async def check_password(body: ForcePasswordRequest):
 
 @router.post("/refresh")
 async def refresh(body: RefreshRequest):
-    email = verify_token(body.refresh_token, token_type="refresh")
+    email = await verify_refresh_token(body.refresh_token)
     if not email:
         raise HTTPException(401, "Invalid refresh token")
-    return {"access_token": create_access_token(email)}
+
+    # Revoke immediately after verify — race window is minimal
+    # Second concurrent request will fail at verify (blacklisted)
+    await revoke_refresh_token(body.refresh_token)
+
+    return {
+        "access_token": create_access_token(email),
+        "refresh_token": create_refresh_token(email),
+    }
 
 
 @router.get("/me")

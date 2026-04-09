@@ -65,11 +65,14 @@ cp .env.example .env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GLASSOPS_PORT` | `7440` | Web UI port |
-| `GLASSOPS_SECRET_KEY` | `change-me-in-production` | JWT signing key |
-| `GLASSOPS_ADMIN_PASSWORD` | `admin` | Initial admin password |
+| `GLASSOPS_SECRET_KEY` | `change-me-in-production` | JWT signing + encryption key (**change this**) |
+| `GLASSOPS_ADMIN_EMAIL` | `admin@glassops.local` | Initial admin email |
+| `GLASSOPS_ADMIN_PASSWORD` | *(random)* | Initial password (printed to logs if unset) |
 | `GLASSOPS_COLLECT_INTERVAL` | `1` | Metrics collection interval (seconds) |
 | `GLASSOPS_ENABLE_DOCKER` | `true` | Enable Docker container monitoring |
 | `GLASSOPS_ENABLE_GPU` | `false` | Enable NVIDIA GPU monitoring |
+| `GLASSOPS_TERMINAL_USER` | *(login prompt)* | Host user for web terminal |
+| `GLASSOPS_ALLOWED_IPS` | *(all)* | Comma-separated IP whitelist |
 
 ## Make Commands
 
@@ -110,14 +113,95 @@ By default, GlassOps monitors the server it's installed on. To monitor additiona
 
 2. The remote server's metrics will appear in the dashboard alongside the local server.
 
+## Production Deployment
+
+### Reverse Proxy (nginx)
+
+If you run GlassOps behind a reverse proxy (recommended), add WebSocket support:
+
+```nginx
+server {
+    server_name ops.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:7440;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Required — without this, real-time metrics and terminal won't work
+    location /ws/ {
+        proxy_pass http://127.0.0.1:7440;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+> Without the `/ws/` block: System Monitor stays "Connecting...", Terminal shows "Disconnected".
+
+### HTTPS
+
+GlassOps supports httpOnly secure cookies when accessed over HTTPS. Use certbot or your preferred method:
+
+```bash
+sudo certbot --nginx -d ops.example.com
+```
+
+When HTTPS is active, auth tokens are stored in httpOnly cookies instead of sessionStorage (more secure against XSS).
+
+### IP Restriction
+
+**Option A — In your reverse proxy** (recommended):
+```nginx
+allow 10.0.0.0/8;
+allow 192.168.0.0/16;
+deny all;
+```
+
+**Option B — In GlassOps** via `.env`:
+```env
+GLASSOPS_ALLOWED_IPS=10.0.0.0/8,192.168.0.0/16
+```
+
+### Terminal User
+
+By default the web terminal opens a login prompt on the host. To preset a user:
+
+```env
+GLASSOPS_TERMINAL_USER=ubuntu
+```
+
+The user's password is still required — GlassOps web login + host password = two-factor access.
+
+### Secret Key
+
+**Always change the default secret key** before deploying:
+
+```env
+GLASSOPS_SECRET_KEY=$(openssl rand -hex 32)
+```
+
+This key is used for JWT signing and SMTP password encryption. Changing it invalidates all sessions and encrypted credentials.
+
 ## Security
 
-- JWT authentication (access + refresh tokens)
+- JWT authentication (access + refresh tokens with rotation)
+- Login rate limiting (5 failures → 5min lockout)
+- API rate limiting (100 req/min per IP)
 - TOTP 2FA support (Google Authenticator compatible)
-- Terminal requires separate JWT authentication
+- Terminal requires JWT + host user password
+- SMTP passwords encrypted at rest (Fernet/AES)
 - Docker socket access with auto GID detection
 - Environment variable masking in container details
-- Rate-limited log access with path traversal protection
+- IP whitelist support (nginx-level)
+- Refresh token blacklist on logout/rotation
 
 ## Tech Stack
 
