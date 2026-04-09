@@ -3,11 +3,20 @@ services:
     build: .
     ports:
       - "127.0.0.1:${GLASSOPS_PORT:-7440}:7440"
+    pid: host
+    privileged: true
     volumes:
       - glassops_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./backend/app:/app/app
+      - /var/log:/host/log:ro
+      - /proc:/host/proc:ro
+      - ./backend/app:/app/app       # Backend hot-reload (uvicorn --reload)
+      - ./agent/agent:/app/agent     # Agent code mount
     env_file: .env
+    environment:
+      - HOST_PROC=/host/proc
+      - HOST_LOG=/host/log
+      - GLASSOPS_TERMINAL_USER=${GLASSOPS_TERMINAL_USER:-}
     restart: unless-stopped
 
 volumes:

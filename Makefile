@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean dev prod
+.PHONY: help build up down logs restart clean dev dev-down shell prod status
 
 # Default port
 PORT ?= 7440
@@ -27,21 +27,35 @@ restart: ## Restart GlassOps
 clean: ## Stop and remove all data
 	docker compose down -v --remove-orphans
 
-dev: ## Start in dev mode (with hot reload)
+dev: ## Start in dev mode (backend/agent hot-reload)
 	docker compose -f docker-compose.dev.yml up -d --build
 	@echo ""
 	@echo "  GlassOps dev running at http://localhost:$(PORT)"
 	@echo ""
 
-prod: ## Production build and start
+dev-down: ## Stop dev mode
+	docker compose -f docker-compose.dev.yml down
+
+shell: ## Open shell in running container
+	docker compose exec glassops bash
+
+prod: ## Production build (no cache) and start
 	docker compose build --no-cache
 	docker compose up -d
 	@echo ""
 	@echo "  GlassOps production running at http://localhost:$(PORT)"
 	@echo ""
 
-status: ## Show container status
+status: ## Show container status + agent connection
 	@docker compose ps
 	@echo ""
 	@curl -s http://localhost:$(PORT)/health 2>/dev/null && echo "" || echo "  Not running"
 	@curl -s http://localhost:$(PORT)/api/agents 2>/dev/null && echo "" || true
+
+update: ## Pull latest and rebuild
+	git pull
+	docker compose build --no-cache
+	docker compose up -d
+	@echo ""
+	@echo "  Updated and running at http://localhost:$(PORT)"
+	@echo ""
