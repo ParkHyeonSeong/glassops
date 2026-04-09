@@ -13,8 +13,20 @@ logger = logging.getLogger("glassops.terminal")
 
 
 async def handle_terminal_ws(ws: WebSocket) -> None:
-    # Authenticate via query param token
+    # Origin check for cookie-based CSRF protection
+    origin = ws.headers.get("origin", "")
+    host = ws.headers.get("host", "")
+    if origin and host:
+        from urllib.parse import urlparse
+        origin_host = urlparse(origin).netloc
+        if origin_host != host:
+            await ws.close(code=4003, reason="Origin mismatch")
+            return
+
+    # Authenticate via query param token, then cookie fallback
     token = ws.query_params.get("token", "")
+    if not token:
+        token = ws.cookies.get("access_token", "")
     email = verify_token(token)
     if not email:
         await ws.close(code=4003, reason="Authentication required")

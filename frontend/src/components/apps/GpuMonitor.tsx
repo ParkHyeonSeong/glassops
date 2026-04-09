@@ -35,7 +35,7 @@ function GpuCard({ gpu, selected, onClick }: { gpu: GpuMetrics; selected: boolea
         <div className="gpu-card-row">
           <span className="gpu-card-label">VRAM</span>
           <div className="gpu-card-bar-track">
-            <div className="gpu-card-bar" style={{ width: `${gpu.mem_util}%`, background: "var(--color-accent)" }} />
+            <div className="gpu-card-bar" style={{ width: `${gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total * 100) : 0}%`, background: "var(--color-accent)" }} />
           </div>
           <span className="gpu-card-val">{formatBytes(gpu.mem_used)}/{formatBytes(gpu.mem_total)}</span>
         </div>
