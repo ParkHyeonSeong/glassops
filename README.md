@@ -71,7 +71,7 @@ cp .env.example .env
 | `GLASSOPS_ADMIN_PASSWORD` | *(random)* | Initial password (printed to logs if unset) |
 | `GLASSOPS_DB_PATH` | `/app/data/glassops.db` | SQLite database path |
 | `GLASSOPS_AGENT_ID` | `local` | Agent identifier |
-| `GLASSOPS_AGENT_KEY` | *(required)* | Agent authentication key (must match SECRET_KEY) |
+| `GLASSOPS_AGENT_KEY` | *(auto)* | Auto-set from SECRET_KEY. Only set for remote agents. |
 | `GLASSOPS_COLLECT_INTERVAL` | `1` | Metrics collection interval (seconds, 1-60) |
 | `GLASSOPS_ENABLE_DOCKER` | `true` | Enable Docker container monitoring |
 | `GLASSOPS_ENABLE_GPU` | `false` | Enable NVIDIA GPU monitoring (requires pynvml) |
