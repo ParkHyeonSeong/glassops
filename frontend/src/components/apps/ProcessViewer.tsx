@@ -1,6 +1,7 @@
-import { useState, useMemo } from "react";
-import { Search } from "lucide-react";
+import { useState, useMemo, useCallback } from "react";
+import { Search, X } from "lucide-react";
 import { useMetricsStore } from "../../stores/metricsStore";
+import { fetchWithAuth } from "../../utils/api";
 
 type SortKey = "cpu" | "mem" | "pid" | "name";
 
@@ -10,6 +11,24 @@ export default function ProcessViewer() {
   const [sortKey, setSortKey] = useState<SortKey>("cpu");
   const [sortAsc, setSortAsc] = useState(false);
   const [filter, setFilter] = useState("");
+  const [killTarget, setKillTarget] = useState<{ pid: number; name: string } | null>(null);
+  const [killMsg, setKillMsg] = useState("");
+
+  const handleKill = useCallback(async (pid: number) => {
+    setKillMsg("");
+    try {
+      const res = await fetchWithAuth(`/api/process/${pid}/kill`, { method: "POST" });
+      if (res.ok) {
+        setKillMsg(`Sent SIGTERM to ${pid}`);
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setKillMsg(d.detail || "Kill failed");
+      }
+    } catch {
+      setKillMsg("Failed to connect");
+    }
+    setKillTarget(null);
+  }, []);
 
   const processes = current?.processes ?? [];
 
@@ -56,6 +75,19 @@ export default function ProcessViewer() {
 
   return (
     <div className="proc-viewer">
+      {/* Kill confirmation modal */}
+      {killTarget && (
+        <div className="proc-kill-overlay" onClick={() => setKillTarget(null)}>
+          <div className="proc-kill-modal" onClick={(e) => e.stopPropagation()}>
+            <p>Kill process <strong>{killTarget.name}</strong> (PID {killTarget.pid})?</p>
+            <div className="proc-kill-actions">
+              <button className="settings-btn" onClick={() => setKillTarget(null)}>Cancel</button>
+              <button className="settings-btn settings-btn-danger" onClick={() => handleKill(killTarget.pid)}>Kill</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {killMsg && <div className="docker-error" onClick={() => setKillMsg("")}>{killMsg}</div>}
       <div className="proc-toolbar">
         <div className="proc-search">
           <Search size={13} />
@@ -80,6 +112,7 @@ export default function ProcessViewer() {
               <th onClick={() => handleSort("mem")} className="proc-th-sortable">MEM%{arrow("mem")}</th>
               <th>User</th>
               <th>Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -113,6 +146,11 @@ export default function ProcessViewer() {
                 </td>
                 <td className="proc-cell-user">{p.user}</td>
                 <td className="proc-cell-status">{p.status}</td>
+                <td>
+                  <button className="docker-action-btn docker-action-stop"
+                    onClick={() => setKillTarget({ pid: p.pid, name: p.name })}
+                    title="Kill"><X size={12} /></button>
+                </td>
               </tr>
             ))}
           </tbody>

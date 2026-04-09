@@ -1,21 +1,23 @@
 import { useState, useEffect } from "react";
-import { Wifi, WifiOff } from "lucide-react";
+import { Wifi, WifiOff, ChevronDown } from "lucide-react";
 import type { ConnectionStatus } from "../../types";
+import { useMetricsStore } from "../../stores/metricsStore";
 
 interface MenuBarProps {
-  serverName?: string;
   connectionStatus: ConnectionStatus;
   cpuPercent?: number;
   memPercent?: number;
 }
 
 export default function MenuBar({
-  serverName = "No Server",
   connectionStatus,
   cpuPercent,
   memPercent,
 }: MenuBarProps) {
   const [time, setTime] = useState(new Date());
+  const agentIds = useMetricsStore((s) => s.agentIds);
+  const selectedAgentId = useMetricsStore((s) => s.agentId);
+  const selectAgent = useMetricsStore((s) => s.selectAgent);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
@@ -39,7 +41,24 @@ export default function MenuBar({
 
       <div className="menubar-center">
         <StatusIcon size={13} style={{ color: statusColor }} />
-        <span className="menubar-server">{serverName}</span>
+        {agentIds.length > 1 ? (
+          <div className="menubar-agent-select">
+            <select
+              value={selectedAgentId ?? ""}
+              onChange={(e) => selectAgent(e.target.value)}
+              className="menubar-agent-dropdown"
+            >
+              {agentIds.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+            <ChevronDown size={11} className="menubar-agent-chevron" />
+          </div>
+        ) : (
+          <span className="menubar-server">
+            {selectedAgentId ?? "No Agent"}
+          </span>
+        )}
         <span
           className="menubar-status-dot"
           style={{ backgroundColor: statusColor }}
@@ -54,7 +73,7 @@ export default function MenuBar({
           <span className="menubar-metric">MEM {memPercent}%</span>
         )}
         <span className="menubar-time">
-          {time.toLocaleTimeString("ko-KR", {
+          {time.toLocaleTimeString(undefined, {
             hour: "2-digit",
             minute: "2-digit",
           })}

@@ -16,6 +16,8 @@ from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
 from app.routers.logs import router as logs_router
 from app.routers.auth import router as auth_router
+from app.routers.process import router as process_router
+from app.routers.alerts import router as alerts_router
 from app.websocket.terminal_ws import handle_terminal_ws
 
 logger = logging.getLogger("glassops")
@@ -85,6 +87,8 @@ app.add_middleware(JWTAuthMiddleware)  # ASGI-level, WebSocket-safe
 app.include_router(docker_router)
 app.include_router(logs_router)
 app.include_router(auth_router)
+app.include_router(process_router)
+app.include_router(alerts_router)
 
 
 # ── REST endpoints ──────────────────────────────────────

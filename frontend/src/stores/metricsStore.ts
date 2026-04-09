@@ -95,39 +95,82 @@ export interface MetricSnapshot {
   timestamp: number;
 }
 
-const MAX_HISTORY = 120; // 2 minutes at 1s interval
+interface AgentData {
+  current: MetricSnapshot | null;
+  history: MetricSnapshot[];
+}
+
+const MAX_HISTORY = 120;
 
 interface MetricsStore {
+  // Multi-agent data
+  agents: Record<string, AgentData>;
+  agentIds: string[];
+  selectedAgentId: string | null;
+  connected: boolean;
+
+  // Derived — current agent's data
   current: MetricSnapshot | null;
   history: MetricSnapshot[];
   agentId: string | null;
-  connected: boolean;
 
   pushMetrics: (agentId: string, data: MetricSnapshot) => void;
   setConnected: (value: boolean) => void;
+  selectAgent: (agentId: string) => void;
   loadHistory: (agentId: string, data: MetricSnapshot[]) => void;
 }
 
+function deriveSelected(agents: Record<string, AgentData>, selectedId: string | null) {
+  const id = selectedId && agents[selectedId] ? selectedId : Object.keys(agents)[0] ?? null;
+  const agent = id ? agents[id] : null;
+  return {
+    agentId: id,
+    current: agent?.current ?? null,
+    history: agent?.history ?? [],
+  };
+}
+
 export const useMetricsStore = create<MetricsStore>((set) => ({
+  agents: {},
+  agentIds: [],
+  selectedAgentId: null,
+  connected: false,
   current: null,
   history: [],
   agentId: null,
-  connected: false,
 
   pushMetrics: (agentId, data) => {
     set((state) => {
-      const history = [...state.history, data].slice(-MAX_HISTORY);
-      return { current: data, history, agentId };
+      const existing = state.agents[agentId] ?? { current: null, history: [] };
+      const history = [...existing.history, data].slice(-MAX_HISTORY);
+      const agents = { ...state.agents, [agentId]: { current: data, history } };
+      const agentIds = Object.keys(agents);
+      const selectedId = state.selectedAgentId ?? agentId;
+      return { agents, agentIds, ...deriveSelected(agents, selectedId) };
     });
   },
 
   setConnected: (value) => set({ connected: value }),
 
+  selectAgent: (agentId) => {
+    set((state) => ({
+      selectedAgentId: agentId,
+      ...deriveSelected(state.agents, agentId),
+    }));
+  },
+
   loadHistory: (agentId, data) => {
-    set({
-      agentId,
-      history: data.slice(-MAX_HISTORY),
-      current: data.length > 0 ? data[data.length - 1] : null,
+    set((state) => {
+      const agents = {
+        ...state.agents,
+        [agentId]: {
+          current: data.length > 0 ? data[data.length - 1] : null,
+          history: data.slice(-MAX_HISTORY),
+        },
+      };
+      const agentIds = Object.keys(agents);
+      const selectedId = state.selectedAgentId ?? agentId;
+      return { agents, agentIds, ...deriveSelected(agents, selectedId) };
     });
   },
 }));

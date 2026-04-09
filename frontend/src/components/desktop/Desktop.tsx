@@ -29,7 +29,6 @@ export default function Desktop() {
 
   const wsConnected = useMetricsStore((s) => s.connected);
   const current = useMetricsStore((s) => s.current);
-  const agentId = useMetricsStore((s) => s.agentId);
   const push = useAlertStore((s) => s.push);
   const wallpaperId = useSettingsStore((s) => s.wallpaper);
   const thresholds = useSettingsStore((s) => s.alertThresholds);
@@ -64,7 +63,6 @@ export default function Desktop() {
     <div className="desktop" style={{ background: wallpaperCss }}>
       <MenuBar
         connectionStatus={connectionStatus}
-        serverName={agentId ? `Agent: ${agentId}` : undefined}
         cpuPercent={cpuPercent}
         memPercent={memPercent}
       />

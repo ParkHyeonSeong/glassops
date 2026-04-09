@@ -3,6 +3,7 @@
 import re
 
 from fastapi import APIRouter, HTTPException
+from typing import Literal
 from pydantic import BaseModel
 
 from app.services.docker_service import (
@@ -10,6 +11,9 @@ from app.services.docker_service import (
     container_action,
     container_logs,
     container_detail,
+    list_images,
+    list_volumes,
+    list_networks,
 )
 
 router = APIRouter(prefix="/api/docker", tags=["docker"])
@@ -24,7 +28,7 @@ def _validate_id(container_id: str) -> str:
 
 
 class ActionRequest(BaseModel):
-    action: str  # start | stop | restart
+    action: Literal["start", "stop", "restart"]
 
 
 @router.get("/containers")
@@ -57,3 +61,18 @@ async def get_logs(container_id: str, tail: int = 200):
     if not result.get("ok"):
         raise HTTPException(404, result.get("error", "Not found"))
     return result
+
+
+@router.get("/images")
+async def get_images():
+    return {"images": list_images()}
+
+
+@router.get("/volumes")
+async def get_volumes():
+    return {"volumes": list_volumes()}
+
+
+@router.get("/networks")
+async def get_networks():
+    return {"networks": list_networks()}

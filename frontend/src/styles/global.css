@@ -426,6 +426,36 @@ body {
   color: var(--text-secondary);
 }
 
+.menubar-agent-select {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.menubar-agent-dropdown {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 12px;
+  padding: 2px 18px 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+}
+
+.menubar-agent-dropdown option {
+  background: #1c1c30;
+}
+
+.menubar-agent-chevron {
+  position: absolute;
+  right: 4px;
+  pointer-events: none;
+  color: var(--text-secondary);
+}
+
 .menubar-status-dot {
   width: 7px;
   height: 7px;
@@ -1246,6 +1276,33 @@ body {
   transition: width 0.3s;
 }
 
+.proc-kill-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: var(--window-radius);
+}
+
+.proc-kill-modal {
+  padding: 20px 24px;
+  background: #1c1c30;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.proc-kill-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 14px;
+}
+
 /* ========================================
    LOG VIEWER APP
    ======================================== */
@@ -1494,8 +1551,20 @@ body {
    DOCKER MANAGER APP
    ======================================== */
 .docker-manager {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  gap: 10px;
   overflow: auto;
+}
+
+.docker-tabs {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 2px;
+  align-self: flex-start;
 }
 
 .docker-empty {

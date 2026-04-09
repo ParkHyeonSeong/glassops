@@ -121,3 +121,56 @@ def container_detail(container_id: str) -> dict:
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def list_images() -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return [
+            {
+                "id": img.short_id.replace("sha256:", ""),
+                "tags": img.tags,
+                "size": img.attrs.get("Size", 0),
+                "created": img.attrs.get("Created", ""),
+            }
+            for img in client.images.list()
+        ]
+    except Exception:
+        return []
+
+
+def list_volumes() -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return [
+            {
+                "name": v.name,
+                "driver": v.attrs.get("Driver", ""),
+                "mountpoint": v.attrs.get("Mountpoint", ""),
+            }
+            for v in client.volumes.list()
+        ]
+    except Exception:
+        return []
+
+
+def list_networks() -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return [
+            {
+                "id": n.short_id,
+                "name": n.name,
+                "driver": n.attrs.get("Driver", ""),
+                "scope": n.attrs.get("Scope", ""),
+            }
+            for n in client.networks.list()
+        ]
+    except Exception:
+        return []

@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
 import { fetchWithAuth } from "../../utils/api";
 
-type Tab = "profile" | "agents" | "alerts" | "appearance";
+type Tab = "profile" | "agents" | "alerts" | "email" | "appearance";
 
 export default function SettingsApp() {
   const [tab, setTab] = useState<Tab>("profile");
@@ -16,7 +16,7 @@ export default function SettingsApp() {
   return (
     <div className="settings-app">
       <div className="settings-sidebar">
-        {(["profile", "agents", "alerts", "appearance"] as Tab[]).map((t) => (
+        {(["profile", "agents", "alerts", "email", "appearance"] as Tab[]).map((t) => (
           <button key={t} className={`settings-nav ${tab === t ? "settings-nav-active" : ""}`}
             onClick={() => setTab(t)}>
             {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -27,6 +27,7 @@ export default function SettingsApp() {
         {tab === "profile" && <ProfileTab email={email} onLogout={logout} />}
         {tab === "agents" && <AgentsTab agentId={agentId} connected={connected} />}
         {tab === "alerts" && <AlertsTab />}
+        {tab === "email" && <EmailTab />}
         {tab === "appearance" && <AppearanceTab />}
       </div>
     </div>
@@ -121,6 +122,80 @@ function AlertsTab() {
           <span className="settings-range-value">{alertThresholds[s.key as keyof typeof alertThresholds]}{s.unit}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function EmailTab() {
+  const [config, setConfig] = useState({
+    host: "", port: 587, username: "", password: "", from_email: "", to_email: "",
+    use_tls: false, start_tls: true,
+  });
+  const [msg, setMsg] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    fetchWithAuth("/api/alerts/config").then((r) => r.json()).then((d) => {
+      if (d.configured) {
+        setConfig((prev) => ({ ...prev, ...d }));
+      }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  const handleSave = async () => {
+    setMsg("");
+    const res = await fetchWithAuth("/api/alerts/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+    setMsg(res.ok ? "Saved" : "Failed to save");
+  };
+
+  const handleTest = async () => {
+    setMsg("Sending...");
+    const res = await fetchWithAuth("/api/alerts/test", { method: "POST" });
+    const d = await res.json().catch(() => ({}));
+    setMsg(res.ok ? "Test email sent!" : d.detail || "Send failed");
+  };
+
+  if (!loaded) return <p className="settings-hint">Loading...</p>;
+
+  const fields: { key: string; label: string; type?: string }[] = [
+    { key: "host", label: "SMTP Host" },
+    { key: "port", label: "Port", type: "number" },
+    { key: "username", label: "Username" },
+    { key: "password", label: "Password", type: "password" },
+    { key: "from_email", label: "From Email" },
+    { key: "to_email", label: "To Email (alerts)" },
+  ];
+
+  return (
+    <div className="settings-section">
+      <h3 className="settings-title">Email Alerts (SMTP)</h3>
+      {fields.map((f) => (
+        <div key={f.key} className="settings-field">
+          <label className="settings-label">{f.label}</label>
+          <input
+            type={f.type || "text"}
+            value={(config as any)[f.key]}
+            onChange={(e) => setConfig((prev) => ({ ...prev, [f.key]: f.type === "number" ? Number(e.target.value) : e.target.value }))}
+            className="settings-input"
+          />
+        </div>
+      ))}
+      <div className="settings-field">
+        <label className="settings-label">
+          <input type="checkbox" checked={config.start_tls}
+            onChange={(e) => setConfig((prev) => ({ ...prev, start_tls: e.target.checked }))} />
+          {" "}STARTTLS
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button className="settings-btn" onClick={handleSave}>Save</button>
+        <button className="settings-btn" onClick={handleTest} disabled={!config.host}>Test Email</button>
+      </div>
+      {msg && <p className="settings-msg">{msg}</p>}
     </div>
   );
 }

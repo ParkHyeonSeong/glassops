@@ -1,5 +1,6 @@
 """WebSocket endpoint for agent metric ingestion."""
 
+import hmac
 import json
 import logging
 import re
@@ -8,6 +9,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.database import store_metric
 from app.websocket.client_ws import broadcast_to_clients
+from app.services.alert_service import check_and_alert
 
 logger = logging.getLogger("glassops.agent_ws")
 
@@ -27,10 +29,10 @@ async def handle_agent_ws(ws: WebSocket) -> None:
         await ws.close(code=4001, reason="Invalid agent ID")
         return
 
-    # Basic agent key validation (Phase 6 will add proper per-agent keys)
+    # Validate agent key against configured secret
     expected_key = ws.app.state.settings.secret_key if hasattr(ws.app.state, "settings") else ""
-    if not agent_key:
-        await ws.close(code=4003, reason="Missing agent key")
+    if not agent_key or not hmac.compare_digest(agent_key, expected_key):
+        await ws.close(code=4003, reason="Invalid agent key")
         return
 
     await ws.accept()
@@ -69,6 +71,12 @@ async def handle_agent_ws(ws: WebSocket) -> None:
 
             await store_metric(agent_id, timestamp, data)
             await broadcast_to_clients(agent_id, data)
+
+            # Check thresholds and send email alerts (non-blocking)
+            try:
+                await check_and_alert(agent_id, data)
+            except Exception:
+                logger.debug("Alert check failed for %s", agent_id, exc_info=True)
     except WebSocketDisconnect:
         logger.info("Agent disconnected: %s", agent_id)
     finally:

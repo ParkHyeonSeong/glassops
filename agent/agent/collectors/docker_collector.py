@@ -39,6 +39,7 @@ def collect_containers() -> Optional[list[dict]]:
         containers = _client.containers.list(all=True)
         result = []
         for c in containers:
+            labels = c.labels or {}
             info: dict = {
                 "id": c.short_id,
                 "name": c.name,
@@ -47,6 +48,8 @@ def collect_containers() -> Optional[list[dict]]:
                 "state": c.attrs.get("State", {}).get("Status", "unknown"),
                 "created": c.attrs.get("Created", ""),
                 "ports": _parse_ports(c.attrs.get("NetworkSettings", {}).get("Ports", {})),
+                "compose_project": labels.get("com.docker.compose.project", ""),
+                "compose_service": labels.get("com.docker.compose.service", ""),
             }
 
             # Get resource stats for running containers

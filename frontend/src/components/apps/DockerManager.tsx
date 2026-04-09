@@ -3,6 +3,8 @@ import { Play, Square, RotateCw, FileText, ChevronLeft } from "lucide-react";
 import { useMetricsStore, type ContainerInfo } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 
+type DockerTab = "containers" | "images" | "volumes" | "networks";
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -23,6 +25,28 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function DockerManager() {
+  const [tab, setTab] = useState<DockerTab>("containers");
+
+  return (
+    <div className="docker-manager">
+      <div className="docker-tabs">
+        {(["containers", "images", "volumes", "networks"] as DockerTab[]).map((t) => (
+          <button key={t} className={`sysmon-tab ${tab === t ? "sysmon-tab-active" : ""}`}
+            onClick={() => setTab(t)}>
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+      {tab === "containers" && <ContainersTab />}
+      {tab === "images" && <ImagesTab />}
+      {tab === "volumes" && <VolumesTab />}
+      {tab === "networks" && <NetworksTab />}
+    </div>
+  );
+}
+
+/* ── Containers ── */
+function ContainersTab() {
   const current = useMetricsStore((s) => s.current);
   const containers: ContainerInfo[] = current?.containers ?? [];
 
@@ -33,7 +57,6 @@ export default function DockerManager() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "logs">("list");
 
-  // Reset view if container disappears
   useEffect(() => {
     if (selectedId && !containers.find((c) => c.id === selectedId)) {
       setSelectedId(null);
@@ -82,9 +105,7 @@ export default function DockerManager() {
     return (
       <div className="docker-empty">
         <p className="docker-empty-title">No containers found</p>
-        <p className="docker-empty-sub">
-          Ensure Docker is running and the Agent has GLASSOPS_ENABLE_DOCKER=true
-        </p>
+        <p className="docker-empty-sub">Ensure Docker is running and GLASSOPS_ENABLE_DOCKER=true</p>
       </div>
     );
   }
@@ -99,31 +120,17 @@ export default function DockerManager() {
           </button>
           <span className="docker-logs-title">{container?.name ?? selectedId}</span>
         </div>
-        <pre className="docker-logs-content">
-          {logsLoading ? "Loading logs..." : logs}
-        </pre>
+        <pre className="docker-logs-content">{logsLoading ? "Loading logs..." : logs}</pre>
       </div>
     );
   }
 
   return (
-    <div className="docker-manager">
-      {actionError && (
-        <div className="docker-error" onClick={() => setActionError(null)}>
-          {actionError}
-        </div>
-      )}
+    <div>
+      {actionError && <div className="docker-error" onClick={() => setActionError(null)}>{actionError}</div>}
       <table className="docker-table">
         <thead>
-          <tr>
-            <th>Name</th>
-            <th>Image</th>
-            <th>Status</th>
-            <th>CPU</th>
-            <th>Memory</th>
-            <th>Ports</th>
-            <th>Actions</th>
-          </tr>
+          <tr><th>Name</th><th>Image</th><th>Status</th><th>CPU</th><th>Memory</th><th>Ports</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {containers.map((c) => (
@@ -132,54 +139,90 @@ export default function DockerManager() {
               <td className="docker-cell-image">{c.image}</td>
               <td><StatusBadge status={c.status} /></td>
               <td className="docker-cell-num">{c.cpu_percent.toFixed(1)}%</td>
-              <td className="docker-cell-num">
-                {c.mem_usage > 0 ? `${formatBytes(c.mem_usage)} / ${formatBytes(c.mem_limit)}` : "—"}
-              </td>
-              <td className="docker-cell-ports">
-                {c.ports.length > 0 ? c.ports.join(", ") : "—"}
-              </td>
+              <td className="docker-cell-num">{c.mem_usage > 0 ? `${formatBytes(c.mem_usage)} / ${formatBytes(c.mem_limit)}` : "—"}</td>
+              <td className="docker-cell-ports">{c.ports.length > 0 ? c.ports.join(", ") : "—"}</td>
               <td className="docker-cell-actions">
                 {c.status === "running" ? (
                   <>
-                    <button
-                      className="docker-action-btn docker-action-stop"
-                      onClick={() => doAction(c.id, "stop")}
-                      disabled={actionLoading === c.id}
-                      title="Stop"
-                    >
-                      <Square size={13} />
-                    </button>
-                    <button
-                      className="docker-action-btn docker-action-restart"
-                      onClick={() => doAction(c.id, "restart")}
-                      disabled={actionLoading === c.id}
-                      title="Restart"
-                    >
-                      <RotateCw size={13} />
-                    </button>
+                    <button className="docker-action-btn docker-action-stop" onClick={() => doAction(c.id, "stop")} disabled={actionLoading === c.id} title="Stop"><Square size={13} /></button>
+                    <button className="docker-action-btn docker-action-restart" onClick={() => doAction(c.id, "restart")} disabled={actionLoading === c.id} title="Restart"><RotateCw size={13} /></button>
                   </>
                 ) : (
-                  <button
-                    className="docker-action-btn docker-action-start"
-                    onClick={() => doAction(c.id, "start")}
-                    disabled={actionLoading === c.id}
-                    title="Start"
-                  >
-                    <Play size={13} />
-                  </button>
+                  <button className="docker-action-btn docker-action-start" onClick={() => doAction(c.id, "start")} disabled={actionLoading === c.id} title="Start"><Play size={13} /></button>
                 )}
-                <button
-                  className="docker-action-btn"
-                  onClick={() => showLogs(c.id)}
-                  title="Logs"
-                >
-                  <FileText size={13} />
-                </button>
+                <button className="docker-action-btn" onClick={() => showLogs(c.id)} title="Logs"><FileText size={13} /></button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/* ── Images ── */
+function ImagesTab() {
+  const [images, setImages] = useState<any[]>([]);
+  useEffect(() => {
+    fetchWithAuth("/api/docker/images").then((r) => r.json()).then((d) => setImages(d.images || [])).catch(() => {});
+  }, []);
+  return (
+    <table className="docker-table">
+      <thead><tr><th>ID</th><th>Tags</th><th>Size</th></tr></thead>
+      <tbody>
+        {images.map((img) => (
+          <tr key={img.id}>
+            <td className="docker-cell-image">{img.id}</td>
+            <td>{img.tags?.join(", ") || "—"}</td>
+            <td className="docker-cell-num">{formatBytes(img.size)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/* ── Volumes ── */
+function VolumesTab() {
+  const [volumes, setVolumes] = useState<any[]>([]);
+  useEffect(() => {
+    fetchWithAuth("/api/docker/volumes").then((r) => r.json()).then((d) => setVolumes(d.volumes || [])).catch(() => {});
+  }, []);
+  return (
+    <table className="docker-table">
+      <thead><tr><th>Name</th><th>Driver</th><th>Mountpoint</th></tr></thead>
+      <tbody>
+        {volumes.map((v) => (
+          <tr key={v.name}>
+            <td className="docker-cell-name">{v.name}</td>
+            <td>{v.driver}</td>
+            <td className="docker-cell-image">{v.mountpoint}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/* ── Networks ── */
+function NetworksTab() {
+  const [networks, setNetworks] = useState<any[]>([]);
+  useEffect(() => {
+    fetchWithAuth("/api/docker/networks").then((r) => r.json()).then((d) => setNetworks(d.networks || [])).catch(() => {});
+  }, []);
+  return (
+    <table className="docker-table">
+      <thead><tr><th>Name</th><th>Driver</th><th>Scope</th><th>ID</th></tr></thead>
+      <tbody>
+        {networks.map((n) => (
+          <tr key={n.id}>
+            <td className="docker-cell-name">{n.name}</td>
+            <td>{n.driver}</td>
+            <td>{n.scope}</td>
+            <td className="docker-cell-image">{n.id}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

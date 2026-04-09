@@ -65,6 +65,13 @@ async def init_db() -> None:
     """)
 
     await db.execute("""
+        CREATE TABLE IF NOT EXISTS alert_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            config TEXT NOT NULL
+        )
+    """)
+
+    await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
             password_hash TEXT NOT NULL,
