@@ -15,6 +15,30 @@ fi
 mkdir -p /app/data
 chown appuser:appuser /app/data
 
+# NVIDIA GPU: copy host libnvidia-ml into container if available via /proc
+# privileged mode gives access to host /proc where we can find nvidia libs
+NVIDIA_LIB=""
+for path in \
+  /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1 \
+  /usr/lib64/libnvidia-ml.so.1 \
+  /usr/local/lib/libnvidia-ml.so.1 \
+  /usr/lib/libnvidia-ml.so.1; do
+  # Check via host proc filesystem
+  if [ -f "/host/proc/1/root${path}" ]; then
+    cp "/host/proc/1/root${path}" /usr/lib/ 2>/dev/null
+    ln -sf /usr/lib/libnvidia-ml.so.1 /usr/lib/libnvidia-ml.so 2>/dev/null
+    ldconfig 2>/dev/null
+    NVIDIA_LIB="$path"
+    break
+  fi
+done
+
+if [ -n "$NVIDIA_LIB" ]; then
+  echo "NVIDIA GPU: loaded driver lib from host ($NVIDIA_LIB)"
+else
+  echo "NVIDIA GPU: no driver found (GPU monitoring disabled)"
+fi
+
 # Generate IP whitelist nginx config
 ALLOWED_IPS="${GLASSOPS_ALLOWED_IPS:-}"
 IP_CONF="/etc/nginx/conf.d/ip-whitelist.conf"

@@ -11,13 +11,10 @@ services:
       - /var/log:/host/log:ro
       - /proc:/host/proc:ro
       - /etc/os-release:/host/os-release:ro
-      - /usr/lib:/host/usr/lib:ro
-      - /usr/local/lib:/host/usr/local/lib:ro
     env_file: .env
     environment:
       - HOST_PROC=/host/proc
       - HOST_LOG=/host/log
-      - LD_LIBRARY_PATH=/host/usr/lib/x86_64-linux-gnu:/host/usr/local/lib:/host/usr/lib
       - GLASSOPS_TERMINAL_USER=${GLASSOPS_TERMINAL_USER:-}
     restart: unless-stopped
     healthcheck:
