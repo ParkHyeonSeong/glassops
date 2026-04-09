@@ -65,6 +65,13 @@ async def init_db() -> None:
     """)
 
     await db.execute("""
+        CREATE TABLE IF NOT EXISTS runtime_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
+    await db.execute("""
         CREATE TABLE IF NOT EXISTS token_blacklist (
             token_hash TEXT PRIMARY KEY,
             expires_at REAL NOT NULL
@@ -316,6 +323,36 @@ async def get_user(email: str) -> dict | None:
         "totp_enabled": bool(row["totp_enabled"]),
         "must_change_password": bool(row["must_change_password"]),
     }
+
+
+# ── Runtime Config ───────────────────────────────────
+
+
+async def get_runtime_config() -> dict[str, str]:
+    db = await get_db()
+    cursor = await db.execute("SELECT key, value FROM runtime_config")
+    rows = await cursor.fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
+async def set_runtime_config(key: str, value: str) -> None:
+    ALLOWED_KEYS = {
+        "enable_gpu", "enable_docker", "collect_interval",
+        "terminal_user", "allowed_ips",
+    }
+    if key not in ALLOWED_KEYS:
+        return
+    db = await get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO runtime_config (key, value) VALUES (?, ?)",
+        (key, value),
+    )
+    await db.commit()
+
+
+async def set_runtime_configs(configs: dict[str, str]) -> None:
+    for key, value in configs.items():
+        await set_runtime_config(key, value)
 
 
 # ── Token Blacklist ──────────────────────────────────

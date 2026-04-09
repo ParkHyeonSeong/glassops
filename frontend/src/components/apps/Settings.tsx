@@ -4,7 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
 import { fetchWithAuth } from "../../utils/api";
 
-type Tab = "profile" | "agents" | "alerts" | "email" | "appearance";
+type Tab = "profile" | "agents" | "server" | "alerts" | "email" | "appearance";
 
 export default function SettingsApp() {
   const [tab, setTab] = useState<Tab>("profile");
@@ -16,7 +16,7 @@ export default function SettingsApp() {
   return (
     <div className="settings-app">
       <div className="settings-sidebar">
-        {(["profile", "agents", "alerts", "email", "appearance"] as Tab[]).map((t) => (
+        {(["profile", "agents", "server", "alerts", "email", "appearance"] as Tab[]).map((t) => (
           <button key={t} className={`settings-nav ${tab === t ? "settings-nav-active" : ""}`}
             onClick={() => setTab(t)}>
             {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -26,6 +26,7 @@ export default function SettingsApp() {
       <div className="settings-content">
         {tab === "profile" && <ProfileTab email={email} onLogout={logout} />}
         {tab === "agents" && <AgentsTab agentId={agentId} connected={connected} />}
+        {tab === "server" && <ServerTab />}
         {tab === "alerts" && <AlertsTab />}
         {tab === "email" && <EmailTab />}
         {tab === "appearance" && <AppearanceTab />}
@@ -122,6 +123,142 @@ function AlertsTab() {
           <span className="settings-range-value">{alertThresholds[s.key as keyof typeof alertThresholds]}{s.unit}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ServerTab() {
+  const [config, setConfig] = useState<Record<string, string>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const [showConfirm, setShowConfirm] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchWithAuth("/api/settings/runtime").then((r) => r.json()).then((d) => {
+      setConfig(d.config || {});
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  const update = (key: string, value: string) => {
+    setConfig((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
+    setMsg("");
+  };
+
+  const handleSave = async () => {
+    setMsg("");
+    const res = await fetchWithAuth("/api/settings/runtime", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+    if (res.ok) {
+      setDirty(false);
+      setMsg("Saved. Click Apply to restart services.");
+    } else {
+      const d = await res.json().catch(() => ({}));
+      setMsg(d.detail || "Save failed");
+    }
+  };
+
+  const handleApply = async (service: string) => {
+    setShowConfirm(null);
+    setRestarting(true);
+    setMsg(`Restarting ${service}...`);
+    const res = await fetchWithAuth("/api/settings/restart", {
+      method: "POST",
+      body: JSON.stringify({ service }),
+    });
+    setRestarting(false);
+    if (res.ok) {
+      setMsg(`${service} restarted successfully`);
+    } else {
+      const d = await res.json().catch(() => ({}));
+      setMsg(d.detail || "Restart failed");
+    }
+  };
+
+  if (!loaded) return <p className="settings-hint">Loading...</p>;
+
+  const toggles = [
+    { key: "enable_gpu", label: "GPU Monitoring" },
+    { key: "enable_docker", label: "Docker Monitoring" },
+  ];
+
+  return (
+    <div className="settings-section">
+      <h3 className="settings-title">Server Configuration</h3>
+
+      {toggles.map((t) => (
+        <div key={t.key} className="settings-toggle-row">
+          <span className="settings-toggle-label">{t.label}</span>
+          <button
+            className={`settings-toggle ${config[t.key] === "true" ? "settings-toggle-on" : ""}`}
+            onClick={() => update(t.key, config[t.key] === "true" ? "false" : "true")}
+          >
+            <span className="settings-toggle-knob" />
+          </button>
+        </div>
+      ))}
+
+      <div className="settings-field">
+        <label className="settings-label">Collection Interval (seconds)</label>
+        <input type="number" min="1" max="60" value={config.collect_interval || "1"}
+          onChange={(e) => update("collect_interval", e.target.value)}
+          className="settings-input" style={{ width: 80 }} />
+      </div>
+
+      <div className="settings-field">
+        <label className="settings-label">Terminal User</label>
+        <input type="text" value={config.terminal_user || ""}
+          onChange={(e) => update("terminal_user", e.target.value)}
+          placeholder="(login prompt)"
+          className="settings-input" />
+      </div>
+
+      <div className="settings-field">
+        <label className="settings-label">IP Whitelist (comma-separated, empty = all)</label>
+        <input type="text" value={config.allowed_ips || ""}
+          onChange={(e) => update("allowed_ips", e.target.value)}
+          placeholder="10.0.0.0/8, 192.168.1.0/24"
+          className="settings-input" />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+        <button className="settings-btn" onClick={handleSave} disabled={!dirty}>
+          Save
+        </button>
+        <button className="settings-btn" onClick={() => setShowConfirm("agent")} disabled={restarting}>
+          Apply (Restart Agent)
+        </button>
+        {config.allowed_ips !== undefined && (
+          <button className="settings-btn" onClick={() => setShowConfirm("nginx")} disabled={restarting}>
+            Apply IP Rules (Restart Nginx)
+          </button>
+        )}
+      </div>
+
+      {msg && <p className="settings-msg">{msg}</p>}
+
+      {/* Confirm dialog */}
+      {showConfirm && (
+        <div className="proc-kill-overlay" onClick={() => setShowConfirm(null)}>
+          <div className="proc-kill-modal" onClick={(e) => e.stopPropagation()}>
+            <p>Restart <strong>{showConfirm}</strong>?</p>
+            <p className="settings-hint" style={{ marginTop: 4 }}>
+              {showConfirm === "agent"
+                ? "Metrics collection will pause for a few seconds."
+                : "Active connections may be briefly interrupted."}
+            </p>
+            <div className="proc-kill-actions">
+              <button className="settings-btn" onClick={() => setShowConfirm(null)}>Cancel</button>
+              <button className="settings-btn settings-btn-danger" onClick={() => handleApply(showConfirm)}>Restart</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,6 +18,7 @@ from app.routers.logs import router as logs_router
 from app.routers.auth import router as auth_router
 from app.routers.process import router as process_router
 from app.routers.alerts import router as alerts_router
+from app.routers.settings import router as settings_router
 from app.websocket.terminal_ws import handle_terminal_ws
 
 logger = logging.getLogger("glassops")
@@ -93,6 +94,7 @@ app.include_router(logs_router)
 app.include_router(auth_router)
 app.include_router(process_router)
 app.include_router(alerts_router)
+app.include_router(settings_router)
 
 
 # ── REST endpoints ──────────────────────────────────────
