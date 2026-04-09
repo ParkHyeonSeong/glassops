@@ -63,8 +63,6 @@ class JWTAuthMiddleware:
             elif name == b"cookie":
                 cookie_header = value.decode()
 
-        logger.warning("AUTH MW path=%s auth=%s cookie=%s", path, auth_header[:20] if auth_header else "NONE", cookie_header[:80] if cookie_header else "NONE")
-
         token = ""
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
@@ -75,14 +73,11 @@ class JWTAuthMiddleware:
                     token = part[13:]
                     break
 
-        logger.warning("AUTH MW token=%s (len=%d)", token[:20] if token else "NONE", len(token))
-
         if not token:
             await self._send_401(send, "Not authenticated")
             return
 
         email = verify_token(token)
-        logger.warning("AUTH MW verify result: %s", email or "FAILED")
         if not email:
             await self._send_401(send, "Invalid or expired token")
             return

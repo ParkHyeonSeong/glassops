@@ -25,10 +25,17 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
 
 
-def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
-    if not creds:
+def get_current_user(request: Request, creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
+    # Try Authorization header first, then cookie fallback
+    token = None
+    if creds:
+        token = creds.credentials
+    else:
+        token = request.cookies.get("access_token")
+
+    if not token:
         raise HTTPException(401, "Not authenticated")
-    email = verify_token(creds.credentials)
+    email = verify_token(token)
     if not email:
         raise HTTPException(401, "Invalid or expired token")
     return email
