@@ -156,18 +156,26 @@ async def check_password(body: ForcePasswordRequest):
 
 
 @router.post("/refresh")
-async def refresh(body: RefreshRequest):
-    email = await verify_refresh_token(body.refresh_token)
+async def refresh(request: Request, response: Response, body: RefreshRequest):
+    # Fall back to cookie when body token is empty (cookie mode)
+    token = body.refresh_token or request.cookies.get("refresh_token") or ""
+    email = await verify_refresh_token(token)
     if not email:
         raise HTTPException(401, "Invalid refresh token")
 
     # Revoke immediately after verify — race window is minimal
     # Second concurrent request will fail at verify (blacklisted)
-    await revoke_refresh_token(body.refresh_token)
+    await revoke_refresh_token(token)
+
+    new_access = create_access_token(email)
+    new_refresh = create_refresh_token(email)
+
+    # Re-set cookies so httpOnly cookie mode stays usable past access token expiry
+    _set_auth_cookies(response, new_access, new_refresh, _is_secure(request))
 
     return {
-        "access_token": create_access_token(email),
-        "refresh_token": create_refresh_token(email),
+        "access_token": new_access,
+        "refresh_token": new_refresh,
     }
 
 

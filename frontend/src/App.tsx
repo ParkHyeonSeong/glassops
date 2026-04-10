@@ -1,42 +1,22 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
 import Desktop from "./components/desktop/Desktop";
 import LoginScreen from "./components/LoginScreen";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 
-function useSessionValidation() {
-  const validatedRef = useRef(false);
-
-  useEffect(() => {
-    if (validatedRef.current) return;
-    validatedRef.current = true;
-
-    const { isAuthenticated, accessToken, refresh, logout } = useAuthStore.getState();
-    if (!isAuthenticated) return;
-
-    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
-    const headers: Record<string, string> = {};
-    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-
-    fetch(`${BACKEND_URL}/api/auth/me`, {
-      headers,
-      credentials: "include",
-    }).then((res) => {
-      if (res.status === 401) {
-        refresh().then((ok) => {
-          if (!ok) logout();
-        });
-      }
-    }).catch(() => {});
-  }, []);
-}
-
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isBootstrapping = useAuthStore((s) => s.isBootstrapping);
   const mustChangePassword = useAuthStore((s) => s.mustChangePassword);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
 
-  useSessionValidation();
+  useEffect(() => {
+    bootstrap();
+  }, [bootstrap]);
 
+  // Gate render only when we have nothing to show yet — avoids flashing LoginScreen
+  // in a fresh tab whose httpOnly cookies still grant a valid session.
+  if (isBootstrapping && !isAuthenticated) return null;
   if (!isAuthenticated) return <LoginScreen />;
   if (mustChangePassword) return <PasswordChangeScreen />;
   return <Desktop />;
