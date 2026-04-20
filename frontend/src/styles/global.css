@@ -1944,6 +1944,31 @@ body {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docker-logs-load-more {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.docker-logs-load-more:hover:not(:disabled) {
+  background: var(--glass-bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.docker-logs-load-more:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .docker-logs-content {
@@ -1958,6 +1983,149 @@ body {
   padding: 8px;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 6px;
+}
+
+.docker-logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.docker-logs-search {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 300px;
+  position: relative;
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0 6px;
+}
+
+.docker-logs-search-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.docker-logs-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  padding: 5px 4px;
+  outline: none;
+  min-width: 0;
+}
+
+.docker-logs-search-clear {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.docker-logs-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.docker-logs-match-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  min-width: 60px;
+}
+
+.docker-logs-nav-btn {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+}
+
+.docker-logs-nav-btn:hover:not(:disabled) {
+  background: var(--glass-bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.docker-logs-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.docker-logs-mark {
+  background: rgba(255, 220, 100, 0.35);
+  color: var(--text-primary);
+  border-radius: 2px;
+}
+
+.docker-logs-mark-current {
+  background: rgba(255, 180, 50, 0.85);
+  color: #000;
+}
+
+.docker-logs-range-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.docker-logs-range-input {
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  outline: none;
+  color-scheme: dark;
+}
+
+.docker-logs-range-sep {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.docker-logs-range-btn {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.docker-logs-range-btn:hover:not(:disabled) {
+  background: var(--glass-bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.docker-logs-range-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.docker-logs-range-error {
+  color: var(--color-danger);
+  font-size: 11px;
+}
+
+.docker-logs-range-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  background: rgba(100, 180, 255, 0.18);
+  color: var(--color-accent);
 }
 
 /* ========================================

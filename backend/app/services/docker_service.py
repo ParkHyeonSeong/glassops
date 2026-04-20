@@ -2,6 +2,7 @@
 
 import logging
 import time as _time
+from datetime import datetime
 
 logger = logging.getLogger("glassops.docker")
 
@@ -83,14 +84,24 @@ def container_action(container_id: str, action: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def container_logs(container_id: str, tail: int = 200) -> dict:
+def container_logs(
+    container_id: str,
+    tail: int = 200,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> dict:
     client = _get_client()
     if not client:
         return {"ok": False, "error": "Docker not available"}
 
     try:
         container = client.containers.get(container_id)
-        logs = container.logs(tail=tail, timestamps=True).decode("utf-8", errors="replace")
+        kwargs: dict = {"timestamps": True, "tail": tail}
+        if since is not None:
+            kwargs["since"] = since
+        if until is not None:
+            kwargs["until"] = until
+        logs = container.logs(**kwargs).decode("utf-8", errors="replace")
         return {"ok": True, "container": container.name, "logs": logs}
     except Exception as e:
         return {"ok": False, "error": str(e)}

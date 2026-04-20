@@ -1,9 +1,10 @@
 """Docker REST API router."""
 
 import re
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
-from typing import Literal
+from fastapi import APIRouter, HTTPException, Query
+from typing import Literal, Optional
 from pydantic import BaseModel
 
 from app.services.docker_service import (
@@ -55,9 +56,28 @@ async def post_action(container_id: str, body: ActionRequest):
 
 
 @router.get("/containers/{container_id}/logs")
-async def get_logs(container_id: str, tail: int = 200):
+async def get_logs(
+    container_id: str,
+    tail: int = 200,
+    since: Optional[str] = Query(None, description="ISO8601 datetime"),
+    until: Optional[str] = Query(None, description="ISO8601 datetime"),
+):
     cid = _validate_id(container_id)
-    result = container_logs(cid, max(1, min(tail, 2000)))
+
+    since_dt: datetime | None = None
+    until_dt: datetime | None = None
+    try:
+        if since is not None:
+            since_dt = datetime.fromisoformat(since)
+        if until is not None:
+            until_dt = datetime.fromisoformat(until)
+    except ValueError:
+        raise HTTPException(400, "Invalid ISO8601 datetime for since/until")
+
+    if since_dt and until_dt and since_dt >= until_dt:
+        raise HTTPException(400, "'since' must be before 'until'")
+
+    result = container_logs(cid, max(1, min(tail, 2000)), since_dt, until_dt)
     if not result.get("ok"):
         raise HTTPException(404, result.get("error", "Not found"))
     return result

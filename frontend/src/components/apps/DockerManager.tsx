@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
-import { Play, Square, RotateCw, FileText, ChevronLeft } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { Play, Square, RotateCw, FileText, ChevronLeft, Search, ChevronUp, ChevronDown, X, Calendar } from "lucide-react";
 import { useMetricsStore, type ContainerInfo } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 
 type DockerTab = "containers" | "images" | "volumes" | "networks";
+
+const TAIL_INITIAL = 300;
+const TAIL_MAX = 2000;
+const nextTail = (t: number) => (t < 1000 ? 1000 : TAIL_MAX);
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -56,6 +60,20 @@ function ContainersTab() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "logs">("list");
+  const [tailCount, setTailCount] = useState(TAIL_INITIAL);
+  const [keyword, setKeyword] = useState("");
+  const [currentMatchRaw, setCurrentMatchRaw] = useState(0);
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+  const [rangeActive, setRangeActive] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const logsRef = useRef<HTMLPreElement | null>(null);
+  const preserveScrollRef = useRef(false);
+  const prevScrollHeightRef = useRef(0);
+  const prevScrollTopRef = useRef(0);
+  const logsRequestIdRef = useRef(0);
+  const matchElsRef = useRef<Array<HTMLElement | null>>([]);
+  const scrollToMatchRef = useRef(false);
 
   useEffect(() => {
     if (selectedId && !containers.find((c) => c.id === selectedId)) {
@@ -82,24 +100,143 @@ function ContainersTab() {
     setActionLoading(null);
   }, []);
 
-  const showLogs = useCallback(async (containerId: string) => {
-    setSelectedId(containerId);
-    setView("logs");
+  const fetchLogs = useCallback(async (
+    containerId: string,
+    tail: number,
+    preserveScroll: boolean,
+    since?: string,
+    until?: string,
+  ) => {
+    const reqId = ++logsRequestIdRef.current;
+    preserveScrollRef.current = preserveScroll;
+    if (preserveScroll && logsRef.current) {
+      prevScrollHeightRef.current = logsRef.current.scrollHeight;
+      prevScrollTopRef.current = logsRef.current.scrollTop;
+    }
     setLogsLoading(true);
-    setLogs(null);
     try {
-      const res = await fetchWithAuth(`/api/docker/containers/${containerId}/logs?tail=300`);
+      const params = new URLSearchParams({ tail: String(tail) });
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+      const res = await fetchWithAuth(`/api/docker/containers/${containerId}/logs?${params.toString()}`);
+      if (reqId !== logsRequestIdRef.current) return;
       if (res.ok) {
         const data = await res.json();
         setLogs(data.logs || "No logs available.");
       } else {
-        setLogs("Failed to load logs.");
+        const data = await res.json().catch(() => ({}));
+        setLogs(`Failed to load logs: ${data.detail || res.status}`);
       }
     } catch {
+      if (reqId !== logsRequestIdRef.current) return;
       setLogs("Failed to connect to backend.");
     }
+    if (reqId !== logsRequestIdRef.current) return;
     setLogsLoading(false);
   }, []);
+
+  const showLogs = useCallback((containerId: string) => {
+    setSelectedId(containerId);
+    setView("logs");
+    setLogs(null);
+    setTailCount(TAIL_INITIAL);
+    setKeyword("");
+    setCurrentMatchRaw(0);
+    setRangeFrom("");
+    setRangeTo("");
+    setRangeActive(false);
+    setRangeError(null);
+    fetchLogs(containerId, TAIL_INITIAL, false);
+  }, [fetchLogs]);
+
+  const loadOlder = useCallback(() => {
+    if (!selectedId || tailCount >= TAIL_MAX) return;
+    const nt = nextTail(tailCount);
+    setTailCount(nt);
+    fetchLogs(selectedId, nt, true);
+  }, [selectedId, tailCount, fetchLogs]);
+
+  const applyRange = useCallback(() => {
+    if (!selectedId) return;
+    if (!rangeFrom || !rangeTo) {
+      setRangeError("Both from and to are required");
+      return;
+    }
+    const fromDate = new Date(rangeFrom);
+    const toDate = new Date(rangeTo);
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      setRangeError("Invalid date");
+      return;
+    }
+    if (fromDate >= toDate) {
+      setRangeError("'from' must be before 'to'");
+      return;
+    }
+    setRangeError(null);
+    setRangeActive(true);
+    fetchLogs(selectedId, TAIL_MAX, false, fromDate.toISOString(), toDate.toISOString());
+  }, [selectedId, rangeFrom, rangeTo, fetchLogs]);
+
+  const clearRange = useCallback(() => {
+    if (!selectedId) return;
+    setRangeFrom("");
+    setRangeTo("");
+    setRangeActive(false);
+    setRangeError(null);
+    setTailCount(TAIL_INITIAL);
+    fetchLogs(selectedId, TAIL_INITIAL, false);
+  }, [selectedId, fetchLogs]);
+
+  useEffect(() => {
+    if (logs === null || !logsRef.current) return;
+    if (preserveScrollRef.current) {
+      const delta = logsRef.current.scrollHeight - prevScrollHeightRef.current;
+      logsRef.current.scrollTop = prevScrollTopRef.current + delta;
+      preserveScrollRef.current = false;
+    } else {
+      logsRef.current.scrollTop = logsRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  const highlighted = useMemo(() => {
+    if (!logs || !keyword) return null;
+    const lower = keyword.toLowerCase();
+    const logsLower = logs.toLowerCase();
+    const nodes: (string | { text: string; idx: number })[] = [];
+    let running = 0;
+    let cursor = 0;
+    while (cursor < logs.length) {
+      const hit = logsLower.indexOf(lower, cursor);
+      if (hit === -1) {
+        nodes.push(logs.slice(cursor));
+        break;
+      }
+      if (hit > cursor) nodes.push(logs.slice(cursor, hit));
+      nodes.push({ text: logs.slice(hit, hit + keyword.length), idx: running });
+      running++;
+      cursor = hit + keyword.length;
+    }
+    return { nodes, totalMatches: running };
+  }, [logs, keyword]);
+
+  const totalMatches = highlighted?.totalMatches ?? 0;
+  const currentMatch = totalMatches > 0 ? Math.min(currentMatchRaw, totalMatches - 1) : 0;
+
+  useEffect(() => {
+    if (!scrollToMatchRef.current) return;
+    const el = matchElsRef.current[currentMatch];
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    scrollToMatchRef.current = false;
+  }, [currentMatch, highlighted]);
+
+  const jumpToMatch = useCallback((delta: number) => {
+    if (totalMatches === 0) return;
+    scrollToMatchRef.current = true;
+    setCurrentMatchRaw((prev) => {
+      const clamped = Math.min(prev, totalMatches - 1);
+      return (clamped + delta + totalMatches) % totalMatches;
+    });
+  }, [totalMatches]);
 
   if (containers.length === 0) {
     return (
@@ -119,8 +256,117 @@ function ContainersTab() {
             <ChevronLeft size={16} /> Back
           </button>
           <span className="docker-logs-title">{container?.name ?? selectedId}</span>
+          {!rangeActive && (
+            <button
+              className="docker-logs-load-more"
+              onClick={loadOlder}
+              disabled={logsLoading || tailCount >= TAIL_MAX}
+              aria-label="Load older logs"
+            >
+              {tailCount >= TAIL_MAX ? `Max (${TAIL_MAX})` : `Load older (${nextTail(tailCount)})`}
+            </button>
+          )}
+          {rangeActive && (
+            <span className="docker-logs-range-badge">Date range</span>
+          )}
         </div>
-        <pre className="docker-logs-content">{logsLoading ? "Loading logs..." : logs}</pre>
+        <div className="docker-logs-toolbar">
+          <div className="docker-logs-search">
+            <Search size={12} className="docker-logs-search-icon" />
+            <input
+              type="text"
+              className="docker-logs-search-input"
+              placeholder="Search logs..."
+              value={keyword}
+              onChange={(e) => { setKeyword(e.target.value); setCurrentMatchRaw(0); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") jumpToMatch(e.shiftKey ? -1 : 1);
+                else if (e.key === "Escape") { setKeyword(""); setCurrentMatchRaw(0); }
+              }}
+              aria-label="Search logs"
+            />
+            {keyword && (
+              <button
+                className="docker-logs-search-clear"
+                onClick={() => setKeyword("")}
+                aria-label="Clear search"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+          {keyword && (
+            <>
+              <span className="docker-logs-match-count">
+                {totalMatches > 0 ? `${currentMatch + 1} / ${totalMatches}` : "0 matches"}
+              </span>
+              <button
+                className="docker-logs-nav-btn"
+                onClick={() => jumpToMatch(-1)}
+                disabled={totalMatches === 0}
+                aria-label="Previous match"
+              >
+                <ChevronUp size={12} />
+              </button>
+              <button
+                className="docker-logs-nav-btn"
+                onClick={() => jumpToMatch(1)}
+                disabled={totalMatches === 0}
+                aria-label="Next match"
+              >
+                <ChevronDown size={12} />
+              </button>
+            </>
+          )}
+        </div>
+        <div className="docker-logs-toolbar">
+          <Calendar size={12} className="docker-logs-range-icon" />
+          <input
+            type="datetime-local"
+            className="docker-logs-range-input"
+            value={rangeFrom}
+            onChange={(e) => { setRangeFrom(e.target.value); setRangeError(null); }}
+            aria-label="Range from"
+          />
+          <span className="docker-logs-range-sep">→</span>
+          <input
+            type="datetime-local"
+            className="docker-logs-range-input"
+            value={rangeTo}
+            onChange={(e) => { setRangeTo(e.target.value); setRangeError(null); }}
+            aria-label="Range to"
+          />
+          <button
+            className="docker-logs-range-btn"
+            onClick={applyRange}
+            disabled={logsLoading || !rangeFrom || !rangeTo}
+          >
+            Apply
+          </button>
+          {rangeActive && (
+            <button className="docker-logs-range-btn" onClick={clearRange} disabled={logsLoading}>
+              Clear
+            </button>
+          )}
+          {rangeError && <span className="docker-logs-range-error">{rangeError}</span>}
+        </div>
+        <pre ref={logsRef} className="docker-logs-content">
+          {logsLoading && logs === null ? "Loading logs..." : highlighted ? (
+            highlighted.nodes.map((node, i) =>
+              typeof node === "string" ? (
+                <span key={i}>{node}</span>
+              ) : (
+                <mark
+                  key={i}
+                  ref={(el) => { matchElsRef.current[node.idx] = el; }}
+                  className={`docker-logs-mark${node.idx === currentMatch ? " docker-logs-mark-current" : ""}`}
+                >
+                  {node.text}
+                </mark>
+              )
+            )
+          ) : logs}
+        </pre>
       </div>
     );
   }
