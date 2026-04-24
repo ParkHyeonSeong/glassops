@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean dev dev-down shell prod status update
+.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs
 
 # Default port
 PORT ?= 7440
@@ -61,3 +61,23 @@ update: ## Pull latest and rebuild
 	@echo ""
 	@echo "  Updated and running at http://localhost:$(PORT)"
 	@echo ""
+
+agent-up: ## Start agent only (remote host monitoring, no GPU)
+	@test -f agent.env || (echo "  Missing agent.env — copy agent.env.example and edit" && exit 1)
+	docker compose -f docker-compose.agent.yml up -d --build
+	@echo ""
+	@echo "  Agent running — docker logs -f glassops-agent"
+	@echo ""
+
+agent-up-gpu: ## Start agent only with NVIDIA GPU access
+	@test -f agent.env || (echo "  Missing agent.env — copy agent.env.example and edit" && exit 1)
+	docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
+	@echo ""
+	@echo "  Agent (GPU) running — docker logs -f glassops-agent"
+	@echo ""
+
+agent-down: ## Stop agent
+	docker compose -f docker-compose.agent.yml down
+
+agent-logs: ## Tail agent logs
+	docker logs -f glassops-agent

@@ -1,0 +1,20 @@
+services:
+  glassops-agent:
+    build: ./agent
+    image: glassops-agent
+    container_name: glassops-agent
+    restart: unless-stopped
+    pid: host
+    privileged: true
+    network_mode: host
+    group_add:
+      - docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /var/log:/host/log:ro
+      - /etc/os-release:/host/os-release:ro
+    environment:
+      - HOST_PROC=/host/proc
+      - HOST_LOG=/host/log
+    env_file: agent.env
