@@ -157,8 +157,8 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
       const history = [...existing.history, data].slice(-MAX_HISTORY);
       const agents = { ...state.agents, [agentId]: { current: data, history } };
       const agentIds = Object.keys(agents);
-      const selectedId = state.selectedAgentId ?? agentId;
-      return { agents, agentIds, ...deriveSelected(agents, selectedId) };
+      const selectedAgentId = state.selectedAgentId ?? agentId;
+      return { agents, agentIds, selectedAgentId, ...deriveSelected(agents, selectedAgentId) };
     });
   },
 
@@ -181,8 +181,8 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
         },
       };
       const agentIds = Object.keys(agents);
-      const selectedId = state.selectedAgentId ?? agentId;
-      return { agents, agentIds, ...deriveSelected(agents, selectedId) };
+      const selectedAgentId = state.selectedAgentId ?? agentId;
+      return { agents, agentIds, selectedAgentId, ...deriveSelected(agents, selectedAgentId) };
     });
   },
 }));
