@@ -2,7 +2,7 @@ services:
   glassops:
     build: .
     ports:
-      - "127.0.0.1:${GLASSOPS_PORT:-7440}:7440"
+      - "${GLASSOPS_BIND:-127.0.0.1}:${GLASSOPS_PORT:-7440}:7440"
     pid: host
     privileged: true
     volumes:
