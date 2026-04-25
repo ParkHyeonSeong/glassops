@@ -64,14 +64,16 @@ update: ## Pull latest and rebuild
 
 agent-up: ## Start agent only (remote host monitoring, no GPU)
 	@test -f agent.env || (echo "  Missing agent.env — copy agent.env.example and edit" && exit 1)
-	docker compose -f docker-compose.agent.yml up -d --build
+	GLASSOPS_DOCKER_GID=$$(getent group docker | cut -d: -f3) \
+	  docker compose -f docker-compose.agent.yml up -d --build
 	@echo ""
 	@echo "  Agent running — docker logs -f glassops-agent"
 	@echo ""
 
 agent-up-gpu: ## Start agent only with NVIDIA GPU access
 	@test -f agent.env || (echo "  Missing agent.env — copy agent.env.example and edit" && exit 1)
-	docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
+	GLASSOPS_DOCKER_GID=$$(getent group docker | cut -d: -f3) \
+	  docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
 	@echo ""
 	@echo "  Agent (GPU) running — docker logs -f glassops-agent"
 	@echo ""

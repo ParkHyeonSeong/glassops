@@ -74,6 +74,26 @@ async def handle_agent_ws(ws: WebSocket) -> None:
                     agent_rpc.resolve(rpc_id, data)
                 continue
 
+            if msg_type == "rpc.chunk":
+                rpc_id = data.get("id")
+                chunk = data.get("data", "")
+                if isinstance(rpc_id, str) and isinstance(chunk, str):
+                    await agent_rpc.on_chunk(rpc_id, chunk)
+                continue
+
+            if msg_type == "rpc.end":
+                rpc_id = data.get("id")
+                if isinstance(rpc_id, str):
+                    agent_rpc.on_end(rpc_id, None)
+                continue
+
+            if msg_type == "rpc.err":
+                rpc_id = data.get("id")
+                err = data.get("error") or "Stream error"
+                if isinstance(rpc_id, str):
+                    agent_rpc.on_end(rpc_id, str(err))
+                continue
+
             # Default path: metric ingestion
             timestamp = data.get("timestamp", 0)
             if not isinstance(timestamp, (int, float)) or timestamp <= 0:

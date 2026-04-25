@@ -20,6 +20,7 @@ from app.routers.process import router as process_router
 from app.routers.alerts import router as alerts_router
 from app.routers.settings import router as settings_router
 from app.websocket.terminal_ws import handle_terminal_ws
+from app.websocket.docker_logs_ws import handle_docker_logs_ws
 
 logger = logging.getLogger("glassops")
 
@@ -165,3 +166,8 @@ async def ws_agent(ws: WebSocket):
 @app.websocket("/ws/client")
 async def ws_client(ws: WebSocket):
     await handle_client_ws(ws)
+
+
+@app.websocket("/ws/docker/logs")
+async def ws_docker_logs(ws: WebSocket):
+    await handle_docker_logs_ws(ws)

@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Play, Square, RotateCw, FileText, ChevronLeft, Search, ChevronUp, ChevronDown, X, Calendar } from "lucide-react";
 import { useMetricsStore, type ContainerInfo } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
+import { useLogStream } from "../../hooks/useLogStream";
 
 type DockerTab = "containers" | "images" | "volumes" | "networks";
 
 const TAIL_INITIAL = 300;
 const TAIL_MAX = 2000;
-const nextTail = (t: number) => (t < 1000 ? 1000 : TAIL_MAX);
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -52,6 +52,7 @@ export default function DockerManager() {
 /* ── Containers ── */
 function ContainersTab() {
   const current = useMetricsStore((s) => s.current);
+  const agentId = useMetricsStore((s) => s.agentId);
   const containers: ContainerInfo[] = current?.containers ?? [];
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -60,7 +61,6 @@ function ContainersTab() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "logs">("list");
-  const [tailCount, setTailCount] = useState(TAIL_INITIAL);
   const [keyword, setKeyword] = useState("");
   const [currentMatchRaw, setCurrentMatchRaw] = useState(0);
   const [rangeFrom, setRangeFrom] = useState("");
@@ -74,6 +74,22 @@ function ContainersTab() {
   const logsRequestIdRef = useRef(0);
   const matchElsRef = useRef<Array<HTMLElement | null>>([]);
   const scrollToMatchRef = useRef(false);
+  // Live-tail follow: when user is near the bottom we auto-scroll new chunks into view.
+  const followRef = useRef(true);
+
+  const handleLogChunk = useCallback((chunk: string) => {
+    setLogs((prev) => (prev ?? "") + chunk);
+  }, []);
+
+  // Streaming is active in the logs view as long as no historical date range is applied.
+  const streamEnabled = view === "logs" && !!selectedId && !rangeActive;
+  const stream = useLogStream({
+    containerId: streamEnabled ? selectedId : null,
+    agentId: agentId ?? null,
+    tail: TAIL_INITIAL,
+    enabled: streamEnabled,
+    onLine: handleLogChunk,
+  });
 
   useEffect(() => {
     if (selectedId && !containers.find((c) => c.id === selectedId)) {
@@ -138,23 +154,16 @@ function ContainersTab() {
   const showLogs = useCallback((containerId: string) => {
     setSelectedId(containerId);
     setView("logs");
-    setLogs(null);
-    setTailCount(TAIL_INITIAL);
+    setLogs("");
     setKeyword("");
     setCurrentMatchRaw(0);
     setRangeFrom("");
     setRangeTo("");
     setRangeActive(false);
     setRangeError(null);
-    fetchLogs(containerId, TAIL_INITIAL, false);
-  }, [fetchLogs]);
-
-  const loadOlder = useCallback(() => {
-    if (!selectedId || tailCount >= TAIL_MAX) return;
-    const nt = nextTail(tailCount);
-    setTailCount(nt);
-    fetchLogs(selectedId, nt, true);
-  }, [selectedId, tailCount, fetchLogs]);
+    followRef.current = true;
+    // Stream takes over from here; no initial fetch needed.
+  }, []);
 
   const applyRange = useCallback(() => {
     if (!selectedId) return;
@@ -183,9 +192,10 @@ function ContainersTab() {
     setRangeTo("");
     setRangeActive(false);
     setRangeError(null);
-    setTailCount(TAIL_INITIAL);
-    fetchLogs(selectedId, TAIL_INITIAL, false);
-  }, [selectedId, fetchLogs]);
+    setLogs("");
+    followRef.current = true;
+    // Streaming will resume automatically via the useLogStream hook.
+  }, [selectedId]);
 
   useEffect(() => {
     if (logs === null || !logsRef.current) return;
@@ -193,10 +203,24 @@ function ContainersTab() {
       const delta = logsRef.current.scrollHeight - prevScrollHeightRef.current;
       logsRef.current.scrollTop = prevScrollTopRef.current + delta;
       preserveScrollRef.current = false;
-    } else {
+      return;
+    }
+    if (rangeActive) {
+      // Historical view: jump to bottom on each fetch (mirrors prior behavior).
+      logsRef.current.scrollTop = logsRef.current.scrollHeight;
+      return;
+    }
+    if (followRef.current) {
       logsRef.current.scrollTop = logsRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, rangeActive]);
+
+  const handleLogScroll = useCallback(() => {
+    const el = logsRef.current;
+    if (!el) return;
+    // Follow when within 50px of bottom; pause when the user scrolls up.
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  }, []);
 
   const highlighted = useMemo(() => {
     if (!logs || !keyword) return null;
@@ -257,14 +281,12 @@ function ContainersTab() {
           </button>
           <span className="docker-logs-title">{container?.name ?? selectedId}</span>
           {!rangeActive && (
-            <button
-              className="docker-logs-load-more"
-              onClick={loadOlder}
-              disabled={logsLoading || tailCount >= TAIL_MAX}
-              aria-label="Load older logs"
-            >
-              {tailCount >= TAIL_MAX ? `Max (${TAIL_MAX})` : `Load older (${nextTail(tailCount)})`}
-            </button>
+            <span className="docker-logs-stream-status" data-status={stream.status}>
+              {stream.status === "streaming" && "● Live"}
+              {stream.status === "connecting" && "Connecting…"}
+              {stream.status === "ended" && "Ended"}
+              {stream.status === "error" && (stream.error ?? "Error")}
+            </span>
           )}
           {rangeActive && (
             <span className="docker-logs-range-badge">Date range</span>
@@ -350,8 +372,8 @@ function ContainersTab() {
           )}
           {rangeError && <span className="docker-logs-range-error">{rangeError}</span>}
         </div>
-        <pre ref={logsRef} className="docker-logs-content">
-          {logsLoading && logs === null ? "Loading logs..." : highlighted ? (
+        <pre ref={logsRef} className="docker-logs-content" onScroll={handleLogScroll}>
+          {logsLoading && !logs ? "Loading logs..." : highlighted ? (
             highlighted.nodes.map((node, i) =>
               typeof node === "string" ? (
                 <span key={i}>{node}</span>

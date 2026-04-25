@@ -1,4 +1,9 @@
-"""RPC handlers — invoked by ws_client when an rpc.req arrives from the backend."""
+"""RPC handlers — invoked by ws_client when an rpc.req arrives from the backend.
+
+Two registries:
+  - HANDLERS:        unary `params -> result_dict`
+  - STREAM_HANDLERS: generator `params -> Iterator[str]`, each yielded string is a chunk.
+"""
 
 import logging
 import os
@@ -7,7 +12,7 @@ import signal
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger("glassops.agent.rpc")
 
@@ -236,8 +241,43 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
 }
 
 
+# ── stream handlers ──────────────────────────────────────────────────
+
+
+def docker_logs_follow(params: dict) -> Iterator[str]:
+    """Tail container logs as a stream. Yields decoded chunks until cancelled or container exits."""
+    cid = params.get("container_id", "")
+    if not _SAFE_NAME.match(cid):
+        raise ValueError("Invalid container ID")
+    tail = max(1, min(int(params.get("tail", 200)), 5000))
+
+    c = _docker_client().containers.get(cid)
+    # `stream=True, follow=True` returns a blocking iterator of bytes.
+    for raw in c.logs(stream=True, follow=True, tail=tail, timestamps=True):
+        if isinstance(raw, bytes):
+            yield raw.decode("utf-8", errors="replace")
+        elif raw is not None:
+            yield str(raw)
+
+
+STREAM_HANDLERS: dict[str, Callable[[dict], Iterator[str]]] = {
+    "docker.logs.follow": docker_logs_follow,
+}
+
+
 def dispatch(method: str, params: dict) -> dict:
     handler = HANDLERS.get(method)
     if handler is None:
         raise ValueError(f"Unknown RPC method: {method}")
     return handler(params or {})
+
+
+def dispatch_stream(method: str, params: dict) -> Iterator[str]:
+    handler = STREAM_HANDLERS.get(method)
+    if handler is None:
+        raise ValueError(f"Unknown RPC stream method: {method}")
+    return handler(params or {})
+
+
+def is_stream(method: str) -> bool:
+    return method in STREAM_HANDLERS
