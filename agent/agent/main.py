@@ -12,7 +12,7 @@ from agent.collectors.gpu import collect_gpu, shutdown_nvml
 from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
-from agent.transport.ws_client import MetricsPusher
+from agent.transport.ws_client import MetricsPusher, serve_rpc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +51,7 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     pusher = MetricsPusher()
+    rpc_task = asyncio.create_task(serve_rpc(pusher, stop))
 
     # Initial CPU percent call to prime psutil (first call always returns 0)
     import psutil
@@ -85,6 +86,11 @@ async def main() -> None:
         except asyncio.TimeoutError:
             pass
 
+    rpc_task.cancel()
+    try:
+        await rpc_task
+    except asyncio.CancelledError:
+        pass
     await pusher.close()
     shutdown_nvml()
     logger.info("Agent stopped.")

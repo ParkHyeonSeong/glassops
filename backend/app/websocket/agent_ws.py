@@ -1,4 +1,4 @@
-"""WebSocket endpoint for agent metric ingestion."""
+"""WebSocket endpoint for agent metric ingestion and RPC."""
 
 import hmac
 import json
@@ -10,11 +10,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.database import store_metric
 from app.websocket.client_ws import broadcast_to_clients
 from app.services.alert_service import check_and_alert
+from app.services import agent_rpc
 
 logger = logging.getLogger("glassops.agent_ws")
 
 AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-MAX_MESSAGE_SIZE = 65_536  # 64KB
+MAX_MESSAGE_SIZE = 1_048_576  # 1MB — RPC responses (e.g., container logs) can be sizable
 
 # Connected agents: agent_id -> WebSocket
 connected_agents: dict[str, WebSocket] = {}
@@ -65,6 +66,15 @@ async def handle_agent_ws(ws: WebSocket) -> None:
             if not isinstance(data, dict):
                 continue
 
+            msg_type = data.get("type", "metric")
+
+            if msg_type == "rpc.res":
+                rpc_id = data.get("id")
+                if isinstance(rpc_id, str):
+                    agent_rpc.resolve(rpc_id, data)
+                continue
+
+            # Default path: metric ingestion
             timestamp = data.get("timestamp", 0)
             if not isinstance(timestamp, (int, float)) or timestamp <= 0:
                 continue
@@ -90,3 +100,4 @@ async def handle_agent_ws(ws: WebSocket) -> None:
     finally:
         if connected_agents.get(agent_id) is ws:
             connected_agents.pop(agent_id, None)
+        agent_rpc.cancel_for_agent(agent_id)

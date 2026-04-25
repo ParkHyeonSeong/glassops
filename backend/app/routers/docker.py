@@ -1,12 +1,14 @@
-"""Docker REST API router."""
+"""Docker REST API router — local agent calls go straight to docker SDK; remote agents go via RPC."""
 
 import re
 from datetime import datetime
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from typing import Literal, Optional
 from pydantic import BaseModel
 
+from app.config import settings
+from app.services.agent_dispatch import call_remote, is_local
 from app.services.docker_service import (
     list_containers,
     container_action,
@@ -28,31 +30,41 @@ def _validate_id(container_id: str) -> str:
     return container_id
 
 
+def _agent_param() -> str:
+    return Query(settings.local_agent_id, description="Agent ID; defaults to local")
+
+
 class ActionRequest(BaseModel):
     action: Literal["start", "stop", "restart"]
 
 
 @router.get("/containers")
-async def get_containers():
-    return {"containers": list_containers()}
+async def get_containers(agent_id: str = _agent_param()):
+    if is_local(agent_id):
+        return {"containers": list_containers()}
+    return await call_remote(agent_id, "docker.list")
 
 
 @router.get("/containers/{container_id}")
-async def get_container(container_id: str):
+async def get_container(container_id: str, agent_id: str = _agent_param()):
     cid = _validate_id(container_id)
-    result = container_detail(cid)
-    if not result.get("ok"):
-        raise HTTPException(404, result.get("error", "Not found"))
-    return result
+    if is_local(agent_id):
+        result = container_detail(cid)
+        if not result.get("ok"):
+            raise HTTPException(404, result.get("error", "Not found"))
+        return result
+    return await call_remote(agent_id, "docker.detail", {"container_id": cid})
 
 
 @router.post("/containers/{container_id}/action")
-async def post_action(container_id: str, body: ActionRequest):
+async def post_action(container_id: str, body: ActionRequest, agent_id: str = _agent_param()):
     cid = _validate_id(container_id)
-    result = container_action(cid, body.action)
-    if not result.get("ok"):
-        raise HTTPException(400, result.get("error", "Action failed"))
-    return result
+    if is_local(agent_id):
+        result = container_action(cid, body.action)
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Action failed"))
+        return result
+    return await call_remote(agent_id, "docker.action", {"container_id": cid, "action": body.action})
 
 
 @router.get("/containers/{container_id}/logs")
@@ -61,6 +73,7 @@ async def get_logs(
     tail: int = 200,
     since: Optional[str] = Query(None, description="ISO8601 datetime"),
     until: Optional[str] = Query(None, description="ISO8601 datetime"),
+    agent_id: str = _agent_param(),
 ):
     cid = _validate_id(container_id)
 
@@ -77,22 +90,38 @@ async def get_logs(
     if since_dt and until_dt and since_dt >= until_dt:
         raise HTTPException(400, "'since' must be before 'until'")
 
-    result = container_logs(cid, max(1, min(tail, 2000)), since_dt, until_dt)
-    if not result.get("ok"):
-        raise HTTPException(404, result.get("error", "Not found"))
-    return result
+    tail = max(1, min(tail, 2000))
+
+    if is_local(agent_id):
+        result = container_logs(cid, tail, since_dt, until_dt)
+        if not result.get("ok"):
+            raise HTTPException(404, result.get("error", "Not found"))
+        return result
+
+    params: dict = {"container_id": cid, "tail": tail}
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
+    return await call_remote(agent_id, "docker.logs", params)
 
 
 @router.get("/images")
-async def get_images():
-    return {"images": list_images()}
+async def get_images(agent_id: str = _agent_param()):
+    if is_local(agent_id):
+        return {"images": list_images()}
+    return await call_remote(agent_id, "docker.images")
 
 
 @router.get("/volumes")
-async def get_volumes():
-    return {"volumes": list_volumes()}
+async def get_volumes(agent_id: str = _agent_param()):
+    if is_local(agent_id):
+        return {"volumes": list_volumes()}
+    return await call_remote(agent_id, "docker.volumes")
 
 
 @router.get("/networks")
-async def get_networks():
-    return {"networks": list_networks()}
+async def get_networks(agent_id: str = _agent_param()):
+    if is_local(agent_id):
+        return {"networks": list_networks()}
+    return await call_remote(agent_id, "docker.networks")
