@@ -390,6 +390,7 @@ async def create_user(email: str, password_hash: str, role: str = "user", must_c
         await db.commit()
         return True
     except Exception:
+        logger.exception("create_user failed for %s", email)
         return False
 
 

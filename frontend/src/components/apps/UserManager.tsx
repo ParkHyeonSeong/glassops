@@ -119,6 +119,21 @@ export default function UserManager() {
   );
 }
 
+function formatError(detail: unknown): string | null {
+  if (!detail) return null;
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object") {
+    const d = detail as { error?: string; checks?: Record<string, boolean> };
+    if (d.error && d.checks) {
+      const failed = Object.entries(d.checks).filter(([, ok]) => !ok).map(([k]) => k);
+      return failed.length ? `${d.error} (missing: ${failed.join(", ")})` : d.error;
+    }
+    if (d.error) return d.error;
+    try { return JSON.stringify(detail); } catch { return null; }
+  }
+  return String(detail);
+}
+
 function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -136,7 +151,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(typeof data.detail === "string" ? data.detail : "Failed to create user");
+        setError(formatError(data.detail) || `Request failed (${res.status})`);
         return;
       }
       onCreated();
@@ -235,7 +250,7 @@ function EditUserDialog({ email, isSelf, knownAgentIds, onClose, onChanged }: {
       });
       if (!userRes.ok) {
         const data = await userRes.json().catch(() => ({}));
-        setError(typeof data.detail === "string" ? data.detail : "Failed to update user");
+        setError(formatError(data.detail) || `Update failed (${userRes.status})`);
         return;
       }
       const hostRes = await fetchWithAuth(`/api/users/${encodeURIComponent(email)}/hosts`, {
@@ -244,7 +259,7 @@ function EditUserDialog({ email, isSelf, knownAgentIds, onClose, onChanged }: {
       });
       if (!hostRes.ok) {
         const data = await hostRes.json().catch(() => ({}));
-        setError(typeof data.detail === "string" ? data.detail : "Failed to save host accounts");
+        setError(formatError(data.detail) || `Save failed (${hostRes.status})`);
         return;
       }
       onChanged();
@@ -263,7 +278,7 @@ function EditUserDialog({ email, isSelf, knownAgentIds, onClose, onChanged }: {
       const res = await fetchWithAuth(`/api/users/${encodeURIComponent(email)}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(typeof data.detail === "string" ? data.detail : "Failed to delete user");
+        setError(formatError(data.detail) || `Delete failed (${res.status})`);
         return;
       }
       onChanged();
