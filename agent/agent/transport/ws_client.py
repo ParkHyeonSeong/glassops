@@ -18,7 +18,13 @@ from websockets.exceptions import (
 )
 
 from agent.config import AGENT_ID, AGENT_KEY, SERVER_URL
-from agent.rpc import dispatch as rpc_dispatch, dispatch_stream, is_stream
+from agent.rpc import (
+    dispatch as rpc_dispatch,
+    dispatch_stream,
+    is_stream,
+    is_bidi_stream,
+    BIDI_STREAM_HANDLERS,
+)
 
 logger = logging.getLogger("glassops.agent")
 
@@ -98,6 +104,43 @@ class MetricsPusher:
 # rpc_id -> Task running the stream
 _active_streams: dict[str, asyncio.Task] = {}
 
+# rpc_id -> StreamContext (only for BIDI streams that accept inbound control messages)
+_active_bidi_ctx: dict[str, "StreamContext"] = {}
+
+
+class StreamContext:
+    """Hands a bidirectional stream handler a way to push chunks out and read control messages in."""
+
+    def __init__(self, pusher: "MetricsPusher", rpc_id: str) -> None:
+        self._pusher = pusher
+        self._rpc_id = rpc_id
+        self._control: asyncio.Queue = asyncio.Queue()
+        self._cancelled = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    async def send_chunk(self, data: str) -> None:
+        await self._pusher.send({"type": "rpc.chunk", "id": self._rpc_id, "data": data})
+
+    async def recv_control(self) -> dict | None:
+        """Returns next control message, or None if cancelled."""
+        if self._cancelled:
+            return None
+        return await self._control.get()
+
+    def push_control(self, msg: dict) -> None:
+        self._control.put_nowait(msg)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        # Unblock any pending recv_control with a sentinel.
+        try:
+            self._control.put_nowait({"type": "rpc.cancel"})
+        except Exception:
+            pass
+
 
 async def _run_unary(pusher: MetricsPusher, rpc_id: str, method: str, params: dict) -> None:
     loop = asyncio.get_running_loop()
@@ -157,8 +200,32 @@ async def _run_stream(pusher: MetricsPusher, rpc_id: str, method: str, params: d
             producer_task.cancel()
 
 
+async def _run_bidi(pusher: MetricsPusher, rpc_id: str, method: str, params: dict) -> None:
+    """Drive a bidirectional async handler. Handler is responsible for ending."""
+    ctx = StreamContext(pusher, rpc_id)
+    _active_bidi_ctx[rpc_id] = ctx
+    handler = BIDI_STREAM_HANDLERS[method]
+    try:
+        await handler(params, ctx)
+        await pusher.send({"type": "rpc.end", "id": rpc_id})
+    except asyncio.CancelledError:
+        try:
+            await pusher.send({"type": "rpc.end", "id": rpc_id})
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        logger.warning("BIDI stream '%s' failed: %s", method, e)
+        try:
+            await pusher.send({"type": "rpc.err", "id": rpc_id, "error": f"{type(e).__name__}: {e}"})
+        except Exception:
+            pass
+    finally:
+        _active_bidi_ctx.pop(rpc_id, None)
+
+
 async def serve_rpc(pusher: MetricsPusher, stop: asyncio.Event) -> None:
-    """Receive loop — handles rpc.req / rpc.cancel from the backend."""
+    """Receive loop — handles rpc.req / rpc.cancel / rpc.input / rpc.resize from the backend."""
     while not stop.is_set():
         if not pusher.connected or pusher.ws is None:
             await asyncio.sleep(0.5)
@@ -188,9 +255,18 @@ async def serve_rpc(pusher: MetricsPusher, stop: asyncio.Event) -> None:
             continue
 
         if msg_type == "rpc.cancel":
+            ctx = _active_bidi_ctx.get(rpc_id)
+            if ctx is not None:
+                ctx.cancel()
             task = _active_streams.pop(rpc_id, None)
             if task and not task.done():
                 task.cancel()
+            continue
+
+        if msg_type in ("rpc.input", "rpc.resize"):
+            ctx = _active_bidi_ctx.get(rpc_id)
+            if ctx is not None:
+                ctx.push_control(msg)
             continue
 
         if msg_type != "rpc.req":
@@ -201,7 +277,15 @@ async def serve_rpc(pusher: MetricsPusher, stop: asyncio.Event) -> None:
         if not isinstance(method, str):
             continue
 
-        if is_stream(method):
+        if is_bidi_stream(method):
+            task = asyncio.create_task(_run_bidi(pusher, rpc_id, method, params))
+            _active_streams[rpc_id] = task
+
+            def _cleanup_bidi(t: asyncio.Task, rid: str = rpc_id) -> None:
+                _active_streams.pop(rid, None)
+
+            task.add_done_callback(_cleanup_bidi)
+        elif is_stream(method):
             task = asyncio.create_task(_run_stream(pusher, rpc_id, method, params))
             _active_streams[rpc_id] = task
 

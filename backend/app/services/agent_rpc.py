@@ -162,6 +162,15 @@ async def cancel_stream(rpc_id: str) -> None:
         pass
 
 
+async def send_control(rpc_id: str, payload: dict) -> None:
+    """Send an in-stream control message (e.g., terminal stdin / resize) for an active stream."""
+    state = _streams.get(rpc_id)
+    if state is None:
+        raise RpcError(f"Stream '{rpc_id}' is not active")
+    msg = {**payload, "id": rpc_id}
+    await _send(state.agent_id, msg)
+
+
 async def on_chunk(rpc_id: str, data: str) -> None:
     """Called by agent_ws when rpc.chunk arrives."""
     state = _streams.get(rpc_id)

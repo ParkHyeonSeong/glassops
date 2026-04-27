@@ -1,4 +1,9 @@
-"""PTY terminal service — spawns shell and bridges to WebSocket."""
+"""PTY terminal session — used by the agent to spawn a shell on the host.
+
+Mirrors backend/app/services/terminal_service.py with one extension:
+`spawn(host_user)` accepts a per-call host username override so the dashboard
+can pick the local account based on the GlassOps user's mapping.
+"""
 
 import asyncio
 import fcntl
@@ -10,7 +15,7 @@ import signal
 import struct
 import termios
 
-logger = logging.getLogger("glassops.terminal")
+logger = logging.getLogger("glassops.agent.terminal")
 
 SESSION_TIMEOUT = 300  # 5 minutes idle
 
@@ -37,20 +42,17 @@ class TerminalSession:
         return asyncio.get_event_loop().time() - self._last_activity
 
     def spawn(self, host_user: str | None = None) -> None:
-        """Spawn a shell in a PTY. Uses nsenter for host access if pid=host."""
+        """Spawn a shell in a PTY. Uses nsenter to reach the host (pid=host)."""
         master_fd, slave_fd = pty.openpty()
 
-        # Detect if we can access host via nsenter (pid=host mode)
         use_nsenter = os.path.exists("/host/proc/1/ns/pid")
-        terminal_user = (host_user or "").strip() or os.environ.get("GLASSOPS_TERMINAL_USER", "")
+        terminal_user = host_user or os.environ.get("GLASSOPS_TERMINAL_USER", "")
 
         if use_nsenter:
             if terminal_user:
-                # nsenter to host, then su to user (will prompt for password)
                 cmd = ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
                        "su", "-", terminal_user]
             else:
-                # No user specified — drop to login prompt
                 cmd = ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
                        "login"]
         else:
@@ -58,7 +60,7 @@ class TerminalSession:
 
         child_pid = os.fork()
         if child_pid == 0:
-            # Child process
+            # Child
             os.close(master_fd)
             os.setsid()
             fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
@@ -71,11 +73,10 @@ class TerminalSession:
             os.environ["HOME"] = os.environ.get("HOME", "/root")
             os.execvp(cmd[0], cmd)
         else:
-            # Parent
             os.close(slave_fd)
             self.master_fd = master_fd
             self.pid = child_pid
-            logger.info("Terminal spawned: pid=%d, nsenter=%s", child_pid, use_nsenter)
+            logger.info("Terminal spawned: pid=%d nsenter=%s user=%s", child_pid, use_nsenter, terminal_user or "(login)")
 
     async def read(self) -> bytes:
         if self.master_fd is None:

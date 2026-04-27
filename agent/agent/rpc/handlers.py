@@ -1,10 +1,14 @@
 """RPC handlers — invoked by ws_client when an rpc.req arrives from the backend.
 
-Two registries:
-  - HANDLERS:        unary `params -> result_dict`
-  - STREAM_HANDLERS: generator `params -> Iterator[str]`, each yielded string is a chunk.
+Three registries:
+  - HANDLERS:             unary `params -> result_dict`
+  - STREAM_HANDLERS:      generator `params -> Iterator[str]`, each yield is a chunk.
+  - BIDI_STREAM_HANDLERS: async `(params, ctx) -> None`, with ctx.send_chunk()
+                          and ctx.recv_control() for in-flight stdin / resize messages.
 """
 
+import asyncio
+import base64
 import logging
 import os
 import re
@@ -12,7 +16,7 @@ import signal
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 
 logger = logging.getLogger("glassops.agent.rpc")
 
@@ -266,6 +270,80 @@ STREAM_HANDLERS: dict[str, Callable[[dict], Iterator[str]]] = {
 }
 
 
+# ── bidirectional stream handlers ────────────────────────────────────
+
+
+async def terminal_open(params: dict, ctx: Any) -> None:
+    """Spawn a host PTY and bridge bytes between it and the backend WebSocket.
+
+    Inbound (`ctx.recv_control`):
+      {"type": "rpc.input",  "data": "<base64 bytes>"}   → write to PTY
+      {"type": "rpc.resize", "rows": int, "cols": int}   → TIOCSWINSZ
+      {"type": "rpc.cancel"}                             → tear down
+
+    Outbound (`ctx.send_chunk`): base64-encoded PTY stdout chunks.
+    """
+    from agent.terminal import TerminalSession
+
+    host_user = (params.get("host_user") or "").strip() or None
+    rows = int(params.get("rows") or 24)
+    cols = int(params.get("cols") or 80)
+
+    session = TerminalSession()
+    try:
+        session.spawn(host_user)
+    except Exception as e:
+        raise RuntimeError(f"Failed to spawn terminal: {e}") from e
+    try:
+        session.resize(rows, cols)
+    except Exception:
+        pass
+
+    async def reader() -> None:
+        while session.is_alive:
+            data = await session.read()
+            if data:
+                await ctx.send_chunk(base64.b64encode(data).decode("ascii"))
+
+    async def controller() -> None:
+        while True:
+            msg = await ctx.recv_control()
+            if msg is None:
+                return
+            t = msg.get("type")
+            if t == "rpc.cancel":
+                return
+            if t == "rpc.input":
+                raw = msg.get("data") or ""
+                try:
+                    session.write(base64.b64decode(raw))
+                except Exception:
+                    pass
+            elif t == "rpc.resize":
+                try:
+                    session.resize(int(msg.get("rows", 24)), int(msg.get("cols", 80)))
+                except Exception:
+                    pass
+
+    reader_task = asyncio.create_task(reader())
+    controller_task = asyncio.create_task(controller())
+
+    try:
+        done, pending = await asyncio.wait(
+            {reader_task, controller_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+    finally:
+        session.kill()
+
+
+BIDI_STREAM_HANDLERS: dict[str, Callable[[dict, Any], Awaitable[None]]] = {
+    "terminal.open": terminal_open,
+}
+
+
 def dispatch(method: str, params: dict) -> dict:
     handler = HANDLERS.get(method)
     if handler is None:
@@ -282,3 +360,7 @@ def dispatch_stream(method: str, params: dict) -> Iterator[str]:
 
 def is_stream(method: str) -> bool:
     return method in STREAM_HANDLERS
+
+
+def is_bidi_stream(method: str) -> bool:
+    return method in BIDI_STREAM_HANDLERS

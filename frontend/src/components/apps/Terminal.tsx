@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { useAuthStore } from "../../stores/authStore";
+import { useMetricsStore } from "../../stores/metricsStore";
 import "xterm/css/xterm.css";
 
 const WS_URL =
@@ -10,12 +11,24 @@ const WS_URL =
 
 export default function TerminalApp() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<XTerm | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const hostAccounts = useAuthStore((s) => s.hostAccounts);
+  const agentId = useMetricsStore((s) => s.agentId);
+
+  // The user can only open a shell on hosts they have a mapping for. The local
+  // agent gets an env-var fallback on the backend, so allow it through unconditionally.
+  const hasAccess = useMemo(() => {
+    if (!agentId) return false;
+    if (Object.prototype.hasOwnProperty.call(hostAccounts, agentId) && hostAccounts[agentId]) {
+      return true;
+    }
+    // Local-agent fallback: the backend may use GLASSOPS_TERMINAL_USER. We can't tell from
+    // here, so optimistically allow it; the backend will close the WS if it can't spawn.
+    return agentId === "local";
+  }, [agentId, hostAccounts]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || !agentId) return;
 
     const term = new XTerm({
       theme: {
@@ -45,25 +58,22 @@ export default function TerminalApp() {
     term.open(containerRef.current);
     fitAddon.fit();
     term.focus();
-    termRef.current = term;
 
-    // WebSocket connection with JWT token
-    const ws = new WebSocket(`${WS_URL}/terminal?token=${encodeURIComponent(accessToken || "")}`);
-    wsRef.current = ws;
+    if (!hasAccess) {
+      term.writeln(`\x1b[31mNo terminal access on '${agentId}'.\x1b[0m`);
+      term.writeln("Ask an admin to map a host account for you in Users.");
+      return () => { term.dispose(); };
+    }
 
+    const params = new URLSearchParams({ agent_id: agentId });
+    if (accessToken) params.set("token", accessToken);
+    const ws = new WebSocket(`${WS_URL}/terminal?${params.toString()}`);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
-      term.writeln("\x1b[36mConnected to GlassOps Terminal\x1b[0m");
+      term.writeln(`\x1b[36mConnected to ${agentId}\x1b[0m`);
       term.writeln("");
-      // Send initial resize
-      ws.send(
-        JSON.stringify({
-          type: "resize",
-          rows: term.rows,
-          cols: term.cols,
-        })
-      );
+      ws.send(JSON.stringify({ type: "resize", rows: term.rows, cols: term.cols }));
     };
 
     ws.onmessage = (event) => {
@@ -81,38 +91,31 @@ export default function TerminalApp() {
       }
     };
 
-    ws.onclose = () => {
-      term.writeln("\r\n\x1b[31mDisconnected\x1b[0m");
+    ws.onclose = (ev) => {
+      const reason = ev.reason || "Disconnected";
+      term.writeln(`\r\n\x1b[31m${reason}\x1b[0m`);
     };
 
-    // Terminal input → WebSocket
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
       }
     });
 
-    // Resize handling
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "resize",
-            rows: term.rows,
-            cols: term.cols,
-          })
-        );
+        ws.send(JSON.stringify({ type: "resize", rows: term.rows, cols: term.cols }));
       }
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
-      ws.close();
+      try { ws.close(); } catch { /* ignore */ }
       term.dispose();
     };
-  }, []);
+  }, [agentId, accessToken, hasAccess]);
 
   return (
     <div
