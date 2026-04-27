@@ -82,6 +82,16 @@ class JWTAuthMiddleware:
             await self._send_401(send, "Invalid or expired token")
             return
 
+        # Reject tokens that belong to disabled users (deferred import to avoid cycle).
+        from app.database import get_user
+        try:
+            user = await get_user(email)
+        except Exception:
+            user = None
+        if user and not user.get("is_active", True):
+            await self._send_403(send, "Account disabled")
+            return
+
         # Attach to scope state
         if "state" not in scope:
             scope["state"] = {}
@@ -91,10 +101,18 @@ class JWTAuthMiddleware:
 
     @staticmethod
     async def _send_401(send: Send, detail: str) -> None:
+        await JWTAuthMiddleware._send_status(send, 401, detail)
+
+    @staticmethod
+    async def _send_403(send: Send, detail: str) -> None:
+        await JWTAuthMiddleware._send_status(send, 403, detail)
+
+    @staticmethod
+    async def _send_status(send: Send, status: int, detail: str) -> None:
         body = json.dumps({"detail": detail}).encode()
         await send({
             "type": "http.response.start",
-            "status": 401,
+            "status": status,
             "headers": [
                 [b"content-type", b"application/json"],
                 [b"content-length", str(len(body)).encode()],

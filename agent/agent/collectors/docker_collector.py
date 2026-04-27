@@ -74,6 +74,21 @@ def _ensure_stats_thread():
         _stats_thread.start()
 
 
+def _safe_image_label(c) -> str:
+    """Return a display string for the container's image, tolerating dangling/deleted images."""
+    try:
+        img = c.image
+        if img.tags:
+            return str(img.tags[0])
+        return str(img.short_id)
+    except Exception:
+        # Image was removed but container still exists — fall back to raw image ref.
+        raw = c.attrs.get("Image", "") or c.attrs.get("Config", {}).get("Image", "")
+        if isinstance(raw, str) and raw.startswith("sha256:"):
+            return raw[7:19]
+        return raw or "<unknown>"
+
+
 def collect_containers() -> Optional[list[dict]]:
     if not _ensure_client():
         return None
@@ -90,7 +105,7 @@ def collect_containers() -> Optional[list[dict]]:
             info: dict = {
                 "id": c.short_id,
                 "name": c.name,
-                "image": str(c.image.tags[0]) if c.image.tags else str(c.image.short_id),
+                "image": _safe_image_label(c),
                 "status": c.status,
                 "state": c.attrs.get("State", {}).get("Status", "unknown"),
                 "created": c.attrs.get("Created", ""),

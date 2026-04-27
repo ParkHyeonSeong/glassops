@@ -92,7 +92,38 @@ async def init_db() -> None:
             totp_secret TEXT,
             totp_enabled INTEGER DEFAULT 0,
             must_change_password INTEGER DEFAULT 0,
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+
+    # Migrate older installs that lack role / is_active.
+    cursor = await db.execute("PRAGMA table_info(users)")
+    existing_cols = {row["name"] for row in await cursor.fetchall()}
+    if "role" not in existing_cols:
+        await db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if "is_active" not in existing_cols:
+        await db.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+
+    # Promote the earliest-created user to admin if no admin exists yet.
+    cursor = await db.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+    admin_count = (await cursor.fetchone())[0]
+    if admin_count == 0:
+        cursor = await db.execute("SELECT email FROM users ORDER BY created_at ASC LIMIT 1")
+        first = await cursor.fetchone()
+        if first:
+            await db.execute("UPDATE users SET role = 'admin' WHERE email = ?", (first["email"],))
+            logger.info("Promoted %s to admin (migration)", first["email"])
+
+    # User ↔ host (agent) account mappings — controls per-user terminal access per host.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_host_accounts (
+            user_email TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            host_user TEXT NOT NULL,
+            PRIMARY KEY (user_email, agent_id),
+            FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
         )
     """)
 
@@ -121,7 +152,7 @@ async def init_db() -> None:
 
         pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         await db.execute(
-            "INSERT INTO users (email, password_hash, must_change_password, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (email, password_hash, must_change_password, created_at, role, is_active) VALUES (?, ?, ?, ?, 'admin', 1)",
             (default_email, pw_hash, 1 if must_change else 0, time.time()),
         )
         logger.info("Admin user created: %s", default_email)
@@ -322,7 +353,83 @@ async def get_user(email: str) -> dict | None:
         "totp_secret": row["totp_secret"],
         "totp_enabled": bool(row["totp_enabled"]),
         "must_change_password": bool(row["must_change_password"]),
+        "role": row["role"] if "role" in row.keys() else "user",
+        "is_active": bool(row["is_active"]) if "is_active" in row.keys() else True,
+        "created_at": row["created_at"],
     }
+
+
+async def list_users() -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT email, role, is_active, totp_enabled, must_change_password, created_at "
+        "FROM users ORDER BY created_at ASC"
+    )
+    rows = await cursor.fetchall()
+    return [
+        {
+            "email": r["email"],
+            "role": r["role"],
+            "is_active": bool(r["is_active"]),
+            "totp_enabled": bool(r["totp_enabled"]),
+            "must_change_password": bool(r["must_change_password"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+async def create_user(email: str, password_hash: str, role: str = "user", must_change_password: bool = True) -> bool:
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO users (email, password_hash, must_change_password, created_at, role, is_active) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
+            (email, password_hash, 1 if must_change_password else 0, time.time(), role),
+        )
+        await db.commit()
+        return True
+    except Exception:
+        return False
+
+
+async def delete_user(email: str) -> bool:
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM users WHERE email = ?", (email,))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def count_active_admins() -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+    )
+    return (await cursor.fetchone())[0]
+
+
+async def get_user_host_accounts(user_email: str) -> dict[str, str]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT agent_id, host_user FROM user_host_accounts WHERE user_email = ?",
+        (user_email,),
+    )
+    rows = await cursor.fetchall()
+    return {r["agent_id"]: r["host_user"] for r in rows}
+
+
+async def set_user_host_accounts(user_email: str, mapping: dict[str, str]) -> None:
+    """Replace the user's host account map atomically. Empty `host_user` removes the entry."""
+    db = await get_db()
+    await db.execute("DELETE FROM user_host_accounts WHERE user_email = ?", (user_email,))
+    for agent_id, host_user in mapping.items():
+        if not host_user:
+            continue
+        await db.execute(
+            "INSERT INTO user_host_accounts (user_email, agent_id, host_user) VALUES (?, ?, ?)",
+            (user_email, agent_id, host_user),
+        )
+    await db.commit()
 
 
 # ── Runtime Config ───────────────────────────────────
@@ -386,7 +493,7 @@ async def cleanup_blacklist() -> int:
 
 # ── Users ────────────────────────────────────────────
 
-_ALLOWED_USER_FIELDS = {"password_hash", "totp_secret", "totp_enabled", "must_change_password"}
+_ALLOWED_USER_FIELDS = {"password_hash", "totp_secret", "totp_enabled", "must_change_password", "role", "is_active"}
 
 
 async def update_user(email: str, **fields) -> bool:

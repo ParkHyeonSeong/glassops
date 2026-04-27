@@ -46,6 +46,20 @@ def _get_client():
         return None
 
 
+def _safe_image_label(c) -> str:
+    """Return a display string for the container's image, tolerating dangling/deleted images."""
+    try:
+        img = c.image
+        if img.tags:
+            return str(img.tags[0])
+        return str(img.short_id)
+    except Exception:
+        raw = c.attrs.get("Image", "") or c.attrs.get("Config", {}).get("Image", "")
+        if isinstance(raw, str) and raw.startswith("sha256:"):
+            return raw[7:19]
+        return raw or "<unknown>"
+
+
 def list_containers() -> list[dict]:
     client = _get_client()
     if not client:
@@ -56,7 +70,7 @@ def list_containers() -> list[dict]:
             {
                 "id": c.short_id,
                 "name": c.name,
-                "image": str(c.image.tags[0]) if c.image.tags else str(c.image.short_id),
+                "image": _safe_image_label(c),
                 "status": c.status,
                 "state": c.attrs.get("State", {}).get("Status", "unknown"),
             }
@@ -119,7 +133,7 @@ def container_detail(container_id: str) -> dict:
             "ok": True,
             "id": container.short_id,
             "name": container.name,
-            "image": str(container.image.tags[0]) if container.image.tags else str(container.image.short_id),
+            "image": _safe_image_label(container),
             "status": container.status,
             "created": attrs.get("Created", ""),
             "ports": attrs.get("NetworkSettings", {}).get("Ports", {}),

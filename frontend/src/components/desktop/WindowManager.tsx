@@ -8,6 +8,7 @@ import ProcessViewer from "../apps/ProcessViewer";
 import LogViewer from "../apps/LogViewer";
 import TerminalApp from "../apps/Terminal";
 import SettingsApp from "../apps/Settings";
+import UserManager from "../apps/UserManager";
 import AppPlaceholder from "../apps/AppPlaceholder";
 
 function AppContent({ appId, title }: { appId: string; title: string }) {
@@ -28,6 +29,8 @@ function AppContent({ appId, title }: { appId: string; title: string }) {
       return <TerminalApp />;
     case "settings":
       return <SettingsApp />;
+    case "users":
+      return <UserManager />;
     default:
       return <AppPlaceholder appId={appId} title={title} />;
   }

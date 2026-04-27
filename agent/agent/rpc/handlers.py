@@ -76,11 +76,12 @@ def docker_detail(params: dict) -> dict:
         raise ValueError("Invalid container ID")
     c = _docker_client().containers.get(cid)
     attrs = c.attrs
+    from agent.collectors.docker_collector import _safe_image_label
     return {
         "ok": True,
         "id": c.short_id,
         "name": c.name,
-        "image": str(c.image.tags[0]) if c.image.tags else str(c.image.short_id),
+        "image": _safe_image_label(c),
         "status": c.status,
         "created": attrs.get("Created", ""),
         "ports": attrs.get("NetworkSettings", {}).get("Ports", {}),

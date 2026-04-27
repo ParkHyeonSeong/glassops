@@ -74,6 +74,16 @@ export const APP_DEFINITIONS: AppDefinition[] = [
     minWidth: 400,
     minHeight: 360,
   },
+  {
+    id: "users",
+    title: "Users",
+    icon: "Users",
+    defaultWidth: 760,
+    defaultHeight: 520,
+    minWidth: 520,
+    minHeight: 400,
+    adminOnly: true,
+  },
 ];
 
 interface WindowStore {

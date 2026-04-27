@@ -30,6 +30,7 @@ export interface AppDefinition {
   defaultHeight: number;
   minWidth: number;
   minHeight: number;
+  adminOnly?: boolean;
 }
 
 export type ConnectionStatus = "connected" | "disconnected" | "connecting";

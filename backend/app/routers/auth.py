@@ -91,6 +91,12 @@ async def login(body: LoginRequest, request: Request, response: Response):
         record_login_failure(client_ip)
         raise HTTPException(401, "Invalid credentials")
 
+    # Block disabled accounts after credentials check (avoids leaking which accounts exist).
+    from app.database import get_user as _get_user
+    user_row = await _get_user(body.email)
+    if user_row and not user_row.get("is_active", True):
+        raise HTTPException(403, "Account disabled")
+
     if await is_totp_enabled(body.email):
         if not body.totp_code:
             return {"requires_totp": True}
@@ -106,12 +112,16 @@ async def login(body: LoginRequest, request: Request, response: Response):
 
     _set_auth_cookies(response, access, refresh, secure)
 
+    from app.database import get_user as _get_user, get_user_host_accounts
+    row = await _get_user(body.email)
     return {
         "access_token": access,
         "refresh_token": refresh,
         "email": body.email,
         "must_change_password": await must_change_password(body.email),
         "cookie_mode": secure,
+        "role": row.get("role", "user") if row else "user",
+        "host_accounts": await get_user_host_accounts(body.email),
     }
 
 
@@ -181,10 +191,15 @@ async def refresh(request: Request, response: Response, body: RefreshRequest):
 
 @router.get("/me")
 async def me(email: str = Depends(get_current_user)):
+    from app.database import get_user as _get_user, get_user_host_accounts
+    row = await _get_user(email)
     return {
         "email": email,
         "totp_enabled": await is_totp_enabled(email),
         "must_change_password": await must_change_password(email),
+        "role": row.get("role", "user") if row else "user",
+        "is_active": row.get("is_active", True) if row else True,
+        "host_accounts": await get_user_host_accounts(email),
     }
 
 

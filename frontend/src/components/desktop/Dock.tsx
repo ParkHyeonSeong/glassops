@@ -9,8 +9,10 @@ import {
   FileText,
   TerminalSquare,
   Settings,
+  Users,
 } from "lucide-react";
 import { APP_DEFINITIONS, useWindowStore } from "../../stores/windowStore";
+import { useAuthStore } from "../../stores/authStore";
 
 const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   BarChart3,
@@ -21,6 +23,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   FileText,
   TerminalSquare,
   Settings,
+  Users,
 };
 
 const FallbackIcon = Box;
@@ -28,8 +31,11 @@ const FallbackIcon = Box;
 export default function Dock() {
   const windows = useWindowStore((s) => s.windows);
   const openWindow = useWindowStore((s) => s.openWindow);
+  const role = useAuthStore((s) => s.role);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [dockVisible, setDockVisible] = useState(true);
+
+  const visibleApps = APP_DEFINITIONS.filter((app) => !app.adminOnly || role === "admin");
 
   const hasMaximized = windows.some((w) => w.isMaximized);
 
@@ -69,7 +75,7 @@ export default function Dock() {
         }}
       >
         <div className="dock">
-          {APP_DEFINITIONS.map((app, index) => {
+          {visibleApps.map((app, index) => {
             const Icon = ICON_MAP[app.icon] ?? FallbackIcon;
             const scale = getScale(index);
             const open = isAppOpen(app.id);

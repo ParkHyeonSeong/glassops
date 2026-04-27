@@ -19,6 +19,7 @@ from app.routers.auth import router as auth_router
 from app.routers.process import router as process_router
 from app.routers.alerts import router as alerts_router
 from app.routers.settings import router as settings_router
+from app.routers.users import router as users_router
 from app.websocket.terminal_ws import handle_terminal_ws
 from app.websocket.docker_logs_ws import handle_docker_logs_ws
 
@@ -96,6 +97,7 @@ app.include_router(auth_router)
 app.include_router(process_router)
 app.include_router(alerts_router)
 app.include_router(settings_router)
+app.include_router(users_router)
 
 
 # ── REST endpoints ──────────────────────────────────────

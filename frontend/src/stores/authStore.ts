@@ -39,6 +39,8 @@ interface AuthStore {
   isAuthenticated: boolean;
   isBootstrapping: boolean;
   email: string | null;
+  role: "admin" | "user" | null;
+  hostAccounts: Record<string, string>;
   accessToken: string | null;
   refreshToken: string | null;
   requiresTotp: boolean;
@@ -55,6 +57,8 @@ interface AuthStore {
 const loggedOutState = {
   isAuthenticated: false,
   email: null,
+  role: null as "admin" | "user" | null,
+  hostAccounts: {} as Record<string, string>,
   accessToken: null,
   refreshToken: null,
   requiresTotp: false,
@@ -69,6 +73,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   // rendering so a fresh tab with shared cookies doesn't flash the login screen.
   isBootstrapping: !hasValidSession,
   email: hasValidSession ? saved!.email : null,
+  role: null,
+  hostAccounts: {},
   accessToken: hasTokenSession ? saved!.accessToken : null,
   refreshToken: hasTokenSession ? saved!.refreshToken : null,
   requiresTotp: false,
@@ -83,10 +89,17 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       return fetch(`${BACKEND_URL}/api/auth/me`, { headers, credentials: "include" });
     };
 
-    const applyMe = (data: { email: string; must_change_password?: boolean }) => {
+    const applyMe = (data: {
+      email: string;
+      must_change_password?: boolean;
+      role?: "admin" | "user";
+      host_accounts?: Record<string, string>;
+    }) => {
       set({
         isAuthenticated: true,
         email: data.email,
+        role: data.role ?? "user",
+        hostAccounts: data.host_accounts ?? {},
         mustChangePassword: data.must_change_password ?? false,
         // If we succeeded without a bearer token, auth came via httpOnly cookie.
         cookieMode: get().cookieMode || !get().accessToken,
@@ -146,6 +159,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         isAuthenticated: true,
         isBootstrapping: false,
         email: data.email,
+        role: data.role ?? "user",
+        hostAccounts: data.host_accounts ?? {},
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
         requiresTotp: false,

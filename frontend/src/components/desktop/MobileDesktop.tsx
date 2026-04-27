@@ -12,6 +12,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { APP_DEFINITIONS } from "../../stores/windowStore";
+import { useAuthStore } from "../../stores/authStore";
 import type { ConnectionStatus } from "../../types";
 import { useServerTime } from "../../hooks/useServerTime";
 import AppPlaceholder from "../apps/AppPlaceholder";
@@ -23,6 +24,8 @@ import ProcessViewer from "../apps/ProcessViewer";
 import LogViewer from "../apps/LogViewer";
 import TerminalApp from "../apps/Terminal";
 import SettingsApp from "../apps/Settings";
+import UserManager from "../apps/UserManager";
+import { Users } from "lucide-react";
 
 const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   BarChart3,
@@ -32,6 +35,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   FileText,
   TerminalSquare,
   Settings,
+  Users,
 };
 
 const FallbackIcon = Box;
@@ -45,6 +49,8 @@ export default function MobileDesktop({
 }: MobileDesktopProps) {
   const [activeAppId, setActiveAppId] = useState<string | null>(null);
   const time = useServerTime();
+  const role = useAuthStore((s) => s.role);
+  const visibleApps = APP_DEFINITIONS.filter((app) => !app.adminOnly || role === "admin");
 
   const statusColor =
     connectionStatus === "connected"
@@ -108,13 +114,15 @@ export default function MobileDesktop({
             <TerminalApp />
           ) : activeAppId === "settings" ? (
             <SettingsApp />
+          ) : activeAppId === "users" ? (
+            <UserManager />
           ) : (
             <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
           )}
         </div>
       ) : (
         <div className="mobile-app-grid">
-          {APP_DEFINITIONS.map((app) => {
+          {visibleApps.map((app) => {
             const Icon = ICON_MAP[app.icon] ?? FallbackIcon;
             return (
               <button
