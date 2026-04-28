@@ -4,6 +4,11 @@ PLAN.md
 
 # Environment
 .env
+agent.env
+
+# Per-host docker compose overrides (LAN bindings, host-specific mounts)
+docker-compose.override.yml
+docker-compose.override.yaml
 
 # Python
 __pycache__/
