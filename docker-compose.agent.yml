@@ -12,6 +12,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/host/proc:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /var/log:/host/log:ro
       - /etc/os-release:/host/os-release:ro
     environment:

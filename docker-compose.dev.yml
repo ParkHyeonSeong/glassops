@@ -10,6 +10,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/host/log:ro
       - /proc:/host/proc:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - ./backend/app:/app/app       # Backend hot-reload (uvicorn --reload)
       - ./agent/agent:/app/agent     # Agent code mount
     env_file: .env

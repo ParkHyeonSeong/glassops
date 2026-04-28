@@ -1,20 +1,22 @@
-"""Collects Docker container info via Docker SDK. Gracefully returns empty if unavailable."""
+"""Collects Docker container info via the Docker SDK + cgroup direct reads.
+
+Container metadata (id, name, image, status, ports, …) comes from the SDK's list call.
+Per-container CPU/memory metrics come from `cgroup_stats` reading /sys/fs/cgroup
+directly — much cheaper than `container.stats(stream=False)`, which would block ~1 s
+per container inside the SDK.
+"""
 
 import logging
-import threading
 import time as _time
 from typing import Optional
+
+from agent.collectors import cgroup_stats
 
 logger = logging.getLogger("glassops.agent")
 
 _client = None
 _last_fail: float = 0
 _RETRY_INTERVAL = 60
-
-# Cached stats — updated in background thread
-_stats_cache: dict[str, dict] = {}  # container_id -> {cpu_percent, mem_usage, mem_limit}
-_stats_thread: threading.Thread | None = None
-_stats_running = False
 
 
 def _ensure_client() -> bool:
@@ -36,44 +38,6 @@ def _ensure_client() -> bool:
         return False
 
 
-def _update_stats_background():
-    """Background thread that collects container stats without blocking the main loop."""
-    global _stats_running
-    _stats_running = True
-
-    while _stats_running and _client:
-        try:
-            containers = _client.containers.list()
-            new_cache: dict[str, dict] = {}
-            for c in containers:
-                if c.status != "running":
-                    continue
-                try:
-                    stats = c.stats(stream=False)
-                    new_cache[c.short_id] = {
-                        "cpu_percent": _calc_cpu_percent(stats),
-                        "mem_usage": stats.get("memory_stats", {}).get("usage", 0),
-                        "mem_limit": stats.get("memory_stats", {}).get("limit", 0),
-                    }
-                except Exception:
-                    pass
-
-            _stats_cache.clear()
-            _stats_cache.update(new_cache)
-        except Exception:
-            logger.debug("Stats background update failed", exc_info=True)
-
-        # Wait 10s between full stats cycles
-        _time.sleep(10)
-
-
-def _ensure_stats_thread():
-    global _stats_thread
-    if _stats_thread is None or not _stats_thread.is_alive():
-        _stats_thread = threading.Thread(target=_update_stats_background, daemon=True)
-        _stats_thread.start()
-
-
 def _safe_image_label(c) -> str:
     """Return a display string for the container's image, tolerating dangling/deleted images."""
     try:
@@ -82,45 +46,10 @@ def _safe_image_label(c) -> str:
             return str(img.tags[0])
         return str(img.short_id)
     except Exception:
-        # Image was removed but container still exists — fall back to raw image ref.
         raw = c.attrs.get("Image", "") or c.attrs.get("Config", {}).get("Image", "")
         if isinstance(raw, str) and raw.startswith("sha256:"):
             return raw[7:19]
         return raw or "<unknown>"
-
-
-def collect_containers() -> Optional[list[dict]]:
-    if not _ensure_client():
-        return None
-
-    _ensure_stats_thread()
-
-    try:
-        containers = _client.containers.list(all=True)
-        result = []
-        for c in containers:
-            labels = c.labels or {}
-            cached = _stats_cache.get(c.short_id, {})
-
-            info: dict = {
-                "id": c.short_id,
-                "name": c.name,
-                "image": _safe_image_label(c),
-                "status": c.status,
-                "state": c.attrs.get("State", {}).get("Status", "unknown"),
-                "created": c.attrs.get("Created", ""),
-                "ports": _parse_ports(c.attrs.get("NetworkSettings", {}).get("Ports", {})),
-                "compose_project": labels.get("com.docker.compose.project", ""),
-                "compose_service": labels.get("com.docker.compose.service", ""),
-                "cpu_percent": cached.get("cpu_percent", 0),
-                "mem_usage": cached.get("mem_usage", 0),
-                "mem_limit": cached.get("mem_limit", 0),
-            }
-            result.append(info)
-        return result
-    except Exception:
-        logger.exception("Failed to collect Docker containers")
-        return None
 
 
 def _parse_ports(ports: dict) -> list[str]:
@@ -134,15 +63,70 @@ def _parse_ports(ports: dict) -> list[str]:
     return result
 
 
-def _calc_cpu_percent(stats: dict) -> float:
+def collect_containers() -> Optional[list[dict]]:
+    if not _ensure_client():
+        return None
+
     try:
-        cpu = stats["cpu_stats"]
-        pre = stats["precpu_stats"]
-        delta = cpu["cpu_usage"]["total_usage"] - pre["cpu_usage"]["total_usage"]
-        system_delta = cpu["system_cpu_usage"] - pre["system_cpu_usage"]
-        n_cpus = cpu.get("online_cpus", len(cpu["cpu_usage"].get("percpu_usage", [1])))
-        if system_delta > 0 and delta > 0:
-            return round((delta / system_delta) * n_cpus * 100, 2)
-    except (KeyError, ZeroDivisionError):
-        pass
-    return 0.0
+        containers = _client.containers.list(all=True)
+        result = []
+        live_ids: set[str] = set()
+        for c in containers:
+            labels = c.labels or {}
+            stats = _stats_for(c) if c.status == "running" else None
+
+            info: dict = {
+                "id": c.short_id,
+                "name": c.name,
+                "image": _safe_image_label(c),
+                "status": c.status,
+                "state": c.attrs.get("State", {}).get("Status", "unknown"),
+                "created": c.attrs.get("Created", ""),
+                "ports": _parse_ports(c.attrs.get("NetworkSettings", {}).get("Ports", {})),
+                "compose_project": labels.get("com.docker.compose.project", ""),
+                "compose_service": labels.get("com.docker.compose.service", ""),
+                "cpu_percent": stats.get("cpu_percent", 0.0) if stats else 0.0,
+                "mem_usage": stats.get("mem_usage", 0) if stats else 0,
+                "mem_limit": stats.get("mem_limit", 0) if stats else 0,
+            }
+            result.append(info)
+            live_ids.add(c.short_id)
+
+        # Drop caches for containers that disappeared so memory doesn't grow.
+        cgroup_stats.gc(live_ids)
+        for sid in list(_pid_cache.keys()):
+            if sid not in live_ids:
+                _pid_cache.pop(sid, None)
+        return result
+    except Exception:
+        logger.exception("Failed to collect Docker containers")
+        return None
+
+
+# ── per-container stats via cgroup ────────────────────────────────────
+
+
+# Cached host PID (and resolved cgroup path) per container short_id. Inspect is needed
+# only the first time we see a container — it's a single Docker API call (~5 ms),
+# vastly cheaper than the per-cycle `stats(stream=False)` it replaces.
+_pid_cache: dict[str, int] = {}
+
+
+def _stats_for(c) -> dict | None:
+    short_id = c.short_id
+    pid = _pid_cache.get(short_id)
+    if pid is None:
+        try:
+            attrs = _client.api.inspect_container(c.id)
+            pid = int(attrs.get("State", {}).get("Pid") or 0)
+        except Exception:
+            pid = 0
+        if pid > 0:
+            _pid_cache[short_id] = pid
+        else:
+            return None
+    stats = cgroup_stats.read(short_id, pid)
+    if stats is None:
+        # Container restarted (different pid) or cgroup vanished — drop cache and retry next cycle.
+        _pid_cache.pop(short_id, None)
+    return stats
