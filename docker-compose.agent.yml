@@ -5,6 +5,7 @@ services:
     container_name: glassops-agent
     restart: unless-stopped
     pid: host
+    cgroup: host
     privileged: true
     network_mode: host
     group_add:
