@@ -2333,6 +2333,28 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.docker-window-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.docker-removed-banner {
+  padding: 8px 12px;
+  background: rgba(255, 100, 100, 0.12);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+  border-radius: 6px;
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.docker-removed-banner code {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
 /* ========================================
    MOBILE DESKTOP
    ======================================== */

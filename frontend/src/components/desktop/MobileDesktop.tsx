@@ -50,7 +50,9 @@ export default function MobileDesktop({
   const [activeAppId, setActiveAppId] = useState<string | null>(null);
   const time = useServerTime();
   const role = useAuthStore((s) => s.role);
-  const visibleApps = APP_DEFINITIONS.filter((app) => !app.adminOnly || role === "admin");
+  const visibleApps = APP_DEFINITIONS.filter(
+    (app) => !app.hiddenFromLauncher && (!app.adminOnly || role === "admin"),
+  );
 
   const statusColor =
     connectionStatus === "connected"

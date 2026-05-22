@@ -12,6 +12,28 @@ export const APP_DEFINITIONS: AppDefinition[] = [
     minHeight: 300,
   },
   {
+    id: "container-logs",
+    title: "Container Logs",
+    icon: "FileText",
+    defaultWidth: 760,
+    defaultHeight: 520,
+    minWidth: 480,
+    minHeight: 320,
+    multiInstance: true,
+    hiddenFromLauncher: true,
+  },
+  {
+    id: "container-metrics",
+    title: "Container Metrics",
+    icon: "Activity",
+    defaultWidth: 720,
+    defaultHeight: 480,
+    minWidth: 480,
+    minHeight: 320,
+    multiInstance: true,
+    hiddenFromLauncher: true,
+  },
+  {
     id: "gpu-monitor",
     title: "GPU Monitor",
     icon: "Cpu",
@@ -90,7 +112,10 @@ interface WindowStore {
   windows: WindowState[];
   nextZIndex: number;
 
-  openWindow: (appId: string) => void;
+  openWindow: (
+    appId: string,
+    options?: { params?: Record<string, string>; title?: string },
+  ) => void;
   closeWindow: (windowId: string) => void;
   minimizeWindow: (windowId: string) => void;
   maximizeWindow: (windowId: string, prevBounds: WindowBounds) => void;
@@ -107,32 +132,46 @@ interface WindowStore {
   closeFocusedWindow: () => void;
 }
 
+function paramsKey(params?: Record<string, string>): string {
+  if (!params) return "";
+  // Stable, collision-safe serialization. encodeURIComponent guards against
+  // values containing `=`/`&` (current callers pass container names only, but
+  // future callers may pass search queries or paths).
+  return Object.keys(params)
+    .sort()
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+    .join("&");
+}
+
 let windowCounter = 0;
 
 export const useWindowStore = create<WindowStore>((set, get) => ({
   windows: [],
   nextZIndex: 1,
 
-  openWindow: (appId: string) => {
+  openWindow: (appId, options) => {
     const { windows, nextZIndex } = get();
-    const existing = windows.find(
-      (w) => w.appId === appId && !w.isMinimized
-    );
+    const params = options?.params;
+    const app = APP_DEFINITIONS.find((a) => a.id === appId);
+    if (!app) return;
+
+    // For multi-instance apps we dedupe by (appId + params); single-instance
+    // apps dedupe by appId alone (existing behavior).
+    const sameInstance = (w: WindowState) =>
+      w.appId === appId &&
+      (app.multiInstance ? paramsKey(w.params) === paramsKey(params) : true);
+
+    const existing = windows.find((w) => sameInstance(w) && !w.isMinimized);
     if (existing) {
       get().focusWindow(existing.id);
       return;
     }
 
-    const minimized = windows.find(
-      (w) => w.appId === appId && w.isMinimized
-    );
+    const minimized = windows.find((w) => sameInstance(w) && w.isMinimized);
     if (minimized) {
       get().restoreWindow(minimized.id);
       return;
     }
-
-    const app = APP_DEFINITIONS.find((a) => a.id === appId);
-    if (!app) return;
 
     const offset = (windowCounter % 8) * 30;
     windowCounter++;
@@ -140,7 +179,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
     const newWindow: WindowState = {
       id: `window-${crypto.randomUUID()}`,
       appId: app.id,
-      title: app.title,
+      title: options?.title ?? app.title,
       x: 100 + offset,
       y: 50 + offset,
       width: app.defaultWidth,
@@ -152,6 +191,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
       zIndex: nextZIndex,
       opacity: 1,
       preMaximizeBounds: null,
+      params,
     };
 
     set({

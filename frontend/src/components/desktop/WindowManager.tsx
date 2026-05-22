@@ -10,8 +10,18 @@ import TerminalApp from "../apps/Terminal";
 import SettingsApp from "../apps/Settings";
 import UserManager from "../apps/UserManager";
 import AppPlaceholder from "../apps/AppPlaceholder";
+import ContainerLogsWindow from "../apps/ContainerLogsWindow";
+import ContainerMetricsWindow from "../apps/ContainerMetricsWindow";
 
-function AppContent({ appId, title }: { appId: string; title: string }) {
+function AppContent({
+  appId,
+  title,
+  params,
+}: {
+  appId: string;
+  title: string;
+  params?: Record<string, string>;
+}) {
   switch (appId) {
     case "system-monitor":
       return <SystemMonitor />;
@@ -31,6 +41,12 @@ function AppContent({ appId, title }: { appId: string; title: string }) {
       return <SettingsApp />;
     case "users":
       return <UserManager />;
+    case "container-logs":
+      if (!params?.containerName || !params?.agentId) return null;
+      return <ContainerLogsWindow agentId={params.agentId} containerName={params.containerName} />;
+    case "container-metrics":
+      if (!params?.containerName || !params?.agentId) return null;
+      return <ContainerMetricsWindow agentId={params.agentId} containerName={params.containerName} />;
     default:
       return <AppPlaceholder appId={appId} title={title} />;
   }
@@ -43,7 +59,7 @@ export default function WindowManager() {
     <div className="window-manager">
       {windows.map((win) => (
         <Window key={win.id} window={win}>
-          <AppContent appId={win.appId} title={win.title} />
+          <AppContent appId={win.appId} title={win.title} params={win.params} />
         </Window>
       ))}
     </div>

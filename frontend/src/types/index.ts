@@ -20,6 +20,9 @@ export interface WindowState {
   zIndex: number;
   opacity: number;
   preMaximizeBounds: WindowBounds | null;
+  // Multi-instance apps (e.g. per-container log/metric windows) carry an
+  // instance key here; single-instance apps leave it undefined.
+  params?: Record<string, string>;
 }
 
 export interface AppDefinition {
@@ -31,6 +34,12 @@ export interface AppDefinition {
   minWidth: number;
   minHeight: number;
   adminOnly?: boolean;
+  // When true, openWindow allows multiple windows for the same appId provided
+  // their `params.key` (or the full params dict) differs.
+  multiInstance?: boolean;
+  // Hide from the launcher/dock — these windows are only opened from inside
+  // another app (e.g. Docker Manager).
+  hiddenFromLauncher?: boolean;
 }
 
 export type ConnectionStatus = "connected" | "disconnected" | "connecting";
