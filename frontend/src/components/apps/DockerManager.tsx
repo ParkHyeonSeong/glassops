@@ -1,8 +1,30 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Play, Square, RotateCw, FileText, ChevronLeft, Search, ChevronUp, ChevronDown, X, Calendar } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useMemo, useId } from "react";
+import { Play, Square, RotateCw, FileText, ChevronLeft, Search, ChevronUp, ChevronDown, X, Calendar, Activity } from "lucide-react";
+import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { useMetricsStore, type ContainerInfo } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 import { useLogStream } from "../../hooks/useLogStream";
+
+type TimeRange = "live" | "5m" | "1h" | "6h" | "24h" | "7d";
+
+const TOOLTIP_STYLE = {
+  background: "rgba(20,20,40,0.9)",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: 8,
+  fontSize: 11,
+  color: "#e0e0e0",
+};
+
+function formatChartTime(ts: number, range: TimeRange): string {
+  const d = new Date(ts * 1000);
+  if (range === "live" || range === "5m" || range === "1h") {
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  if (range === "6h" || range === "24h") {
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 type DockerTab = "containers" | "images" | "volumes" | "networks";
 
@@ -60,7 +82,7 @@ function ContainersTab() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [view, setView] = useState<"list" | "logs">("list");
+  const [view, setView] = useState<"list" | "logs" | "metrics">("list");
   const [keyword, setKeyword] = useState("");
   const [currentMatchRaw, setCurrentMatchRaw] = useState(0);
   const [rangeFrom, setRangeFrom] = useState("");
@@ -163,6 +185,11 @@ function ContainersTab() {
     setRangeError(null);
     followRef.current = true;
     // Stream takes over from here; no initial fetch needed.
+  }, []);
+
+  const showMetrics = useCallback((containerId: string) => {
+    setSelectedId(containerId);
+    setView("metrics");
   }, []);
 
   const applyRange = useCallback(() => {
@@ -268,6 +295,18 @@ function ContainersTab() {
         <p className="docker-empty-title">No containers found</p>
         <p className="docker-empty-sub">Ensure Docker is running and GLASSOPS_ENABLE_DOCKER=true</p>
       </div>
+    );
+  }
+
+  if (view === "metrics" && selectedId) {
+    const container = containers.find((c) => c.id === selectedId);
+    return (
+      <ContainerMetricsView
+        container={container}
+        containerId={selectedId}
+        agentId={agentId ?? null}
+        onBack={() => setView("list")}
+      />
     );
   }
 
@@ -418,6 +457,7 @@ function ContainersTab() {
                 ) : (
                   <button className="docker-action-btn docker-action-start" onClick={() => doAction(c.id, "start")} disabled={actionLoading === c.id} title="Start"><Play size={13} /></button>
                 )}
+                <button className="docker-action-btn" onClick={() => showMetrics(c.id)} title="Metrics history"><Activity size={13} /></button>
                 <button className="docker-action-btn" onClick={() => showLogs(c.id)} title="Logs"><FileText size={13} /></button>
               </td>
             </tr>
@@ -425,6 +465,198 @@ function ContainersTab() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/* ── Container Metrics ── */
+type ContainerSample = { t: number; cpu: number; mem: number; mem_limit: number };
+type ChartPoint = { t: number; value: number; bytes?: number };
+
+function ContainerMetricsView({
+  container,
+  containerId,
+  agentId,
+  onBack,
+}: {
+  container: ContainerInfo | undefined;
+  containerId: string;
+  agentId: string | null;
+  onBack: () => void;
+}) {
+  const [range, setRange] = useState<TimeRange>("1h");
+  const [history, setHistory] = useState<ContainerSample[]>([]);
+  const [liveSamples, setLiveSamples] = useState<ContainerSample[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const containerName = container?.name ?? "";
+
+  // Live mode: subscribe to the metrics store directly so updates flow through
+  // the zustand subscriber callback (not via a render → effect → setState chain).
+  useEffect(() => {
+    if (range !== "live" || !containerName) return;
+    setLiveSamples([]);
+    const unsubscribe = useMetricsStore.subscribe((state) => {
+      const snap = state.current;
+      if (!snap) return;
+      const c = (snap.containers ?? []).find((x) => x.name === containerName);
+      if (!c) return;
+      const t = snap.timestamp ?? Date.now() / 1000;
+      setLiveSamples((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.t === t) return prev;
+        const next = [...prev, { t, cpu: c.cpu_percent, mem: c.mem_usage, mem_limit: c.mem_limit }];
+        return next.length > 120 ? next.slice(-120) : next;
+      });
+    });
+    return unsubscribe;
+  }, [range, containerName]);
+
+  useEffect(() => {
+    if (range === "live") {
+      setHistory([]);
+      setError(null);
+      return;
+    }
+    if (!agentId || !containerName) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchWithAuth(`/api/metrics/${agentId}/containers/${encodeURIComponent(containerName)}/range?duration=${range}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => { if (!cancelled) setHistory(d.metrics || []); })
+      .catch(() => { if (!cancelled) { setHistory([]); setError("Failed to load history"); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [agentId, containerName, range]);
+
+  const data: ContainerSample[] = range === "live" ? liveSamples : history;
+
+  const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
+  const memPctData = useMemo<ChartPoint[]>(
+    () => data.map((d) => ({
+      t: d.t,
+      value: d.mem_limit > 0 ? (d.mem / d.mem_limit) * 100 : 0,
+      bytes: d.mem,
+    })),
+    [data],
+  );
+  const cpuData = useMemo<ChartPoint[]>(
+    () => data.map((d) => ({ t: d.t, value: d.cpu })),
+    [data],
+  );
+
+  const avgCpu = data.length ? data.reduce((s, d) => s + d.cpu, 0) / data.length : 0;
+  const peakCpu = data.length ? Math.max(...data.map((d) => d.cpu)) : 0;
+  const avgMem = data.length ? data.reduce((s, d) => s + d.mem, 0) / data.length : 0;
+  const peakMem = data.length ? Math.max(...data.map((d) => d.mem)) : 0;
+  const memYMax = memLimitBytes > 0
+    ? 100
+    : Math.max(10, memPctData.reduce((m, d) => Math.max(m, d.value), 0) * 1.3);
+
+  return (
+    <div className="docker-metrics-view">
+      <div className="docker-logs-header">
+        <button className="docker-back-btn" onClick={onBack}>
+          <ChevronLeft size={16} /> Back
+        </button>
+        <span className="docker-logs-title">{container?.name ?? containerId}</span>
+        {container && <StatusBadge status={container.status} />}
+      </div>
+
+      <div className="docker-metrics-toolbar">
+        <div className="sysmon-tabs">
+          {(["live", "5m", "1h", "6h", "24h", "7d"] as TimeRange[]).map((r) => (
+            <button key={r} className={`sysmon-tab ${range === r ? "sysmon-tab-active" : ""}`}
+              onClick={() => setRange(r)}>
+              {r === "live" ? "Live" : r}
+            </button>
+          ))}
+        </div>
+        {loading && <span className="sysmon-loading">Loading...</span>}
+        {error && <span className="docker-logs-range-error">{error}</span>}
+        {!loading && !error && data.length === 0 && range !== "live" && (
+          <span className="sysmon-loading">No data for this range yet.</span>
+        )}
+        {range === "live" && data.length === 0 && (
+          <span className="sysmon-loading">Waiting for live samples…</span>
+        )}
+      </div>
+
+      <div className="docker-metrics-charts">
+        <div className="sysmon-chart-card">
+          <div className="docker-metrics-chart-header">
+            <span className="sysmon-chart-title">CPU</span>
+            <span className="docker-metrics-stats">
+              avg {avgCpu.toFixed(1)}% · peak {peakCpu.toFixed(1)}%
+            </span>
+          </div>
+          <ContainerChart data={cpuData} color="var(--color-accent)" range={range}
+            valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakCpu * 1.3)} />
+        </div>
+
+        <div className="sysmon-chart-card">
+          <div className="docker-metrics-chart-header">
+            <span className="sysmon-chart-title">Memory</span>
+            <span className="docker-metrics-stats">
+              avg {formatBytes(avgMem)} · peak {formatBytes(peakMem)}
+              {memLimitBytes > 0 && ` · limit ${formatBytes(memLimitBytes)}`}
+            </span>
+          </div>
+          <ContainerChart
+            data={memPctData}
+            color="var(--color-success)"
+            range={range}
+            valueFormatter={(v, p) => `${formatBytes(p?.bytes ?? 0)} (${v.toFixed(1)}%)`}
+            yMax={memYMax}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContainerChart({
+  data, color, range, valueFormatter, yMax,
+}: {
+  data: ChartPoint[];
+  color: string;
+  range: TimeRange;
+  valueFormatter: (v: number, payload?: ChartPoint) => string;
+  yMax: number;
+}) {
+  const gradId = useId();
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 4, right: 8, bottom: 18, left: 4 }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.35} />
+            <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <XAxis
+          dataKey="t"
+          tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+          tickLine={false}
+          axisLine={false}
+          interval="preserveStartEnd"
+          minTickGap={60}
+          tickFormatter={(ts) => formatChartTime(Number(ts), range)}
+        />
+        <YAxis domain={[0, Math.max(yMax, 1)]} hide />
+        <Tooltip
+          contentStyle={TOOLTIP_STYLE}
+          formatter={(v, _name, item) => [valueFormatter(Number(v), item?.payload as ChartPoint | undefined)]}
+          labelFormatter={(ts) => formatChartTime(Number(ts), range)}
+        />
+        <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5}
+          fill={`url(#${gradId})`} isAnimationActive={false} />
+      </AreaChart>
+    </ResponsiveContainer>
   );
 }
 

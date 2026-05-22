@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, cleanup_blacklist
+from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -150,6 +150,22 @@ async def metrics_range(agent_id: str, duration: str = "1h"):
     seconds = durations.get(duration, 3600)
     data = await get_metrics_range(agent_id, now - seconds, now)
     return {"agent_id": agent_id, "duration": duration, "points": len(data), "metrics": data}
+
+
+@app.get("/api/metrics/{agent_id}/containers/{container_name}/range")
+async def container_metrics_range(agent_id: str, container_name: str, duration: str = "1h"):
+    """Per-container CPU/Mem history. Keyed by container name (stable across recreates)."""
+    now = time.time()
+    durations = {"5m": 300, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+    seconds = durations.get(duration, 3600)
+    points = await get_container_history(agent_id, container_name, now - seconds, now)
+    return {
+        "agent_id": agent_id,
+        "container": container_name,
+        "duration": duration,
+        "points": len(points),
+        "metrics": points,
+    }
 
 
 # ── WebSocket endpoints ─────────────────────────────────

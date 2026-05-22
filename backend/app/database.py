@@ -225,6 +225,32 @@ async def get_metrics_range(
     return result
 
 
+async def get_container_history(
+    agent_id: str, container_name: str, start: float, end: float, max_points: int = 500
+) -> list[dict]:
+    """Time-series for a single container by name. Walks the same auto-resolution
+    tables as get_metrics_range, but extracts only the named container's cpu/mem
+    so the response stays small."""
+    snapshots = await get_metrics_range(agent_id, start, end, max_points=max_points * 4)
+    result = []
+    for snap in snapshots:
+        ts = snap.get("timestamp")
+        for c in snap.get("containers") or []:
+            if c.get("name") == container_name:
+                result.append({
+                    "t": ts,
+                    "cpu": float(c.get("cpu_percent", 0) or 0),
+                    "mem": float(c.get("mem_usage", 0) or 0),
+                    "mem_limit": float(c.get("mem_limit", 0) or 0),
+                })
+                break
+    # Thin out if the underlying fetch was generous
+    if len(result) > max_points:
+        step = max(1, len(result) // max_points)
+        result = [p for i, p in enumerate(result) if i % step == 0]
+    return result
+
+
 async def downsample_metrics(resolution_seconds: int, resolution_label: str) -> int:
     """Aggregate raw metrics into downsampled buckets."""
     db = await get_db()
@@ -309,12 +335,62 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 gpu[field] = sum(vals) / len(vals) if vals else 0
             # Remove per-snapshot process data from downsampled
             gpu.pop("processes", None)
+
+        # Aggregate per-container CPU/Mem by name. Containers can come and go within
+        # a bucket; keying by name keeps history continuous across restart/recreate
+        # while id changes. Latest non-zero mem_limit wins (limits can be updated).
+        agg: dict[str, dict] = {}
+        for e in entries:
+            for c in e.get("containers") or []:
+                name = c.get("name")
+                if not name:
+                    continue
+                s = agg.get(name)
+                if s is None:
+                    s = {
+                        "name": name,
+                        "id": c.get("id", ""),
+                        "image": c.get("image", ""),
+                        "status": c.get("status", ""),
+                        "state": c.get("state", ""),
+                        "ports": c.get("ports", []),
+                        "cpu_sum": 0.0,
+                        "mem_sum": 0.0,
+                        "samples": 0,
+                        "mem_limit": c.get("mem_limit", 0),
+                    }
+                    agg[name] = s
+                s["cpu_sum"] += float(c.get("cpu_percent", 0) or 0)
+                s["mem_sum"] += float(c.get("mem_usage", 0) or 0)
+                s["samples"] += 1
+                # Use the most recent metadata so the UI shows current status/image.
+                s["status"] = c.get("status", s["status"])
+                s["state"] = c.get("state", s["state"])
+                s["image"] = c.get("image", s["image"])
+                s["id"] = c.get("id", s["id"])
+                s["ports"] = c.get("ports", s["ports"])
+                ml = c.get("mem_limit", 0) or 0
+                if ml > 0:
+                    s["mem_limit"] = ml
+        result["containers"] = [
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "image": s["image"],
+                "status": s["status"],
+                "state": s["state"],
+                "ports": s["ports"],
+                "cpu_percent": s["cpu_sum"] / s["samples"] if s["samples"] else 0,
+                "mem_usage": s["mem_sum"] / s["samples"] if s["samples"] else 0,
+                "mem_limit": s["mem_limit"],
+            }
+            for s in agg.values()
+        ]
     except (KeyError, IndexError, TypeError):
         pass
 
     # Drop heavy fields for downsampled data
     result.pop("processes", None)
-    result.pop("containers", None)
     result.pop("network", None)
 
     return result
