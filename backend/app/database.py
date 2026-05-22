@@ -237,12 +237,15 @@ async def get_container_history(
         ts = snap.get("timestamp")
         for c in snap.get("containers") or []:
             if c.get("name") == container_name:
-                result.append({
+                gpu = c.get("gpu") if isinstance(c.get("gpu"), dict) else None
+                point = {
                     "t": ts,
                     "cpu": float(c.get("cpu_percent", 0) or 0),
                     "mem": float(c.get("mem_usage", 0) or 0),
                     "mem_limit": float(c.get("mem_limit", 0) or 0),
-                })
+                    "vram": float(gpu.get("vram_bytes", 0) or 0) if gpu else 0.0,
+                }
+                result.append(point)
                 break
     # Thin out if the underlying fetch was generous
     if len(result) > max_points:
@@ -358,6 +361,8 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                         "mem_sum": 0.0,
                         "samples": 0,
                         "mem_limit": c.get("mem_limit", 0),
+                        "gpu_vram_sum": 0.0,
+                        "gpu_samples": 0,
                     }
                     agg[name] = s
                 s["cpu_sum"] += float(c.get("cpu_percent", 0) or 0)
@@ -372,8 +377,18 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 ml = c.get("mem_limit", 0) or 0
                 if ml > 0:
                     s["mem_limit"] = ml
-        result["containers"] = [
-            {
+                # Average VRAM only across samples where the container actually held
+                # GPU memory — averaging zeros into the divisor would understate usage
+                # for workloads that allocate intermittently.
+                gpu = c.get("gpu")
+                if isinstance(gpu, dict):
+                    vram = float(gpu.get("vram_bytes", 0) or 0)
+                    if vram > 0:
+                        s["gpu_vram_sum"] += vram
+                        s["gpu_samples"] += 1
+        out_containers = []
+        for s in agg.values():
+            entry = {
                 "id": s["id"],
                 "name": s["name"],
                 "image": s["image"],
@@ -384,8 +399,10 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 "mem_usage": s["mem_sum"] / s["samples"] if s["samples"] else 0,
                 "mem_limit": s["mem_limit"],
             }
-            for s in agg.values()
-        ]
+            if s["gpu_samples"] > 0:
+                entry["gpu"] = {"vram_bytes": s["gpu_vram_sum"] / s["gpu_samples"]}
+            out_containers.append(entry)
+        result["containers"] = out_containers
     except (KeyError, IndexError, TypeError):
         pass
 

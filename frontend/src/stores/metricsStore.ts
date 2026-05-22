@@ -51,6 +51,11 @@ export interface GpuMetrics {
   processes: GpuProcess[];
 }
 
+export interface ContainerGpuUsage {
+  vram_bytes: number;
+  processes?: { pid: number; vram_bytes: number; gpu_index: number }[];
+}
+
 export interface ContainerInfo {
   id: string;
   name: string;
@@ -61,6 +66,7 @@ export interface ContainerInfo {
   mem_usage: number;
   mem_limit: number;
   ports: string[];
+  gpu?: ContainerGpuUsage;
 }
 
 export interface NetworkConnection {

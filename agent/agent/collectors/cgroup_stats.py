@@ -15,6 +15,7 @@ so an 8-core box can reach 800%.
 
 import logging
 import os
+import re
 import time as _time
 from pathlib import Path
 
@@ -162,3 +163,40 @@ def gc(live_short_ids: set[str]) -> None:
     for sid in list(_state.keys()):
         if sid not in live_short_ids:
             _state.pop(sid, None)
+
+
+# Docker writes 64-hex container IDs into the cgroup path in two formats:
+#   v1: /docker/<64hex>
+#   v2: /system.slice/docker-<64hex>.scope (or /docker-<64hex>.scope)
+# We extract the first 12 chars to match Docker SDK's `c.short_id`.
+_DOCKER_ID_RE = re.compile(r"(?:docker[-/])([0-9a-f]{64})")
+
+# Resolved cgroup container IDs are stable per host pid; cache to avoid re-parsing.
+_pid_to_container: dict[int, str | None] = {}
+
+
+def container_id_for_pid(host_pid: int) -> str | None:
+    """Return the 12-char Docker short_id of the container owning this pid, or None.
+
+    Cached per pid: GPU processes are usually long-lived, so re-resolving on every
+    cycle wastes /proc reads. Cache misses fall back to /proc/<pid>/cgroup parsing.
+    """
+    if not _AVAILABLE or host_pid <= 0:
+        return None
+    if host_pid in _pid_to_container:
+        return _pid_to_container[host_pid]
+    path = _resolve_cgroup_path(host_pid)
+    sid: str | None = None
+    if path is not None:
+        m = _DOCKER_ID_RE.search(path)
+        if m:
+            sid = m.group(1)[:12]
+    _pid_to_container[host_pid] = sid
+    return sid
+
+
+def gc_pid_cache(live_pids: set[int]) -> None:
+    """Drop pid→container entries for pids no longer present so the cache stays bounded."""
+    for pid in list(_pid_to_container.keys()):
+        if pid not in live_pids:
+            _pid_to_container.pop(pid, None)

@@ -12,6 +12,7 @@ from agent.collectors.gpu import collect_gpu, shutdown_nvml
 from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
+from agent.collectors import cgroup_stats
 from agent.transport.ws_client import MetricsPusher, serve_rpc
 
 logging.basicConfig(
@@ -21,10 +22,43 @@ logging.basicConfig(
 logger = logging.getLogger("glassops.agent")
 
 
+def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
+    """Sum GPU VRAM per container by mapping each GPU process pid to its cgroup.
+
+    Containers that own no GPU process get no `gpu` field — keeps the payload
+    smaller and lets the UI decide whether to render the GPU chart.
+    """
+    agg: dict[str, dict] = {}
+    seen_pids: set[int] = set()
+    for gpu in gpus:
+        gpu_idx = gpu.get("index", 0)
+        for proc in gpu.get("processes") or []:
+            pid = proc.get("pid")
+            vram = proc.get("vram_bytes", 0)
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            seen_pids.add(pid)
+            if not isinstance(vram, int) or vram < 0:
+                continue
+            sid = cgroup_stats.container_id_for_pid(pid)
+            if sid is None:
+                continue
+            entry = agg.setdefault(sid, {"vram_bytes": 0, "processes": []})
+            entry["vram_bytes"] += vram
+            entry["processes"].append({"pid": pid, "vram_bytes": vram, "gpu_index": gpu_idx})
+
+    cgroup_stats.gc_pid_cache(seen_pids)
+    for c in containers:
+        sid = c.get("id")
+        if sid and sid in agg:
+            c["gpu"] = agg[sid]
+
+
 async def collect_metrics() -> dict:
     """Gather all enabled metrics."""
     metrics = collect_system()
 
+    gpu_data = None
     if ENABLE_GPU:
         gpu_data = collect_gpu()
         if gpu_data is not None:
@@ -33,6 +67,8 @@ async def collect_metrics() -> dict:
     if ENABLE_DOCKER:
         containers = collect_containers()
         if containers is not None:
+            if gpu_data:
+                _attach_gpu_to_containers(containers, gpu_data)
             metrics["containers"] = containers
 
     metrics["network"] = collect_network()

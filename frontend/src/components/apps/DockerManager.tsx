@@ -469,7 +469,7 @@ function ContainersTab() {
 }
 
 /* ── Container Metrics ── */
-type ContainerSample = { t: number; cpu: number; mem: number; mem_limit: number };
+type ContainerSample = { t: number; cpu: number; mem: number; mem_limit: number; vram: number };
 type ChartPoint = { t: number; value: number; bytes?: number };
 
 function ContainerMetricsView({
@@ -505,7 +505,16 @@ function ContainerMetricsView({
       setLiveSamples((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.t === t) return prev;
-        const next = [...prev, { t, cpu: c.cpu_percent, mem: c.mem_usage, mem_limit: c.mem_limit }];
+        const next = [
+          ...prev,
+          {
+            t,
+            cpu: c.cpu_percent,
+            mem: c.mem_usage,
+            mem_limit: c.mem_limit,
+            vram: c.gpu?.vram_bytes ?? 0,
+          },
+        ];
         return next.length > 120 ? next.slice(-120) : next;
       });
     });
@@ -548,14 +557,25 @@ function ContainerMetricsView({
     () => data.map((d) => ({ t: d.t, value: d.cpu })),
     [data],
   );
+  const vramData = useMemo<ChartPoint[]>(
+    () => data.map((d) => ({ t: d.t, value: d.vram, bytes: d.vram })),
+    [data],
+  );
+  // Only render the GPU chart if at least one sample actually saw VRAM usage —
+  // hosts without GPUs or containers that never touched the GPU shouldn't get
+  // an empty card.
+  const hasVram = data.some((d) => d.vram > 0) || (container?.gpu?.vram_bytes ?? 0) > 0;
 
   const avgCpu = data.length ? data.reduce((s, d) => s + d.cpu, 0) / data.length : 0;
   const peakCpu = data.length ? Math.max(...data.map((d) => d.cpu)) : 0;
   const avgMem = data.length ? data.reduce((s, d) => s + d.mem, 0) / data.length : 0;
   const peakMem = data.length ? Math.max(...data.map((d) => d.mem)) : 0;
+  const avgVram = data.length ? data.reduce((s, d) => s + d.vram, 0) / data.length : 0;
+  const peakVram = data.length ? Math.max(...data.map((d) => d.vram)) : 0;
   const memYMax = memLimitBytes > 0
     ? 100
     : Math.max(10, memPctData.reduce((m, d) => Math.max(m, d.value), 0) * 1.3);
+  const vramYMax = Math.max(1, peakVram * 1.3);
 
   return (
     <div className="docker-metrics-view">
@@ -614,6 +634,24 @@ function ContainerMetricsView({
             yMax={memYMax}
           />
         </div>
+
+        {hasVram && (
+          <div className="sysmon-chart-card">
+            <div className="docker-metrics-chart-header">
+              <span className="sysmon-chart-title">GPU VRAM</span>
+              <span className="docker-metrics-stats">
+                avg {formatBytes(avgVram)} · peak {formatBytes(peakVram)}
+              </span>
+            </div>
+            <ContainerChart
+              data={vramData}
+              color="var(--color-gpu, #b388ff)"
+              range={range}
+              valueFormatter={(v) => formatBytes(v)}
+              yMax={vramYMax}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
