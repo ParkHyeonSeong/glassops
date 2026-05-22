@@ -35,7 +35,9 @@ export default function Dock() {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [dockVisible, setDockVisible] = useState(true);
 
-  const visibleApps = APP_DEFINITIONS.filter((app) => !app.adminOnly || role === "admin");
+  const visibleApps = APP_DEFINITIONS.filter(
+    (app) => !app.hiddenFromLauncher && (!app.adminOnly || role === "admin"),
+  );
 
   const hasMaximized = windows.some((w) => w.isMaximized);
 
@@ -43,9 +45,9 @@ export default function Dock() {
     (index: number) => {
       if (hoveredIndex === null) return 1;
       const distance = Math.abs(index - hoveredIndex);
-      if (distance === 0) return 1.4;
-      if (distance === 1) return 1.2;
-      if (distance === 2) return 1.08;
+      if (distance === 0) return 1.32;
+      if (distance === 1) return 1.16;
+      if (distance === 2) return 1.06;
       return 1;
     },
     [hoveredIndex]
@@ -79,29 +81,31 @@ export default function Dock() {
             const Icon = ICON_MAP[app.icon] ?? FallbackIcon;
             const scale = getScale(index);
             const open = isAppOpen(app.id);
-            const lift = (scale - 1) * 28;
+            const lift = (scale - 1) * 24;
             const isHovered = hoveredIndex === index;
 
             return (
               <div key={app.id} className="dock-item-col">
                 {isHovered && (
-                  <div className="dock-tooltip">{app.title}</div>
+                  <div className="dock-tooltip">
+                    <span className="dock-tooltip-label">{app.title}</span>
+                    <span className="dock-tooltip-caret" aria-hidden />
+                  </div>
                 )}
                 <div
                   className="dock-item-lift"
                   style={{ transform: `translateY(-${lift}px)` }}
                 >
                   <button
-                    className="dock-item"
+                    className={`dock-item${open ? " dock-item--open" : ""}`}
                     style={{ transform: `scale(${scale})` }}
                     onClick={() => openWindow(app.id)}
                     onMouseEnter={() => setHoveredIndex(index)}
+                    aria-label={open ? `${app.title} (open)` : app.title}
                   >
-                    <Icon size={30} />
+                    <Icon size={28} />
+                    <span className="dock-item-seam" aria-hidden />
                   </button>
-                </div>
-                <div className="dock-indicator-slot">
-                  {open && <div className="dock-indicator" />}
                 </div>
               </div>
             );

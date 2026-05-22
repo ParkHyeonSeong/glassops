@@ -16,6 +16,7 @@
   --text-primary: #e0e0e0;
   --text-secondary: #8888aa;
   --color-accent: #4facfe;
+  --color-accent-rgb: 79, 172, 254;
   --color-success: #43e97b;
   --color-warning: #f7971e;
   --color-danger: #f85032;
@@ -74,7 +75,7 @@ body {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at 30% 20%, rgba(79, 172, 254, 0.15), transparent 60%),
+    radial-gradient(ellipse at 30% 20%, rgba(var(--color-accent-rgb), 0.15), transparent 60%),
     radial-gradient(ellipse at 70% 80%, rgba(161, 140, 209, 0.12), transparent 60%),
     linear-gradient(135deg, #0f0f23, #1a1a3e, #0d1b2a);
   z-index: 0;
@@ -140,8 +141,8 @@ body {
 }
 
 .login-avatar-active {
-  background: rgba(79, 172, 254, 0.15);
-  border-color: rgba(79, 172, 254, 0.3);
+  background: rgba(var(--color-accent-rgb), 0.15);
+  border-color: rgba(var(--color-accent-rgb), 0.3);
   color: #fff;
 }
 
@@ -680,8 +681,8 @@ body {
 /* Snap preview */
 .snap-preview {
   position: absolute;
-  background: rgba(79, 172, 254, 0.1);
-  border: 2px solid rgba(79, 172, 254, 0.3);
+  background: rgba(var(--color-accent-rgb), 0.1);
+  border: 2px solid rgba(var(--color-accent-rgb), 0.3);
   border-radius: 10px;
   z-index: 0;
   pointer-events: none;
@@ -732,14 +733,21 @@ body {
 .dock {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  padding: 4px 8px 0;
-  background: var(--dock-bg);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  gap: 4px;
+  padding: 9px 12px;
+  background: linear-gradient(
+    180deg,
+    rgba(56, 56, 84, 0.55) 0%,
+    rgba(28, 28, 48, 0.62) 100%
+  );
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  box-shadow: 0 8px 32px var(--glass-shadow);
+  border-radius: 20px;
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.25) inset;
 }
 
 .dock-item-col {
@@ -751,61 +759,141 @@ body {
 
 .dock-tooltip {
   position: absolute;
-  bottom: calc(100% + 20px);
+  bottom: calc(100% + 14px);
   left: 50%;
   transform: translateX(-50%);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   pointer-events: none;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
-  animation: dock-tooltip-in 0.12s ease-out;
+  animation: dock-tooltip-in 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: bottom center;
+}
+
+.dock-tooltip-label {
+  padding: 5px 10px;
+  background: rgba(20, 20, 36, 0.92);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  color: #f5f5fa;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.dock-tooltip-caret {
+  width: 8px;
+  height: 8px;
+  background: rgba(20, 20, 36, 0.92);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  transform: translateY(-5px) rotate(45deg);
 }
 
 @keyframes dock-tooltip-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }
 
 .dock-item-lift {
-  transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   will-change: transform;
 }
 
 .dock-item {
-  width: 52px;
-  height: 52px;
+  position: relative;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
-  border: none;
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
   color: var(--text-primary);
   cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-    background 0.15s ease;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  transition:
+    transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
   transform-origin: bottom center;
-  will-change: transform;
 }
 
 .dock-item:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.1) inset,
+    0 6px 16px rgba(0, 0, 0, 0.25);
 }
 
-.dock-indicator-slot {
-  height: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.dock-item:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow:
+    0 0 0 2px rgba(var(--color-accent-rgb), 0.25),
+    0 1px 0 rgba(255, 255, 255, 0.1) inset;
 }
 
-.dock-indicator {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.7);
+.dock-item--open {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--color-accent-rgb), 0.18) 0%,
+    rgba(var(--color-accent-rgb), 0.06) 100%
+  );
+  border-color: rgba(var(--color-accent-rgb), 0.28);
+}
+
+.dock-item--open:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--color-accent-rgb), 0.26) 0%,
+    rgba(var(--color-accent-rgb), 0.1) 100%
+  );
+  border-color: rgba(var(--color-accent-rgb), 0.4);
+}
+
+.dock-item-seam {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  width: 18px;
+  height: 2px;
+  border-radius: 1px;
+  transform: translateX(-50%) scaleX(0);
+  transform-origin: center;
+  background: var(--color-accent);
+  box-shadow: 0 0 8px rgba(var(--color-accent-rgb), 0.7);
+  opacity: 0;
+  transition:
+    transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.dock-item--open .dock-item-seam {
+  transform: translateX(-50%) scaleX(1);
+  opacity: 1;
 }
 
 /* ===== App Placeholder ===== */
@@ -829,7 +917,7 @@ body {
   font-size: 12px;
   font-family: monospace;
   color: var(--color-accent);
-  background: rgba(79, 172, 254, 0.1);
+  background: rgba(var(--color-accent-rgb), 0.1);
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -1996,7 +2084,7 @@ body {
   height: 100%;
 }
 
-.docker-logs-header {
+.docker-window-header {
   display: flex;
   align-items: center;
   gap: 8px;
