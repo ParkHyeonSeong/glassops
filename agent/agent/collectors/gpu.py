@@ -1,12 +1,17 @@
 """Collects NVIDIA GPU metrics via pynvml. Gracefully returns empty if unavailable."""
 
 import logging
+import time as _time
 from typing import Optional
 
 logger = logging.getLogger("glassops.agent")
 
 _nvml_initialized = False
 _driver_version: str = ""
+# Per-process util samples carry a `lastSeenTimeStamp` cursor that NVML uses to
+# return only newly-recorded windows; we advance it per device each cycle so we
+# pick up fresh utilization data without re-receiving stale rows.
+_last_util_ts: dict[int, int] = {}
 
 
 def _ensure_nvml() -> bool:
@@ -76,7 +81,7 @@ def collect_gpu() -> Optional[list[dict]]:
             except Exception:
                 pass
 
-            # GPU processes (compute + graphics)
+            # GPU processes (compute + graphics) — VRAM ownership.
             processes = []
             seen_pids: set[int] = set()
             for getter in (pynvml.nvmlDeviceGetComputeRunningProcesses, pynvml.nvmlDeviceGetGraphicsRunningProcesses):
@@ -88,9 +93,44 @@ def collect_gpu() -> Optional[list[dict]]:
                             processes.append({
                                 "pid": proc.pid,
                                 "vram_bytes": vram if vram is not None else -1,
+                                "sm_util": 0,
                             })
                 except Exception:
                     pass
+
+            # Per-process SM utilization (NVML keeps ~1s of sampled util per pid,
+            # delivered incrementally past `lastSeenTimeStamp`). Sample window
+            # spans the last ~1s; we pass a 1s-back cursor for the first call and
+            # then store the highest timestamp returned so subsequent calls only
+            # see fresh rows.
+            try:
+                cursor = _last_util_ts.get(i, int((_time.time() - 1) * 1_000_000))
+                util_samples = pynvml.nvmlDeviceGetProcessUtilization(handle, cursor)
+                by_pid: dict[int, dict] = {}
+                max_ts = cursor
+                for s in util_samples or []:
+                    pid = getattr(s, "pid", 0)
+                    if pid <= 0:
+                        continue
+                    ts = getattr(s, "timeStamp", 0)
+                    if ts > max_ts:
+                        max_ts = ts
+                    existing = by_pid.get(pid)
+                    # Keep the most recent sample per pid (highest timestamp).
+                    if existing is None or ts >= existing.get("ts", 0):
+                        by_pid[pid] = {
+                            "ts": ts,
+                            "sm": getattr(s, "smUtil", 0) or 0,
+                        }
+                _last_util_ts[i] = max_ts
+                for proc in processes:
+                    s = by_pid.get(proc["pid"])
+                    if s is not None:
+                        proc["sm_util"] = s["sm"]
+            except Exception:
+                # NVML returns NVML_ERROR_NOT_FOUND when no util data is available
+                # yet — fine, just leave sm_util=0 on the processes.
+                pass
 
             gpus.append({
                 "index": i,

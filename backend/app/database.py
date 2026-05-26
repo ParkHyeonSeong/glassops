@@ -244,6 +244,8 @@ async def get_container_history(
                     "mem": float(c.get("mem_usage", 0) or 0),
                     "mem_limit": float(c.get("mem_limit", 0) or 0),
                     "vram": float(gpu.get("vram_bytes", 0) or 0) if gpu else 0.0,
+                    "gpu_util": float(gpu.get("gpu_util", 0) or 0) if gpu else 0.0,
+                    "gpu_present": bool(gpu) or bool(c.get("gpu_reserved")),
                 }
                 result.append(point)
                 break
@@ -362,7 +364,10 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                         "samples": 0,
                         "mem_limit": c.get("mem_limit", 0),
                         "gpu_vram_sum": 0.0,
-                        "gpu_samples": 0,
+                        "gpu_util_sum": 0.0,
+                        "gpu_vram_samples": 0,
+                        "gpu_util_samples": 0,
+                        "gpu_seen": False,
                     }
                     agg[name] = s
                 s["cpu_sum"] += float(c.get("cpu_percent", 0) or 0)
@@ -377,15 +382,22 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 ml = c.get("mem_limit", 0) or 0
                 if ml > 0:
                     s["mem_limit"] = ml
-                # Average VRAM only across samples where the container actually held
-                # GPU memory — averaging zeros into the divisor would understate usage
-                # for workloads that allocate intermittently.
+                # Average VRAM/SM only across samples where the container actually held
+                # GPU memory or was running compute — averaging zeros into the divisor
+                # would understate usage for workloads that allocate intermittently.
+                # gpu_reserved=true with zero util/vram still creates the field so the
+                # downsampled history shows the idle period instead of dropping out.
                 gpu = c.get("gpu")
                 if isinstance(gpu, dict):
                     vram = float(gpu.get("vram_bytes", 0) or 0)
+                    util = float(gpu.get("gpu_util", 0) or 0)
                     if vram > 0:
                         s["gpu_vram_sum"] += vram
-                        s["gpu_samples"] += 1
+                        s["gpu_vram_samples"] = s.get("gpu_vram_samples", 0) + 1
+                    if util > 0:
+                        s["gpu_util_sum"] += util
+                        s["gpu_util_samples"] = s.get("gpu_util_samples", 0) + 1
+                    s["gpu_seen"] = True
         out_containers = []
         for s in agg.values():
             entry = {
@@ -399,8 +411,11 @@ def _average_metrics(entries: list[dict]) -> dict | None:
                 "mem_usage": s["mem_sum"] / s["samples"] if s["samples"] else 0,
                 "mem_limit": s["mem_limit"],
             }
-            if s["gpu_samples"] > 0:
-                entry["gpu"] = {"vram_bytes": s["gpu_vram_sum"] / s["gpu_samples"]}
+            if s["gpu_seen"]:
+                entry["gpu"] = {
+                    "vram_bytes": s["gpu_vram_sum"] / s["gpu_vram_samples"] if s["gpu_vram_samples"] else 0,
+                    "gpu_util": s["gpu_util_sum"] / s["gpu_util_samples"] if s["gpu_util_samples"] else 0,
+                }
             out_containers.append(entry)
         result["containers"] = out_containers
     except (KeyError, IndexError, TypeError):

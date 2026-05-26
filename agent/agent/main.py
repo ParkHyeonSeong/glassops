@@ -23,10 +23,14 @@ logger = logging.getLogger("glassops.agent")
 
 
 def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
-    """Sum GPU VRAM per container by mapping each GPU process pid to its cgroup.
+    """Attribute GPU usage to containers via /proc/<pid>/cgroup mapping.
 
-    Containers that own no GPU process get no `gpu` field — keeps the payload
-    smaller and lets the UI decide whether to render the GPU chart.
+    Containers that reserve a GPU (--gpus / nvidia runtime) get a `gpu` field
+    even when idle so the dashboard can chart util/vram from the moment work
+    starts. SM utilization (exposed as `gpu_util` to match the per-container
+    scalar in the history API) is summed across the container's processes and
+    clamped to 100% — a single device can't deliver more, and we surface a
+    single scalar per container.
     """
     agg: dict[str, dict] = {}
     seen_pids: set[int] = set()
@@ -34,24 +38,39 @@ def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
         gpu_idx = gpu.get("index", 0)
         for proc in gpu.get("processes") or []:
             pid = proc.get("pid")
-            vram = proc.get("vram_bytes", 0)
             if not isinstance(pid, int) or pid <= 0:
                 continue
             seen_pids.add(pid)
+            vram = proc.get("vram_bytes", 0)
+            util = proc.get("sm_util", 0) or 0
             if not isinstance(vram, int) or vram < 0:
-                continue
+                vram = 0
             sid = cgroup_stats.container_id_for_pid(pid)
             if sid is None:
                 continue
-            entry = agg.setdefault(sid, {"vram_bytes": 0, "processes": []})
+            entry = agg.setdefault(sid, {"vram_bytes": 0, "gpu_util": 0, "processes": []})
             entry["vram_bytes"] += vram
-            entry["processes"].append({"pid": pid, "vram_bytes": vram, "gpu_index": gpu_idx})
+            entry["gpu_util"] += util
+            entry["processes"].append({
+                "pid": pid,
+                "vram_bytes": vram,
+                "gpu_util": util,
+                "gpu_index": gpu_idx,
+            })
+
+    for entry in agg.values():
+        if entry["gpu_util"] > 100:
+            entry["gpu_util"] = 100
 
     cgroup_stats.gc_pid_cache(seen_pids)
     for c in containers:
         sid = c.get("id")
         if sid and sid in agg:
             c["gpu"] = agg[sid]
+        elif c.get("gpu_reserved"):
+            # Reservation exists but no live GPU process — show empty chart so
+            # idle workloads still appear in the dashboard.
+            c["gpu"] = {"vram_bytes": 0, "gpu_util": 0, "processes": []}
 
 
 async def collect_metrics() -> dict:

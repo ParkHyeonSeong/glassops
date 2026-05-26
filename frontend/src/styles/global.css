@@ -21,6 +21,7 @@
   --color-warning: #f7971e;
   --color-danger: #f85032;
   --color-gpu: #a18cd1;
+  --color-gpu-util: #ff6ad5;
 
   /* Sizes */
   --menubar-height: 36px;
@@ -2308,16 +2309,29 @@ body {
   flex-wrap: wrap;
 }
 
+/* Container query: reacts to the metrics window's own width, not the viewport. */
+.docker-metrics-view {
+  container-type: inline-size;
+}
+
 .docker-metrics-charts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
   flex: 1;
   min-height: 0;
 }
 
+/* 600px is wide enough to fit two ~280px cards with gap + margins.
+   Cap at 2 cols so 4 cards lay out as 2x2 instead of 3+1 orphan. */
+@container (min-width: 600px) {
+  .docker-metrics-charts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .docker-metrics-charts .sysmon-chart-card {
-  min-height: 220px;
+  min-height: 200px;
 }
 
 .docker-metrics-chart-header {

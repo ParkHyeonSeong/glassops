@@ -63,6 +63,42 @@ def _parse_ports(ports: dict) -> list[str]:
     return result
 
 
+def _has_gpu_reservation(c) -> bool:
+    """True if the container reserves NVIDIA GPU capacity at the runtime layer.
+
+    Detects both --gpus / DeviceRequests (driver=nvidia, capabilities contain gpu)
+    and the legacy nvidia-runtime case. We don't require a process to be using the
+    GPU yet — the reservation alone means the dashboard should show idle GPU charts
+    so users can watch them ramp up.
+    """
+    try:
+        host_cfg = c.attrs.get("HostConfig", {}) or {}
+        # Modern path: --gpus / docker-compose deploy.resources.devices nvidia
+        for req in host_cfg.get("DeviceRequests") or []:
+            driver = (req.get("Driver") or "").lower()
+            caps = req.get("Capabilities") or []
+            flat = {cap for group in caps for cap in (group or [])}
+            if driver == "nvidia" or "gpu" in flat or "compute" in flat:
+                return True
+        # Legacy path: explicit --runtime=nvidia
+        if (host_cfg.get("Runtime") or "").lower() == "nvidia":
+            return True
+        # Fallback: NVIDIA_VISIBLE_DEVICES env (set by nvidia-container-toolkit).
+        # `=void` and `=none` are explicit opt-outs (toolkit convention); empty value
+        # means no devices either. Anything else (all / 0 / GPU-UUID / index list)
+        # is a real reservation.
+        env = c.attrs.get("Config", {}).get("Env") or []
+        for e in env:
+            if not e.startswith("NVIDIA_VISIBLE_DEVICES="):
+                continue
+            val = e[len("NVIDIA_VISIBLE_DEVICES="):].strip().lower()
+            if val and val not in ("void", "none"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def collect_containers() -> Optional[list[dict]]:
     if not _ensure_client():
         return None
@@ -88,6 +124,7 @@ def collect_containers() -> Optional[list[dict]]:
                 "cpu_percent": stats.get("cpu_percent", 0.0) if stats else 0.0,
                 "mem_usage": stats.get("mem_usage", 0) if stats else 0,
                 "mem_limit": stats.get("mem_limit", 0) if stats else 0,
+                "gpu_reserved": _has_gpu_reservation(c),
             }
             result.append(info)
             live_ids.add(c.short_id)

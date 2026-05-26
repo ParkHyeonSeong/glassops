@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useId } from "react";
+import { useState, useEffect, useMemo, useId, useRef } from "react";
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
@@ -6,7 +6,15 @@ import { StatusBadge, ContainerActionButtons, ContainerRemovedBanner } from "./d
 import { useContainerAction, formatBytes, type ContainerWindowProps } from "./dockerSharedUtils";
 
 type TimeRange = "live" | "5m" | "1h" | "6h" | "24h" | "7d";
-type ContainerSample = { t: number; cpu: number; mem: number; mem_limit: number; vram: number };
+type ContainerSample = {
+  t: number;
+  cpu: number;
+  mem: number;
+  mem_limit: number;
+  vram: number;
+  gpu_util: number;
+  gpu_present: boolean;
+};
 type ChartPoint = { t: number; value: number; bytes?: number };
 
 const TOOLTIP_STYLE = {
@@ -16,6 +24,19 @@ const TOOLTIP_STYLE = {
   fontSize: 11,
   color: "#e0e0e0",
 };
+
+// Live mode keeps last N samples; ranged modes slide a time window of these widths.
+const RANGE_WINDOW_SEC: Record<Exclude<TimeRange, "live">, number> = {
+  "5m": 300,
+  "1h": 3600,
+  "6h": 21600,
+  "24h": 86400,
+  "7d": 604800,
+};
+const LIVE_MAX_SAMPLES = 120;
+// Soft cap on ranged-mode buffer. ~600 points renders cleanly at any window
+// size; longer ranges already arrive downsampled so we don't need more.
+const RANGED_MAX_SAMPLES = 600;
 
 function formatChartTime(ts: number, range: TimeRange): string {
   const d = new Date(ts * 1000);
@@ -37,67 +58,91 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const removed = !container;
 
   const [range, setRange] = useState<TimeRange>("1h");
-  const [history, setHistory] = useState<ContainerSample[]>([]);
-  const [liveSamples, setLiveSamples] = useState<ContainerSample[]>([]);
+  const [samples, setSamples] = useState<ContainerSample[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const action = useContainerAction(agentId, containerId);
 
+  // History fetch on range change (skipped for "live" — it builds from pushes only).
+  // Pushes that land during the fetch are preserved by merging on resolve.
   useEffect(() => {
-    setLiveSamples([]);
-  }, [containerName, range]);
-
-  useEffect(() => {
-    if (range !== "live" || !containerName) return;
-    const unsubscribe = useMetricsStore.subscribe((state) => {
-      // Read this window's agent specifically — `state.current` follows MenuBar
-      // selection and would deliver wrong data after a host switch.
-      const snap = state.agents[agentId]?.current;
-      if (!snap) return;
-      const c = (snap.containers ?? []).find((x) => x.name === containerName);
-      if (!c) return;
-      const t = snap.timestamp ?? Date.now() / 1000;
-      setLiveSamples((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.t === t) return prev;
-        const next = [
-          ...prev,
-          {
-            t,
-            cpu: c.cpu_percent,
-            mem: c.mem_usage,
-            mem_limit: c.mem_limit,
-            vram: c.gpu?.vram_bytes ?? 0,
-          },
-        ];
-        return next.length > 120 ? next.slice(-120) : next;
-      });
-    });
-    return unsubscribe;
-  }, [range, containerName, agentId]);
-
-  useEffect(() => {
-    if (range === "live") {
-      setHistory([]);
-      setError(null);
-      return;
-    }
-    if (!agentId || !containerName) return;
+    setSamples([]);
+    setError(null);
+    if (range === "live" || !agentId || !containerName) return;
     let cancelled = false;
     setLoading(true);
-    setError(null);
     fetchWithAuth(`/api/metrics/${agentId}/containers/${encodeURIComponent(containerName)}/range?duration=${range}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((d) => { if (!cancelled) setHistory(d.metrics || []); })
-      .catch(() => { if (!cancelled) { setHistory([]); setError("Failed to load history"); } })
+      .then((d) => {
+        if (cancelled) return;
+        const fetched: ContainerSample[] = (d.metrics || []).map((p: ContainerSample & { mem_limit?: number }) => ({
+          t: p.t,
+          cpu: p.cpu ?? 0,
+          mem: p.mem ?? 0,
+          mem_limit: p.mem_limit ?? 0,
+          vram: p.vram ?? 0,
+          gpu_util: p.gpu_util ?? 0,
+          gpu_present: p.gpu_present ?? false,
+        }));
+        setSamples((prev) => {
+          // Merge with any live samples that arrived before the fetch resolved,
+          // keeping a single ascending-by-timestamp series.
+          const seen = new Set(fetched.map((s) => s.t));
+          const tail = prev.filter((s) => !seen.has(s.t));
+          if (!tail.length) return fetched;
+          return [...fetched, ...tail].sort((a, b) => a.t - b.t);
+        });
+      })
+      .catch(() => { if (!cancelled) setError("Failed to load history"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [agentId, containerName, range]);
 
-  const data: ContainerSample[] = range === "live" ? liveSamples : history;
+  // Live tail — applies to every range. Manual identity check on the per-agent
+  // snapshot so the listener body only runs when this window's data changes,
+  // not on unrelated store mutations (selectAgent / setConnected / loadHistory).
+  const prevSnapRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (!containerName) return;
+    prevSnapRef.current = null;
+    const unsubscribe = useMetricsStore.subscribe((state) => {
+      const snap = state.agents[agentId]?.current ?? null;
+      if (snap === prevSnapRef.current) return;
+      prevSnapRef.current = snap;
+      if (!snap) return;
+      const c = (snap.containers ?? []).find((x) => x.name === containerName);
+      if (!c) return;
+      const t = snap.timestamp ?? Date.now() / 1000;
+      setSamples((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.t === t) return prev;
+        const sample: ContainerSample = {
+          t,
+          cpu: c.cpu_percent,
+          mem: c.mem_usage,
+          mem_limit: c.mem_limit,
+          vram: c.gpu?.vram_bytes ?? 0,
+          gpu_util: c.gpu?.gpu_util ?? 0,
+          gpu_present: !!c.gpu,
+        };
+        const next: ContainerSample[] = [...prev, sample];
+        if (range === "live") {
+          return next.length > LIVE_MAX_SAMPLES ? next.slice(-LIVE_MAX_SAMPLES) : next;
+        }
+        // Anchor the cutoff to wall clock so a brief push gap doesn't drop
+        // a chunk of valid samples when the next push lands far in the future.
+        const cutoff = Math.max(t, Date.now() / 1000) - RANGE_WINDOW_SEC[range];
+        const windowed = next.filter((s) => s.t >= cutoff);
+        return windowed.length > RANGED_MAX_SAMPLES ? windowed.slice(-RANGED_MAX_SAMPLES) : windowed;
+      });
+    });
+    return unsubscribe;
+  }, [range, containerName, agentId]);
+
+  const data = samples;
 
   const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
   const memPctData = useMemo<ChartPoint[]>(
@@ -116,7 +161,13 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     () => data.map((d) => ({ t: d.t, value: d.vram, bytes: d.vram })),
     [data],
   );
-  const hasVram = data.some((d) => d.vram > 0) || (container?.gpu?.vram_bytes ?? 0) > 0;
+  const gpuUtilData = useMemo<ChartPoint[]>(
+    () => data.map((d) => ({ t: d.t, value: d.gpu_util })),
+    [data],
+  );
+  // Show GPU charts when reservation/usage was ever observed in the window or on
+  // the live container — covers idle reservations and post-allocation periods.
+  const hasGpu = data.some((d) => d.gpu_present) || !!container?.gpu;
 
   const avgCpu = data.length ? data.reduce((s, d) => s + d.cpu, 0) / data.length : 0;
   const peakCpu = data.length ? Math.max(...data.map((d) => d.cpu)) : 0;
@@ -124,6 +175,8 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const peakMem = data.length ? Math.max(...data.map((d) => d.mem)) : 0;
   const avgVram = data.length ? data.reduce((s, d) => s + d.vram, 0) / data.length : 0;
   const peakVram = data.length ? Math.max(...data.map((d) => d.vram)) : 0;
+  const avgGpuUtil = data.length ? data.reduce((s, d) => s + d.gpu_util, 0) / data.length : 0;
+  const peakGpuUtil = data.length ? Math.max(...data.map((d) => d.gpu_util)) : 0;
   const memYMax = memLimitBytes > 0
     ? 100
     : Math.max(10, memPctData.reduce((m, d) => Math.max(m, d.value), 0) * 1.3);
@@ -197,17 +250,30 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           />
         </div>
 
-        {hasVram && (
-          <div className="sysmon-chart-card">
-            <div className="docker-metrics-chart-header">
-              <span className="sysmon-chart-title">GPU VRAM</span>
-              <span className="docker-metrics-stats">
-                avg {formatBytes(avgVram)} · peak {formatBytes(peakVram)}
-              </span>
+        {hasGpu && (
+          <>
+            <div className="sysmon-chart-card">
+              <div className="docker-metrics-chart-header">
+                <span className="sysmon-chart-title">GPU Util</span>
+                <span className="docker-metrics-stats">
+                  avg {avgGpuUtil.toFixed(1)}% · peak {peakGpuUtil.toFixed(1)}%
+                </span>
+              </div>
+              <ContainerChart data={gpuUtilData} color="var(--color-gpu-util, #ff6ad5)" range={range}
+                valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakGpuUtil * 1.3)} />
             </div>
-            <ContainerChart data={vramData} color="var(--color-gpu, #b388ff)" range={range}
-              valueFormatter={(v) => formatBytes(v)} yMax={vramYMax} />
-          </div>
+
+            <div className="sysmon-chart-card">
+              <div className="docker-metrics-chart-header">
+                <span className="sysmon-chart-title">GPU VRAM</span>
+                <span className="docker-metrics-stats">
+                  avg {formatBytes(avgVram)} · peak {formatBytes(peakVram)}
+                </span>
+              </div>
+              <ContainerChart data={vramData} color="var(--color-gpu, #b388ff)" range={range}
+                valueFormatter={(v) => formatBytes(v)} yMax={vramYMax} />
+            </div>
+          </>
         )}
       </div>
     </div>

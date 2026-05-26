@@ -53,7 +53,11 @@ export interface GpuMetrics {
 
 export interface ContainerGpuUsage {
   vram_bytes: number;
-  processes?: { pid: number; vram_bytes: number; gpu_index: number }[];
+  // Sum of SM utilization across the container's GPU processes (0-100). Named
+  // `gpu_util` to match the per-container scalar exposed by the history endpoint
+  // — different from device-level `GpuMetrics.gpu_util` (the path makes scope clear).
+  gpu_util?: number;
+  processes?: { pid: number; vram_bytes: number; gpu_util?: number; gpu_index: number }[];
 }
 
 export interface ContainerInfo {
