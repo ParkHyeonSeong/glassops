@@ -1091,6 +1091,55 @@ body {
   color: var(--text-primary);
 }
 
+.sysmon-cores-grid {
+  display: grid;
+  /* Adapts from ~4 cols at 4 cores up to ~8+ cols on big boxes. Cells stay
+     readable down to 110px before wrapping to fewer columns. */
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  height: 100%;
+  overflow-y: auto;
+  align-content: start;
+  padding: 2px;
+}
+
+.sysmon-core-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-height: 86px;
+}
+
+.sysmon-core-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.sysmon-core-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.sysmon-core-value {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysmon-core-chart {
+  flex: 1;
+  min-height: 36px;
+}
+
 .sysmon-full-chart {
   flex: 1;
   min-height: 150px;

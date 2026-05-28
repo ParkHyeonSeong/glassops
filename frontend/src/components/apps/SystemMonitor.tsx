@@ -112,34 +112,84 @@ function MiniChart({ data, dataKey, color, range }: {
   );
 }
 
-function CoresChart({ history, range }: { history: any[]; range: TimeRange }) {
-  const coreCount = history[0]?.cpu?.percent_per_core?.length ?? 0;
-  const data = useMemo(() =>
-    history.map((m: any) => {
-      const entry: Record<string, number> = { t: m.timestamp ?? 0 };
-      (m.cpu?.percent_per_core ?? []).forEach((v: number, ci: number) => { entry[`c${ci}`] = v; });
-      return entry;
-    }), [history]);
+function CoresChart({ history }: { history: any[] }) {
+  // Prefer the authoritative count from the CPU metric (also the basis for the
+  // tab label) so an in-flight gap snapshot can't make us under-count cores.
+  const latest = history[history.length - 1]?.cpu;
+  const latestPerCore: number[] = latest?.percent_per_core ?? [];
+  const coreCount: number = latest?.count_logical
+    ?? latestPerCore.length
+    ?? history[0]?.cpu?.percent_per_core?.length
+    ?? 0;
+
+  // Build one timeseries per core in a single pass so the grid renders many
+  // cards cheaply — each cell then just reads its slice.
+  // TODO: virtualize for hosts with 128+ cores (react-window) — current design
+  // mounts one ResponsiveContainer per core which is fine up to ~64.
+  const perCore: { t: number; v: number }[][] = useMemo(() => {
+    const out: { t: number; v: number }[][] = Array.from({ length: coreCount }, () => []);
+    for (const m of history as any[]) {
+      const t = m.timestamp ?? 0;
+      const cores = m.cpu?.percent_per_core ?? [];
+      for (let i = 0; i < coreCount; i++) {
+        out[i].push({ t, v: cores[i] ?? 0 });
+      }
+    }
+    return out;
+  }, [history, coreCount]);
 
   if (coreCount === 0) return <p className="sysmon-empty-sub">No core data</p>;
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 20, left: 8 }}>
-        <TimeAxis range={range} />
-        <YAxis domain={[0, 100]} hide />
-        <Tooltip contentStyle={TOOLTIP_STYLE}
-          formatter={(v, name) => [`${Number(v).toFixed(1)}%`, `Core ${String(name).slice(1)}`]}
-          labelFormatter={(ts) => formatTime(Number(ts), range)}
+    <div className="sysmon-cores-grid">
+      {Array.from({ length: coreCount }, (_, i) => (
+        <CoreCell
+          key={i}
+          index={i}
+          color={CORE_COLORS[i % CORE_COLORS.length]}
+          data={perCore[i]}
+          current={latestPerCore[i] ?? 0}
         />
-        <Legend wrapperStyle={{ fontSize: 10 }} formatter={(v) => `C${v.slice(1)}`} />
-        {Array.from({ length: coreCount }, (_, i) => (
-          <Area key={i} type="monotone" dataKey={`c${i}`}
-            stroke={CORE_COLORS[i % CORE_COLORS.length]} strokeWidth={1}
-            fill="transparent" isAnimationActive={false} />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
+      ))}
+    </div>
+  );
+}
+
+function CoreCell({
+  index,
+  color,
+  data,
+  current,
+}: {
+  index: number;
+  color: string;
+  data: { t: number; v: number }[];
+  current: number;
+}) {
+  const gradId = useId();
+  return (
+    <div className="sysmon-core-cell">
+      <div className="sysmon-core-header">
+        <span className="sysmon-core-label">Core {index}</span>
+        <span className="sysmon-core-value" style={{ color }}>{current.toFixed(0)}%</span>
+      </div>
+      <div className="sysmon-core-chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity={0.5} />
+                <stop offset="100%" stopColor={color} stopOpacity={0.04} />
+              </linearGradient>
+            </defs>
+            <XAxis dataKey="t" hide />
+            <YAxis domain={[0, 100]} hide />
+            <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.2}
+              fill={`url(#${gradId})`} isAnimationActive={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }
 
@@ -300,7 +350,7 @@ export default function SystemMonitor() {
 
       {tab === "cores" && (
         <div className="sysmon-full-chart">
-          <CoresChart history={activeHistory} range={timeRange} />
+          <CoresChart history={activeHistory} />
         </div>
       )}
 
