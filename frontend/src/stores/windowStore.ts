@@ -108,9 +108,14 @@ export const APP_DEFINITIONS: AppDefinition[] = [
   },
 ];
 
+type WindowSize = Pick<WindowBounds, "width" | "height">;
+
 interface WindowStore {
   windows: WindowState[];
   nextZIndex: number;
+  // Last resized size per appId, restored on the next openWindow so users
+  // don't have to redo their layout every time. Persists to localStorage.
+  lastSizes: Record<string, WindowSize>;
 
   openWindow: (
     appId: string,
@@ -132,6 +137,54 @@ interface WindowStore {
   closeFocusedWindow: () => void;
 }
 
+const LAST_SIZES_KEY = "glassops_window_sizes";
+
+function loadLastSizes(): Record<string, WindowSize> {
+  try {
+    const raw = localStorage.getItem(LAST_SIZES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    // Filter to entries with finite width/height numbers; tolerates user-edited
+    // localStorage and accidental shape drift across releases.
+    const out: Record<string, WindowSize> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (
+        v && typeof v === "object" &&
+        "width" in v && "height" in v &&
+        Number.isFinite((v as WindowSize).width) &&
+        Number.isFinite((v as WindowSize).height)
+      ) {
+        out[k] = { width: (v as WindowSize).width, height: (v as WindowSize).height };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveLastSizes(sizes: Record<string, WindowSize>): void {
+  try {
+    localStorage.setItem(LAST_SIZES_KEY, JSON.stringify(sizes));
+  } catch {
+    // localStorage may be unavailable (private mode, quota). Silent failure is
+    // fine — the in-memory copy still works for this session.
+  }
+}
+
+// Clamp into [min, max]. When min > max (e.g. tiny viewport with a larger
+// app minWidth), min wins — the window stays at minimum usable width even if
+// it slightly overflows the viewport, which is preferable to a 0-sized window.
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+// Chrome reserved by the menubar (top) and dock (bottom). Keep in sync with
+// the values in `snapWindow` and `Window.tsx`.
+const MENUBAR_HEIGHT = 36;
+const DOCK_HEIGHT = 72;
+
 function paramsKey(params?: Record<string, string>): string {
   if (!params) return "";
   // Stable, collision-safe serialization. encodeURIComponent guards against
@@ -148,9 +201,10 @@ let windowCounter = 0;
 export const useWindowStore = create<WindowStore>((set, get) => ({
   windows: [],
   nextZIndex: 1,
+  lastSizes: loadLastSizes(),
 
   openWindow: (appId, options) => {
-    const { windows, nextZIndex } = get();
+    const { windows, nextZIndex, lastSizes } = get();
     const params = options?.params;
     const app = APP_DEFINITIONS.find((a) => a.id === appId);
     if (!app) return;
@@ -176,14 +230,23 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
     const offset = (windowCounter % 8) * 30;
     windowCounter++;
 
+    // Restore the user's last size for this appId; clamp into a sane range so
+    // a stored size from a larger display doesn't push the window off-screen.
+    // Height excludes menubar + dock so a restored window never overlaps them.
+    const remembered = lastSizes[appId];
+    const viewportW = globalThis.innerWidth || app.defaultWidth;
+    const viewportH = (globalThis.innerHeight || app.defaultHeight) - MENUBAR_HEIGHT - DOCK_HEIGHT;
+    const width = clamp(remembered?.width ?? app.defaultWidth, app.minWidth, viewportW);
+    const height = clamp(remembered?.height ?? app.defaultHeight, app.minHeight, viewportH);
+
     const newWindow: WindowState = {
       id: `window-${crypto.randomUUID()}`,
       appId: app.id,
       title: options?.title ?? app.title,
       x: 100 + offset,
       y: 50 + offset,
-      width: app.defaultWidth,
-      height: app.defaultHeight,
+      width,
+      height,
       minWidth: app.minWidth,
       minHeight: app.minHeight,
       isMinimized: false,
@@ -262,11 +325,24 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
   },
 
   updateWindowSize: (windowId: string, width: number, height: number) => {
-    set((state) => ({
-      windows: state.windows.map((w) =>
-        w.id === windowId ? { ...w, width, height } : w
-      ),
-    }));
+    set((state) => {
+      const win = state.windows.find((w) => w.id === windowId);
+      if (!win) return state;
+      // Maximized windows fill the viewport — that size isn't a user preference,
+      // so don't overwrite the saved one. Restore/snap-out will return to the
+      // pre-maximize size anyway.
+      const shouldRemember = !win.isMaximized;
+      const lastSizes = shouldRemember
+        ? { ...state.lastSizes, [win.appId]: { width, height } }
+        : state.lastSizes;
+      if (shouldRemember) saveLastSizes(lastSizes);
+      return {
+        windows: state.windows.map((w) =>
+          w.id === windowId ? { ...w, width, height } : w
+        ),
+        lastSizes,
+      };
+    });
   },
 
   updateWindowOpacity: (windowId: string, opacity: number) => {
