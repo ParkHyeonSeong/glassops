@@ -40,6 +40,19 @@
   box-sizing: border-box;
 }
 
+/* Hide the browser's default focus ring on mouse/touch interactions (which
+   produces the stray blue outline on clicked SVG paths, chart cards, etc.)
+   while keeping it for keyboard navigation so accessibility isn't sacrificed.
+   Use :focus-visible to opt back in with our own accent-colored ring. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 body {
   font-family: var(--font-family);
   color: var(--text-primary);
