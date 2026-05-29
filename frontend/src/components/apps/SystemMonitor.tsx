@@ -1,11 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  ResponsiveContainer,
-} from "recharts";
+import { useEffect, useMemo, useState } from "react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useWindowStore } from "../../stores/windowStore";
 import { useThresholdsStore } from "../../stores/thresholdsStore";
@@ -16,6 +9,7 @@ import { METRIC_COLORS, CORE_COLORS } from "../../components/viz/tokens";
 import MetricChart from "../../components/viz/MetricChart";
 import VitalCard from "../../components/viz/VitalCard";
 import Sparkline from "../../components/viz/Sparkline";
+import CoreCell from "../../components/viz/CoreCell";
 import AlertBanner from "../../components/viz/AlertBanner";
 import AlertFeed from "../../components/viz/AlertFeed";
 import ThresholdSettings from "../../components/viz/ThresholdSettings";
@@ -24,82 +18,45 @@ import type { Alert } from "../../lib/alerts";
 
 type Tab = "overview" | "cores";
 
-function CoresChart({ history }: { history: any[] }) {
-  // Prefer the authoritative count from the CPU metric (also the basis for the
-  // tab label) so an in-flight gap snapshot can't make us under-count cores.
+function CoresChart({ history, coreThreshold }: { history: any[]; coreThreshold: { warn: number; crit: number } }) {
   const latest = history[history.length - 1]?.cpu;
   const latestPerCore: number[] = latest?.percent_per_core ?? [];
-  const coreCount: number = latest?.count_logical
-    ?? latestPerCore.length
-    ?? history[0]?.cpu?.percent_per_core?.length
-    ?? 0;
+  const coreCount: number =
+    latest?.count_logical ?? latestPerCore.length ?? history[0]?.cpu?.percent_per_core?.length ?? 0;
+  const freqMhz: number | undefined = latest?.freq_current;
+  const freqMax: number | undefined = latest?.freq_max;
 
-  // Build one timeseries per core in a single pass so the grid renders many
-  // cards cheaply — each cell then just reads its slice.
-  // TODO: virtualize for hosts with 128+ cores (react-window) — current design
-  // mounts one ResponsiveContainer per core which is fine up to ~64.
   const perCore: { t: number; v: number }[][] = useMemo(() => {
     const out: { t: number; v: number }[][] = Array.from({ length: coreCount }, () => []);
     for (const m of history as any[]) {
       const t = m.timestamp ?? 0;
       const cores = m.cpu?.percent_per_core ?? [];
-      for (let i = 0; i < coreCount; i++) {
-        out[i].push({ t, v: cores[i] ?? 0 });
-      }
+      for (let i = 0; i < coreCount; i++) out[i].push({ t, v: cores[i] ?? 0 });
     }
     return out;
   }, [history, coreCount]);
 
   if (coreCount === 0) return <p className="sysmon-empty-sub">No core data</p>;
 
-  return (
-    <div className="sysmon-cores-grid">
-      {Array.from({ length: coreCount }, (_, i) => (
-        <CoreCell
-          key={i}
-          index={i}
-          color={CORE_COLORS[i % CORE_COLORS.length]}
-          data={perCore[i]}
-          current={latestPerCore[i] ?? 0}
-        />
-      ))}
-    </div>
-  );
-}
+  const overall = latest?.percent_total ?? 0;
+  const hottestVal = Math.max(...latestPerCore, 0);
+  const hottestIdx = latestPerCore.indexOf(hottestVal);
 
-function CoreCell({
-  index,
-  color,
-  data,
-  current,
-}: {
-  index: number;
-  color: string;
-  data: { t: number; v: number }[];
-  current: number;
-}) {
-  const gradId = useId();
   return (
-    <div className="sysmon-core-cell">
-      <div className="sysmon-core-header">
-        <span className="sysmon-core-label">Core {index}</span>
-        <span className="sysmon-core-value" style={{ color }}>{current.toFixed(0)}%</span>
+    <div className="sysmon-cores">
+      <div className="sysmon-cores-summary">
+        <div><span className="lab">OVERALL CPU</span><span className="val">{overall.toFixed(0)}%</span></div>
+        <div><span className="lab">LOGICAL CORES</span><span className="val">{coreCount}</span></div>
+        <div><span className="lab">HOTTEST CORE</span><span className="val">Core {hottestIdx} · {hottestVal.toFixed(0)}%</span></div>
+        {freqMhz != null && (
+          <div><span className="lab">FREQUENCY</span><span className="val">{(freqMhz / 1000).toFixed(1)}{freqMax ? ` / ${(freqMax / 1000).toFixed(1)}` : ""} GHz</span></div>
+        )}
       </div>
-      <div className="sysmon-core-chart">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
-            <defs>
-              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity={0.5} />
-                <stop offset="100%" stopColor={color} stopOpacity={0.04} />
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="t" hide />
-            <YAxis domain={[0, 100]} hide />
-            <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.2}
-              fill={`url(#${gradId})`} isAnimationActive={false} />
-          </AreaChart>
-        </ResponsiveContainer>
+      <div className="sysmon-cores-grid">
+        {Array.from({ length: coreCount }, (_, i) => (
+          <CoreCell key={i} index={i} data={perCore[i]} current={latestPerCore[i] ?? 0}
+            freqMhz={freqMhz} threshold={coreThreshold} color={CORE_COLORS[i % CORE_COLORS.length]} />
+        ))}
       </div>
     </div>
   );
@@ -253,7 +210,7 @@ export default function SystemMonitor() {
 
       {tab === "cores" && (
         <div className="sysmon-full-chart">
-          <CoresChart history={activeHistory} />
+          <CoresChart history={activeHistory} coreThreshold={thresholds.core} />
         </div>
       )}
     </div>
