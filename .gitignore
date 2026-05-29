@@ -1,7 +1,9 @@
 # Custom
+.docs/
 .plan/
 .superpowers/
 .playwright-mcp/
+docs/
 PLAN.md
 
 # Environment
