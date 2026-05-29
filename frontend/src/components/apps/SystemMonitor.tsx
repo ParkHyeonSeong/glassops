@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMetricsStore } from "../../stores/metricsStore";
+import { useMetricsStore, type MetricSnapshot } from "../../stores/metricsStore";
 import { useWindowStore } from "../../stores/windowStore";
 import { useThresholdsStore } from "../../stores/thresholdsStore";
 import { useActiveAlerts } from "../../hooks/useActiveAlerts";
@@ -18,7 +18,7 @@ import type { Alert } from "../../lib/alerts";
 
 type Tab = "overview" | "cores";
 
-function CoresChart({ history, coreThreshold }: { history: any[]; coreThreshold: { warn: number; crit: number } }) {
+function CoresChart({ history, coreThreshold }: { history: MetricSnapshot[]; coreThreshold: { warn: number; crit: number } }) {
   const latest = history[history.length - 1]?.cpu;
   const latestPerCore: number[] = latest?.percent_per_core ?? [];
   const coreCount: number =
@@ -28,7 +28,7 @@ function CoresChart({ history, coreThreshold }: { history: any[]; coreThreshold:
 
   const perCore: { t: number; v: number }[][] = useMemo(() => {
     const out: { t: number; v: number }[][] = Array.from({ length: coreCount }, () => []);
-    for (const m of history as any[]) {
+    for (const m of history) {
       const t = m.timestamp ?? 0;
       const cores = m.cpu?.percent_per_core ?? [];
       for (let i = 0; i < coreCount; i++) out[i].push({ t, v: cores[i] ?? 0 });
@@ -63,17 +63,23 @@ function CoresChart({ history, coreThreshold }: { history: any[]; coreThreshold:
 }
 
 function useHistoricalData(agentId: string | null, range: TimeRange) {
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<MetricSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!agentId || range === "live") { setData([]); return; }
-    setLoading(true);
+    if (!agentId || range === "live") {
+      // Defer to avoid synchronous setState inside the effect body.
+      const id = setTimeout(() => setData([]), 0);
+      return () => clearTimeout(id);
+    }
+    // Defer to avoid synchronous setState inside the effect body.
+    const id = setTimeout(() => setLoading(true), 0);
     fetchWithAuth(`/api/metrics/${agentId}/range?duration=${range}`)
       .then((r) => r.json())
-      .then((d) => setData(d.metrics || []))
+      .then((d: { metrics?: MetricSnapshot[] }) => setData(d.metrics || []))
       .catch(() => setData([]))
       .finally(() => setLoading(false));
+    return () => clearTimeout(id);
   }, [agentId, range]);
 
   return { data, loading };
