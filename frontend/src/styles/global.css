@@ -3251,3 +3251,56 @@ button.viz-vital { cursor: pointer; }
   color: var(--text-primary);
 }
 .user-host-input { flex: 1; }
+
+/* ── Docker container detail drawer ── */
+.docker-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-bg);
+  border-left: 1px solid var(--glass-border);
+  box-shadow: -8px 0 32px var(--glass-shadow);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  z-index: 5;
+  animation: docker-drawer-in 0.18s ease-out;
+}
+@keyframes docker-drawer-in { from { transform: translateX(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+.docker-drawer-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--glass-border);
+}
+.docker-drawer-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.docker-drawer-name { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.docker-drawer-head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.docker-drawer-close {
+  display: flex; align-items: center; justify-content: center; width: 26px; height: 24px;
+  color: var(--text-secondary); background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border); border-radius: 6px; cursor: pointer;
+}
+.docker-drawer-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.1); }
+.docker-drawer-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.docker-drawer-loading, .docker-drawer-error, .docker-drawer-empty { font-size: 12px; color: var(--text-secondary); }
+.docker-drawer-error { color: var(--color-danger); }
+.docker-drawer-section { margin-bottom: 16px; }
+.docker-drawer-section-title {
+  margin: 0 0 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.docker-drawer-kv { display: flex; gap: 10px; padding: 3px 0; font-size: 11.5px; }
+.docker-drawer-k { flex: 0 0 38%; color: var(--text-secondary); word-break: break-all; }
+.docker-drawer-v { flex: 1; color: var(--text-primary); word-break: break-all; user-select: text; }
+.docker-drawer-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.docker-drawer-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 6px;
+  color: var(--text-primary); background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border);
+}
+.docker-drawer-env { display: flex; flex-direction: column; gap: 3px; }
+.docker-drawer-envline {
+  font-size: 11px; color: var(--text-primary); word-break: break-all; user-select: text;
+  font-variant-numeric: tabular-nums;
+}
