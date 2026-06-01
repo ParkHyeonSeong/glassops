@@ -1084,11 +1084,11 @@ body {
 }
 
 /* ========================================
-   ── viz library ──
+   viz library
    Shared visualization classes used by the System Monitor redesign
-   (components/viz/*). Ported from the design mockups
+   (components/viz). Ported from the design mockups
    (system-monitor-overview.html / system-monitor-cores.html), mapped to the
-   project's --glass-*/--color-*/--text-* tokens.
+   project's glass, color and text CSS variables.
    ======================================== */
 
 /* severity tints (shared by vital / banner / feed / core) */
