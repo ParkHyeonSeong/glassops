@@ -31,6 +31,11 @@ export interface DiskMetrics {
 export interface GpuProcess {
   pid: number;
   vram_bytes: number;
+  sm_util?: number;    // per-process SM utilization % (driver-dependent, may be 0)
+  name?: string;       // resolved by the agent; older agents omit it
+  user?: string;
+  cmd?: string;        // truncated command line
+  container?: string;  // owning container name, if any
 }
 
 export interface GpuMetrics {

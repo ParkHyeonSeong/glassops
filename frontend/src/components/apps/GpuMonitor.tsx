@@ -210,23 +210,45 @@ function GpuDetailCharts({ history, gpuIndex, timeRange, gpuCount, onSelectGpu }
 
 function GpuProcesses({ gpus }: { gpus: GpuMetrics[] }) {
   const allProcs = gpus.flatMap((gpu) =>
-    (gpu.processes ?? []).map((p) => ({ ...p, gpuIndex: gpu.index, gpuName: gpu.name }))
+    (gpu.processes ?? []).map((p) => ({ ...p, gpuIndex: gpu.index })),
   );
 
   if (allProcs.length === 0) {
     return <div className="gpu-empty"><p>No GPU processes running</p></div>;
   }
 
+  const showUtil = allProcs.some((p) => (p.sm_util ?? 0) > 0);
+  const sorted = [...allProcs].sort((a, b) => b.vram_bytes - a.vram_bytes);
+
   return (
-    <table className="docker-table">
+    <table className="docker-table gpu-proc-table">
       <thead>
-        <tr><th>PID</th><th>GPU</th><th>VRAM Used</th></tr>
+        <tr>
+          <th>PID</th>
+          <th>Process</th>
+          <th>User</th>
+          <th>Container</th>
+          <th>GPU</th>
+          {showUtil && <th>GPU%</th>}
+          <th>VRAM</th>
+        </tr>
       </thead>
       <tbody>
-        {allProcs.sort((a, b) => b.vram_bytes - a.vram_bytes).map((p) => (
+        {sorted.map((p) => (
           <tr key={`${p.gpuIndex}-${p.pid}`}>
             <td className="proc-cell-pid">{p.pid}</td>
+            <td className="gpu-proc-name">
+              <span className="gpu-proc-name-main">{p.name || "—"}</span>
+              {p.cmd && <span className="gpu-proc-cmd" title={p.cmd}>{p.cmd}</span>}
+            </td>
+            <td>{p.user || "—"}</td>
+            <td>
+              {p.container
+                ? <span className="gpu-proc-container">{p.container}</span>
+                : <span className="gpu-proc-host">host</span>}
+            </td>
             <td>GPU {p.gpuIndex}</td>
+            {showUtil && <td className="docker-cell-num">{p.sm_util ?? 0}%</td>}
             <td className="docker-cell-num">{p.vram_bytes >= 0 ? formatBytes(p.vram_bytes) : "N/A"}</td>
           </tr>
         ))}

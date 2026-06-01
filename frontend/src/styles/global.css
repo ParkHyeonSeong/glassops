@@ -3309,3 +3309,9 @@ button.viz-vital { cursor: pointer; }
 .docker-row-clickable { cursor: pointer; }
 .docker-row-clickable:hover { background: rgba(255,255,255,0.04); }
 .docker-row-selected, .docker-row-selected:hover { background: rgba(var(--color-accent-rgb), 0.10); box-shadow: inset 2px 0 0 var(--color-accent); }
+/* ── GPU process table (identity columns) ── */
+.gpu-proc-table .gpu-proc-name { max-width: 280px; }
+.gpu-proc-name-main { display: block; color: var(--text-primary); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gpu-proc-cmd { display: block; font-size: 10.5px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gpu-proc-container { font-size: 11px; padding: 1px 7px; border-radius: 5px; color: var(--color-gpu); background: color-mix(in srgb, var(--color-gpu) 16%, transparent); }
+.gpu-proc-host { color: var(--text-secondary); }
