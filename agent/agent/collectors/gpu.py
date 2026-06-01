@@ -4,6 +4,8 @@ import logging
 import time as _time
 from typing import Optional
 
+import psutil
+
 logger = logging.getLogger("glassops.agent")
 
 _nvml_initialized = False
@@ -131,6 +133,25 @@ def collect_gpu() -> Optional[list[dict]]:
                 # NVML returns NVML_ERROR_NOT_FOUND when no util data is available
                 # yet — fine, just leave sm_util=0 on the processes.
                 pass
+
+            # Identify each GPU process so the dashboard can show *what* is
+            # running, not just a PID. GPU processes are few, so per-process
+            # psutil calls are cheap; failures degrade to blank fields.
+            for proc in processes:
+                try:
+                    p = psutil.Process(proc["pid"])
+                    with p.oneshot():
+                        proc["name"] = p.name()
+                        try:
+                            proc["user"] = p.username()
+                        except (psutil.AccessDenied, KeyError):
+                            proc["user"] = ""
+                        cmd = p.cmdline()
+                        proc["cmd"] = (" ".join(cmd) if cmd else "")[:120]
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    proc["name"] = ""
+                    proc["user"] = ""
+                    proc["cmd"] = ""
 
             gpus.append({
                 "index": i,
