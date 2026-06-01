@@ -1041,43 +1041,6 @@ body {
   padding: 2px;
 }
 
-.sysmon-core-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--glass-border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  min-height: 86px;
-}
-
-.sysmon-core-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.sysmon-core-label {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.sysmon-core-value {
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.sysmon-core-chart {
-  flex: 1;
-  min-height: 36px;
-}
-
 .sysmon-full-chart {
   flex: 1;
   min-height: 150px;
