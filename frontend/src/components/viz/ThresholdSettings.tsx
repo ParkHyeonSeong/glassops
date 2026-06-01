@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { useThresholdsStore } from "../../stores/thresholdsStore";
 import { type MetricKey } from "../../lib/thresholds";
@@ -47,10 +47,34 @@ function Row({ label, warn, crit, onChange }: {
   return (
     <>
       <span className="viz-thr-label">{label}</span>
-      <input className="viz-thr-input" type="number" min={0} max={100} value={warn}
-        onChange={(e) => onChange(Number(e.target.value), crit)} />
-      <input className="viz-thr-input" type="number" min={0} max={100} value={crit}
-        onChange={(e) => onChange(warn, Number(e.target.value))} />
+      <NumField value={warn} onCommit={(v) => onChange(v, crit)} />
+      <NumField value={crit} onCommit={(v) => onChange(warn, v)} />
     </>
+  );
+}
+
+// Holds the raw text while typing and only commits (clamps) on blur/Enter, so
+// per-keystroke warn/crit clamping can't swap the values mid-edit.
+function NumField({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+
+  const commit = () => {
+    const n = Number(draft);
+    if (draft.trim() === "" || Number.isNaN(n)) { setDraft(String(value)); return; }
+    onCommit(Math.min(100, Math.max(0, n)));
+  };
+
+  return (
+    <input
+      className="viz-thr-input"
+      type="number"
+      min={0}
+      max={100}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+    />
   );
 }
