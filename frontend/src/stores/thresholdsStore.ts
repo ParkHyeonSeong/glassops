@@ -24,6 +24,19 @@ export const useThresholdsStore = create<ThresholdsStore>()(
     {
       name: "glassops-thresholds", // localStorage key
       storage: createJSONStorage(() => localStorage),
+      // Deep-merge persisted thresholds over the defaults so a missing/added
+      // MetricKey (schema change or corrupted storage) never yields an undefined
+      // threshold, which would crash severityFor (t.crit on undefined). merge runs
+      // on every rehydrate regardless of version, so no version bump is needed.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<ThresholdsStore>;
+        return {
+          ...current,
+          ...p,
+          thresholds: { ...DEFAULT_THRESHOLDS, ...(p.thresholds ?? {}) },
+          muted: p.muted ?? {},
+        };
+      },
     },
   ),
 );
