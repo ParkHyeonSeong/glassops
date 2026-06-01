@@ -40,14 +40,16 @@ function CoresChart({ history, coreThreshold }: { history: MetricSnapshot[]; cor
 
   const overall = latest?.percent_total ?? 0;
   const hottestVal = Math.max(...latestPerCore, 0);
-  const hottestIdx = latestPerCore.indexOf(hottestVal);
+  const hottestIdx = latestPerCore.length ? latestPerCore.indexOf(hottestVal) : -1;
 
   return (
     <div className="sysmon-cores">
       <div className="sysmon-cores-summary">
         <div><span className="lab">OVERALL CPU</span><span className="val">{overall.toFixed(0)}%</span></div>
         <div><span className="lab">LOGICAL CORES</span><span className="val">{coreCount}</span></div>
-        <div><span className="lab">HOTTEST CORE</span><span className="val">Core {hottestIdx} · {hottestVal.toFixed(0)}%</span></div>
+        {hottestIdx >= 0 && (
+          <div><span className="lab">HOTTEST CORE</span><span className="val">Core {hottestIdx} · {hottestVal.toFixed(0)}%</span></div>
+        )}
         {freqMhz != null && (
           <div><span className="lab">FREQUENCY</span><span className="val">{(freqMhz / 1000).toFixed(1)}{freqMax ? ` / ${(freqMax / 1000).toFixed(1)}` : ""} GHz</span></div>
         )}
@@ -73,13 +75,15 @@ function useHistoricalData(agentId: string | null, range: TimeRange) {
       return () => clearTimeout(id);
     }
     // Defer to avoid synchronous setState inside the effect body.
+    let ignore = false;
     const id = setTimeout(() => setLoading(true), 0);
     fetchWithAuth(`/api/metrics/${agentId}/range?duration=${range}`)
       .then((r) => r.json())
-      .then((d: { metrics?: MetricSnapshot[] }) => setData(d.metrics || []))
-      .catch(() => setData([]))
-      .finally(() => setLoading(false));
-    return () => clearTimeout(id);
+      .then((d: { metrics?: MetricSnapshot[] }) => { if (!ignore) setData(d.metrics || []); })
+      .catch(() => { if (!ignore) setData([]); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    // Ignore a stale in-flight response if the range/agent changed before it resolved.
+    return () => { ignore = true; clearTimeout(id); };
   }, [agentId, range]);
 
   return { data, loading };
@@ -107,11 +111,13 @@ export default function SystemMonitor() {
   const activeHistory = timeRange === "live" ? history : historicalData;
 
   const chartData = useMemo(() =>
-    activeHistory.map((m: { timestamp?: number; cpu?: { percent_total?: number }; memory?: { percent?: number }; disk?: { percent?: number } }) => ({
+    activeHistory.map((m) => ({
       t: m.timestamp ?? 0,
       cpu: m.cpu?.percent_total ?? 0,
       mem: m.memory?.percent ?? 0,
       disk: m.disk?.percent ?? 0,
+      netRecv: m.network?.rates?.recv_rate ?? 0,
+      netSend: m.network?.rates?.send_rate ?? 0,
     })), [activeHistory]);
 
   if (!connected || !current) {
@@ -203,11 +209,11 @@ export default function SystemMonitor() {
             <div className="sysmon-secondary">
               <div className="sysmon-spark-card">
                 <span className="sysmon-spark-label">Network ↓ {formatRate(network.rates.recv_rate)}</span>
-                <Sparkline data={chartData.map((d) => ({ t: d.t, v: 0 }))} color={METRIC_COLORS.cpu} />
+                <Sparkline data={chartData.map((d) => ({ t: d.t, v: d.netRecv }))} color={METRIC_COLORS.cpu} />
               </div>
               <div className="sysmon-spark-card">
                 <span className="sysmon-spark-label">Network ↑ {formatRate(network.rates.send_rate)}</span>
-                <Sparkline data={chartData.map((d) => ({ t: d.t, v: 0 }))} color={METRIC_COLORS.mem} />
+                <Sparkline data={chartData.map((d) => ({ t: d.t, v: d.netSend }))} color={METRIC_COLORS.mem} />
               </div>
             </div>
           )}
