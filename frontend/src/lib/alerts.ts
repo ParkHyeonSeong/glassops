@@ -29,7 +29,8 @@ export function deriveAlerts(
     const crossed = sev === "crit" ? t.crit : t.warn;
     out.push({
       id, metric, label, value, threshold: crossed, severity: sev, since,
-      message: `${label} ${value.toFixed(0)}% — over ${crossed}% ${sev === "crit" ? "critical" : "warning"} threshold`,
+      // severityFor uses >=, so "reached" reads correctly at the exact boundary too.
+      message: `${label} ${value.toFixed(0)}% — reached ${crossed}% ${sev === "crit" ? "critical" : "warning"} threshold`,
     });
   };
 
