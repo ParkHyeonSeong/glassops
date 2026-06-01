@@ -23,9 +23,9 @@ export default function DockerManager() {
         ))}
       </div>
       {tab === "containers" && <ContainersTab />}
-      {tab === "images" && <ImagesTab />}
-      {tab === "volumes" && <VolumesTab />}
-      {tab === "networks" && <NetworksTab />}
+      {tab === "images" && <div className="docker-pane"><ImagesTab /></div>}
+      {tab === "volumes" && <div className="docker-pane"><VolumesTab /></div>}
+      {tab === "networks" && <div className="docker-pane"><NetworksTab /></div>}
     </div>
   );
 }

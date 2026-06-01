@@ -2451,18 +2451,22 @@ button.viz-vital { cursor: pointer; }
 .docker-manager {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  gap: 10px;
-  overflow: auto;
+  /* Cancel the .window-content 16px padding so the toolbar + content fill the
+     whole window edge-to-edge (no floating inset). Children scroll internally. */
+  margin: -16px;
+  height: calc(100% + 32px);
+  gap: 0;
+  overflow: hidden;
 }
 
 .docker-tabs {
   /* Full-width top toolbar: a bar with a bottom divider so the tab row reads as
      a menu/tool bar clearly separated from the content + drawer below it. */
+  flex: none;
   display: flex;
   gap: 4px;
   align-items: center;
-  padding: 7px 8px;
+  padding: 8px 16px;
   background: rgba(255, 255, 255, 0.03);
   border-bottom: 1px solid var(--glass-border);
 }
@@ -3310,7 +3314,11 @@ button.viz-vital { cursor: pointer; }
 /* Fill the whole Docker app body so the absolutely-positioned drawer spans the
    full window height (not just the short table). The table scrolls internally. */
 .docker-containers-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-.docker-containers-main { height: 100%; overflow: auto; }
+/* Table gets inner padding; the drawer (right:0/top:0/bottom:0 of the wrap) reaches
+   the window edges and sits flush under the toolbar. */
+.docker-containers-main { height: 100%; overflow: auto; padding: 12px 16px; }
+/* Simple tabs (images/volumes/networks) — scroll + matching inner padding. */
+.docker-pane { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
 .docker-row-clickable { cursor: pointer; }
 .docker-row-clickable:hover { background: rgba(255,255,255,0.04); }
 .docker-row-selected, .docker-row-selected:hover { background: rgba(var(--color-accent-rgb), 0.10); box-shadow: inset 2px 0 0 var(--color-accent); }
