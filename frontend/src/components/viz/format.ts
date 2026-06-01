@@ -19,7 +19,12 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-// Network rates arrive as bytes/sec; show as MB/s for the host I/O sparklines.
+// Network rates arrive as bytes/sec. Auto-scale the unit so small (idle) rates
+// stay visible instead of rounding to "0.0 MB/s".
 export function formatRate(bytesPerSec: number): string {
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+  if (!bytesPerSec || bytesPerSec < 1) return "0 B/s";
+  const k = 1024;
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytesPerSec) / Math.log(k)));
+  return `${(bytesPerSec / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
