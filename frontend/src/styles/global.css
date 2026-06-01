@@ -3304,3 +3304,8 @@ button.viz-vital { cursor: pointer; }
   font-size: 11px; color: var(--text-primary); word-break: break-all; user-select: text;
   font-variant-numeric: tabular-nums;
 }
+.docker-containers-wrap { position: relative; }
+.docker-containers-main { /* table scrolls under the drawer; drawer overlays the right edge */ }
+.docker-row-clickable { cursor: pointer; }
+.docker-row-clickable:hover { background: rgba(255,255,255,0.04); }
+.docker-row-selected, .docker-row-selected:hover { background: rgba(var(--color-accent-rgb), 0.10); box-shadow: inset 2px 0 0 var(--color-accent); }

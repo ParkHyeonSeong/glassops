@@ -5,6 +5,7 @@ import { useWindowStore } from "../../stores/windowStore";
 import { fetchWithAuth } from "../../utils/api";
 import { StatusBadge, ContainerActionButtons } from "./dockerShared";
 import { formatBytes, type ContainerAction } from "./dockerSharedUtils";
+import ContainerDetailDrawer from "./ContainerDetailDrawer";
 
 type DockerTab = "containers" | "images" | "volumes" | "networks";
 
@@ -38,6 +39,13 @@ function ContainersTab() {
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = containers.find((c) => c.id === selectedId) || null;
+  // Drop the drawer if the selected container disappears from the live list.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (selectedId && !containers.some((c) => c.id === selectedId)) setSelectedId(null);
+  }, [containers, selectedId]);
 
   const doAction = useCallback(async (containerId: string, action: ContainerAction) => {
     setActionLoading(containerId);
@@ -83,35 +91,48 @@ function ContainersTab() {
   }
 
   return (
-    <div>
-      {actionError && <div className="docker-error" onClick={() => setActionError(null)}>{actionError}</div>}
-      <table className="docker-table">
-        <thead>
-          <tr><th>Name</th><th>Image</th><th>Status</th><th>CPU</th><th>Memory</th><th>Ports</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {containers.map((c) => (
-            <tr key={c.id} className={c.status === "running" ? "" : "docker-row-stopped"}>
-              <td className="docker-cell-name">{c.name}</td>
-              <td className="docker-cell-image">{c.image}</td>
-              <td><StatusBadge status={c.status} /></td>
-              <td className="docker-cell-num">{c.cpu_percent.toFixed(1)}%</td>
-              <td className="docker-cell-num">{c.mem_usage > 0 ? `${formatBytes(c.mem_usage)} / ${formatBytes(c.mem_limit)}` : "—"}</td>
-              <td className="docker-cell-ports">{c.ports.length > 0 ? c.ports.join(", ") : "—"}</td>
-              <td className="docker-cell-actions">
-                <ContainerActionButtons
-                  status={c.status}
-                  removed={false}
-                  loading={actionLoading === c.id}
-                  onAction={(action) => doAction(c.id, action)}
-                />
-                <button className="docker-action-btn" onClick={() => openMetricsWindow(c.name)} title="Metrics history (new window)"><Activity size={13} /></button>
-                <button className="docker-action-btn" onClick={() => openLogsWindow(c.name)} title="Logs (new window)"><FileText size={13} /></button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="docker-containers-wrap">
+      <div className="docker-containers-main">
+        {actionError && <div className="docker-error" onClick={() => setActionError(null)}>{actionError}</div>}
+        <table className="docker-table">
+          <thead>
+            <tr><th>Name</th><th>Image</th><th>Status</th><th>CPU</th><th>Memory</th><th>Ports</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {containers.map((c) => (
+              <tr key={c.id}
+                className={`${c.status === "running" ? "" : "docker-row-stopped"} ${selectedId === c.id ? "docker-row-selected" : ""} docker-row-clickable`}
+                onClick={() => setSelectedId(c.id)}>
+                <td className="docker-cell-name">{c.name}</td>
+                <td className="docker-cell-image">{c.image}</td>
+                <td><StatusBadge status={c.status} /></td>
+                <td className="docker-cell-num">{c.cpu_percent.toFixed(1)}%</td>
+                <td className="docker-cell-num">{c.mem_usage > 0 ? `${formatBytes(c.mem_usage)} / ${formatBytes(c.mem_limit)}` : "—"}</td>
+                <td className="docker-cell-ports">{c.ports.length > 0 ? c.ports.join(", ") : "—"}</td>
+                <td className="docker-cell-actions" onClick={(e) => e.stopPropagation()}>
+                  <ContainerActionButtons
+                    status={c.status}
+                    removed={false}
+                    loading={actionLoading === c.id}
+                    onAction={(action) => doAction(c.id, action)}
+                  />
+                  <button className="docker-action-btn" onClick={() => openMetricsWindow(c.name)} title="Metrics history (new window)"><Activity size={13} /></button>
+                  <button className="docker-action-btn" onClick={() => openLogsWindow(c.name)} title="Logs (new window)"><FileText size={13} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <ContainerDetailDrawer
+          containerId={selected.id}
+          status={selected.status}
+          actionLoading={actionLoading === selected.id}
+          onAction={doAction}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </div>
   );
 }
