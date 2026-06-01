@@ -3261,7 +3261,8 @@ button.viz-vital { cursor: pointer; }
   width: 360px;
   display: flex;
   flex-direction: column;
-  background: var(--glass-bg);
+  /* Near-opaque so the container table behind the drawer doesn't bleed through. */
+  background: rgba(28, 28, 48, 0.98);
   border-left: 1px solid var(--glass-border);
   box-shadow: -8px 0 32px var(--glass-shadow);
   backdrop-filter: blur(24px) saturate(180%);
@@ -3304,8 +3305,10 @@ button.viz-vital { cursor: pointer; }
   font-size: 11px; color: var(--text-primary); word-break: break-all; user-select: text;
   font-variant-numeric: tabular-nums;
 }
-.docker-containers-wrap { position: relative; }
-.docker-containers-main { /* table scrolls under the drawer; drawer overlays the right edge */ }
+/* Fill the whole Docker app body so the absolutely-positioned drawer spans the
+   full window height (not just the short table). The table scrolls internally. */
+.docker-containers-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.docker-containers-main { height: 100%; overflow: auto; }
 .docker-row-clickable { cursor: pointer; }
 .docker-row-clickable:hover { background: rgba(255,255,255,0.04); }
 .docker-row-selected, .docker-row-selected:hover { background: rgba(var(--color-accent-rgb), 0.10); box-shadow: inset 2px 0 0 var(--color-accent); }
