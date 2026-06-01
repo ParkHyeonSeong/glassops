@@ -2457,12 +2457,14 @@ button.viz-vital { cursor: pointer; }
 }
 
 .docker-tabs {
+  /* Full-width top toolbar: a bar with a bottom divider so the tab row reads as
+     a menu/tool bar clearly separated from the content + drawer below it. */
   display: flex;
-  gap: 2px;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 6px;
-  padding: 2px;
-  align-self: flex-start;
+  gap: 4px;
+  align-items: center;
+  padding: 7px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--glass-border);
 }
 
 .docker-empty {
