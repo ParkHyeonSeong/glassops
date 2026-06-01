@@ -32,6 +32,7 @@ def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
     clamped to 100% — a single device can't deliver more, and we surface a
     single scalar per container.
     """
+    sid_to_name = {c.get("id"): c.get("name") for c in containers}
     agg: dict[str, dict] = {}
     seen_pids: set[int] = set()
     for gpu in gpus:
@@ -46,6 +47,11 @@ def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
             if not isinstance(vram, int) or vram < 0:
                 vram = 0
             sid = cgroup_stats.container_id_for_pid(pid)
+            if sid is not None:
+                cname = sid_to_name.get(sid)
+                if cname:
+                    # Tag the top-level GPU process (same object the dashboard sees).
+                    proc["container"] = cname
             if sid is None:
                 continue
             entry = agg.setdefault(sid, {"vram_bytes": 0, "gpu_util": 0, "processes": []})
