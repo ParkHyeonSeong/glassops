@@ -47,10 +47,12 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
         container_id: containerId,
         tail: String(tail),
       });
+      // Token via subprotocol ("bearer, <token>") — keeps it out of the URL/logs.
       const token = useAuthStore.getState().accessToken;
-      if (token) params.set("token", token);
-
-      const ws = new WebSocket(`${WS_BASE}/docker/logs?${params.toString()}`);
+      const ws = new WebSocket(
+        `${WS_BASE}/docker/logs?${params.toString()}`,
+        token ? ["bearer", token] : undefined,
+      );
       wsRef.current = ws;
       setStatus("connecting");
 

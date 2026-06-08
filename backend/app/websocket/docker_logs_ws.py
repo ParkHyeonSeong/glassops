@@ -11,7 +11,6 @@ import asyncio
 import json
 import logging
 import re
-from urllib.parse import urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -19,6 +18,7 @@ from app.config import settings
 from app.database import get_user
 from app.services import agent_rpc
 from app.services.auth_service import verify_token
+from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.docker_logs_ws")
 
@@ -27,17 +27,11 @@ AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 async def handle_docker_logs_ws(ws: WebSocket) -> None:
-    # Origin check (mirrors terminal_ws). Compare hostnames only — a reverse proxy
-    # (nginx `$host`) may strip the port, so a netloc compare wrongly rejects.
-    origin = ws.headers.get("origin", "")
-    host = ws.headers.get("host", "")
-    if origin and host:
-        if urlparse(origin).hostname != urlparse("//" + host).hostname:
-            await ws.close(code=4003, reason="Origin mismatch")
-            return
+    if not origin_ok(ws):
+        await ws.close(code=4003, reason="Origin mismatch")
+        return
 
-    token = ws.query_params.get("token", "") or ws.cookies.get("access_token", "")
-    email = verify_token(token)
+    email = verify_token(ws_token(ws))
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
@@ -65,7 +59,7 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
     except ValueError:
         tail = 200
 
-    await ws.accept()
+    await ws.accept(subprotocol=accept_subprotocol(ws))
 
     is_local = agent_id == settings.local_agent_id
     try:

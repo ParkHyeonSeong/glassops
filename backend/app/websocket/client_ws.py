@@ -3,12 +3,12 @@
 import asyncio
 import json
 import logging
-from urllib.parse import urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.database import get_user
 from app.services.auth_service import verify_token
+from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.client_ws")
 
@@ -16,19 +16,13 @@ _clients: set[WebSocket] = set()
 
 
 async def handle_client_ws(ws: WebSocket) -> None:
-    # Origin check (cookie CSRF / CSWSH protection — mirrors terminal_ws).
-    # Compare hostnames only: a reverse proxy (nginx `$host`) may drop the port,
-    # so a netloc compare (with port) would wrongly reject same-host browsers.
-    origin = ws.headers.get("origin", "")
-    host = ws.headers.get("host", "")
-    if origin and host and urlparse(origin).hostname != urlparse("//" + host).hostname:
+    if not origin_ok(ws):
         await ws.close(code=4003, reason="Origin mismatch")
         return
 
-    # Authenticate: query token or access_token cookie. The live metrics stream is
-    # read-only dashboard data, so any active user (not admin-only) may subscribe.
-    token = ws.query_params.get("token", "") or ws.cookies.get("access_token", "")
-    email = verify_token(token)
+    # Authenticate via Sec-WebSocket-Protocol token (or access_token cookie). The
+    # live metrics stream is read-only dashboard data, so any active user may join.
+    email = verify_token(ws_token(ws))
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
@@ -37,7 +31,7 @@ async def handle_client_ws(ws: WebSocket) -> None:
         await ws.close(code=4403, reason="Inactive or unknown user")
         return
 
-    await ws.accept()
+    await ws.accept(subprotocol=accept_subprotocol(ws))
     _clients.add(ws)
     logger.info("Client connected (user=%s, total: %d)", email, len(_clients))
 

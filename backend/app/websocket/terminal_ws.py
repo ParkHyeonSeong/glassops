@@ -12,7 +12,6 @@ import asyncio
 import base64
 import json
 import logging
-from urllib.parse import urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -21,22 +20,17 @@ from app.database import get_user, get_user_host_accounts
 from app.services import agent_rpc
 from app.services.auth_service import verify_token
 from app.services.terminal_service import TerminalSession, SESSION_TIMEOUT
+from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.terminal")
 
 
 async def handle_terminal_ws(ws: WebSocket) -> None:
-    # Origin check (cookie CSRF protection). Compare hostnames only — a reverse
-    # proxy (nginx `$host`) may strip the port, so a netloc compare wrongly rejects.
-    origin = ws.headers.get("origin", "")
-    host = ws.headers.get("host", "")
-    if origin and host:
-        if urlparse(origin).hostname != urlparse("//" + host).hostname:
-            await ws.close(code=4003, reason="Origin mismatch")
-            return
+    if not origin_ok(ws):
+        await ws.close(code=4003, reason="Origin mismatch")
+        return
 
-    token = ws.query_params.get("token", "") or ws.cookies.get("access_token", "")
-    email = verify_token(token)
+    email = verify_token(ws_token(ws))
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
@@ -62,7 +56,7 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         await ws.close(code=4003, reason=f"No shell access on host '{agent_id}'")
         return
 
-    await ws.accept()
+    await ws.accept(subprotocol=accept_subprotocol(ws))
     logger.info("Terminal WebSocket: user=%s agent=%s host_user=%s", email, agent_id, host_user or "(env default)")
 
     try:

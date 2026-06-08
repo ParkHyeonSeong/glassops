@@ -65,9 +65,12 @@ export default function TerminalApp() {
       return () => { term.dispose(); };
     }
 
+    // Token via subprotocol ("bearer, <token>") — keeps it out of the URL/logs.
     const params = new URLSearchParams({ agent_id: agentId });
-    if (accessToken) params.set("token", accessToken);
-    const ws = new WebSocket(`${WS_URL}/terminal?${params.toString()}`);
+    const ws = new WebSocket(
+      `${WS_URL}/terminal?${params.toString()}`,
+      accessToken ? ["bearer", accessToken] : undefined,
+    );
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {

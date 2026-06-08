@@ -27,9 +27,10 @@ export function useWebSocket() {
     function connect() {
       if (unmounted) return;
 
+      // Pass the token as a subprotocol ("bearer, <token>") so it never appears in
+      // the URL/query (which leaks into access logs); cookie is the fallback.
       const token = useAuthStore.getState().accessToken;
-      const qs = token ? `?${new URLSearchParams({ token })}` : "";
-      const ws = new WebSocket(`${WS_URL}/client${qs}`);
+      const ws = new WebSocket(`${WS_URL}/client`, token ? ["bearer", token] : undefined);
       wsRef.current = ws;
       let opened = false;
 
