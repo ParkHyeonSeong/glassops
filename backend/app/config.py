@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     local_agent_id: str = "local"
     rpc_timeout: int = 30
+    # Reverse proxies whose forwarded headers (X-Real-IP / X-Forwarded-Proto) we
+    # trust. Default = the bundled nginx (loopback). Add upstream LB/proxy IPs here.
+    trusted_proxies: str = "127.0.0.1,::1"
+    force_secure_cookies: bool = False   # set true when TLS is terminated upstream
 
     model_config = {"env_prefix": "GLASSOPS_"}
 

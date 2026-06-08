@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.database import get_runtime_config, set_runtime_configs
 from app.dependencies import require_admin
+from app.net import resolve_client_ip
 from app.services.supervisor_service import restart_service, get_service_status
 
 USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -71,7 +72,7 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
         elif key == "allowed_ips":
             if value:
                 # Validate CIDR + self-lockout check
-                client_ip = request.headers.get("x-real-ip", "") or (request.client.host if request.client else "")
+                client_ip = resolve_client_ip(request.scope)
                 entries = [e.strip() for e in value.split(",") if e.strip()]
                 for entry in entries:
                     try:

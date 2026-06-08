@@ -5,6 +5,8 @@ import time
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.net import resolve_client_ip
+
 # Login: 5 failures per IP → 5min lockout
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 300
@@ -63,11 +65,8 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Extract client IP — trust X-Real-IP from nginx, fallback to socket IP
-        headers = dict(scope.get("headers", []))
-        real_ip = headers.get(b"x-real-ip", b"").decode().strip()
-        client = scope.get("client")
-        ip = real_ip or (client[0] if client else "unknown")
+        # Real client IP via the trusted-proxy model (can't be spoofed by clients).
+        ip = resolve_client_ip(scope)
 
         # Login lockout check
         if path == "/api/auth/login" and is_login_locked(ip):

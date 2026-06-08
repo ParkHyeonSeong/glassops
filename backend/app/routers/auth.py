@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.dependencies import get_current_user
+from app.net import resolve_client_ip, request_is_secure
 from app.services.auth_service import (
     verify_password,
     must_change_password,
@@ -47,7 +48,8 @@ class TotpConfirmRequest(BaseModel):
 
 
 def _is_secure(request: Request) -> bool:
-    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    # Trust X-Forwarded-Proto only from a configured trusted proxy (or force flag).
+    return request_is_secure(request.scope)
 
 
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str, secure: bool):
@@ -67,7 +69,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
 async def login(body: LoginRequest, request: Request, response: Response):
     from app.middleware.rate_limit import record_login_failure, clear_login_failures
 
-    client_ip = request.headers.get("x-real-ip", "") or (request.client.host if request.client else "unknown")
+    client_ip = resolve_client_ip(request.scope)
 
     if not await verify_password(body.email, body.password):
         record_login_failure(client_ip)
