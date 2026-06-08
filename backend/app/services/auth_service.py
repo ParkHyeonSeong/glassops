@@ -80,15 +80,17 @@ async def confirm_totp(email: str, code: str) -> bool:
 
 
 def create_access_token(email: str) -> str:
+    now = time.time()
     return jwt.encode(
-        {"sub": email, "exp": time.time() + ACCESS_TOKEN_EXPIRE, "type": "access"},
+        {"sub": email, "iat": now, "exp": now + ACCESS_TOKEN_EXPIRE, "type": "access"},
         settings.secret_key, algorithm=ALGORITHM,
     )
 
 
 def create_refresh_token(email: str) -> str:
+    now = time.time()
     return jwt.encode(
-        {"sub": email, "exp": time.time() + REFRESH_TOKEN_EXPIRE, "type": "refresh"},
+        {"sub": email, "iat": now, "exp": now + REFRESH_TOKEN_EXPIRE, "type": "refresh"},
         settings.secret_key, algorithm=ALGORITHM,
     )
 
@@ -114,13 +116,40 @@ def verify_token(token: str, token_type: str = "access") -> str | None:
 
 
 async def verify_refresh_token(token: str) -> str | None:
-    """Async refresh token verification with blacklist check."""
+    """Async refresh token verification: signature/exp, blacklist, and the
+    per-user invalidation floor (set on password change / deactivation)."""
     email = verify_token(token, token_type="refresh")
     if not email:
         return None
     if await is_token_blacklisted(_hash_token(token)):
         return None
+    try:
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return None
+    user = await get_user(email)
+    if not user or payload.get("iat", 0) < (user.get("tokens_valid_after") or 0):
+        return None
     return email
+
+
+async def access_revoked(token: str, user: dict | None) -> bool:
+    """True if this access token was explicitly revoked (logout) or predates a
+    bulk invalidation (password change / role change / deactivation). Called from
+    the async paths (middleware, WS) right after the user is loaded."""
+    if await is_token_blacklisted(_hash_token(token)):
+        return True
+    try:
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return True
+    return payload.get("iat", 0) < ((user or {}).get("tokens_valid_after") or 0)
 
 
 async def revoke_refresh_token(token: str) -> None:
@@ -136,6 +165,19 @@ async def revoke_refresh_token(token: str) -> None:
         pass
 
 
+async def revoke_access_token(token: str) -> None:
+    """Blacklist a specific access token (single-device logout)."""
+    try:
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+        expires = payload.get("exp", time.time() + ACCESS_TOKEN_EXPIRE)
+        await blacklist_token(_hash_token(token), expires)
+    except JWTError:
+        pass
+
+
 async def change_password(email: str, old_password: str, new_password: str) -> dict:
     if not await verify_password(email, old_password):
         return {"ok": False, "error": "Invalid current password"}
@@ -143,7 +185,9 @@ async def change_password(email: str, old_password: str, new_password: str) -> d
     if not validation["valid"]:
         return {"ok": False, "error": "Password does not meet requirements", "checks": validation["checks"]}
     pw_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
-    await update_user(email, password_hash=pw_hash, must_change_password=0)
+    # Invalidate every previously-issued token for this user (all devices).
+    await update_user(email, password_hash=pw_hash, must_change_password=0,
+                      tokens_valid_after=time.time())
     return {"ok": True}
 
 
@@ -157,5 +201,7 @@ async def force_change_password(email: str, new_password: str) -> dict:
     if not validation["valid"]:
         return {"ok": False, "error": "Password does not meet requirements", "checks": validation["checks"]}
     pw_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    # First-login forced change — the triggering event (creation / admin reset)
+    # already set the invalidation floor, so don't bounce this fresh session.
     await update_user(email, password_hash=pw_hash, must_change_password=0)
     return {"ok": True}

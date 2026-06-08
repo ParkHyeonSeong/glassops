@@ -94,17 +94,20 @@ async def init_db() -> None:
             must_change_password INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
             role TEXT NOT NULL DEFAULT 'user',
-            is_active INTEGER NOT NULL DEFAULT 1
+            is_active INTEGER NOT NULL DEFAULT 1,
+            tokens_valid_after REAL NOT NULL DEFAULT 0
         )
     """)
 
-    # Migrate older installs that lack role / is_active.
+    # Migrate older installs that lack role / is_active / tokens_valid_after.
     cursor = await db.execute("PRAGMA table_info(users)")
     existing_cols = {row["name"] for row in await cursor.fetchall()}
     if "role" not in existing_cols:
         await db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
     if "is_active" not in existing_cols:
         await db.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    if "tokens_valid_after" not in existing_cols:
+        await db.execute("ALTER TABLE users ADD COLUMN tokens_valid_after REAL NOT NULL DEFAULT 0")
 
     # Promote the earliest-created user to admin if no admin exists yet.
     cursor = await db.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
@@ -463,6 +466,7 @@ async def get_user(email: str) -> dict | None:
         "must_change_password": bool(row["must_change_password"]),
         "role": row["role"] if "role" in row.keys() else "user",
         "is_active": bool(row["is_active"]) if "is_active" in row.keys() else True,
+        "tokens_valid_after": row["tokens_valid_after"] if "tokens_valid_after" in row.keys() else 0,
         "created_at": row["created_at"],
     }
 
@@ -602,7 +606,7 @@ async def cleanup_blacklist() -> int:
 
 # ── Users ────────────────────────────────────────────
 
-_ALLOWED_USER_FIELDS = {"password_hash", "totp_secret", "totp_enabled", "must_change_password", "role", "is_active"}
+_ALLOWED_USER_FIELDS = {"password_hash", "totp_secret", "totp_enabled", "must_change_password", "role", "is_active", "tokens_valid_after"}
 
 
 async def update_user(email: str, **fields) -> bool:

@@ -7,7 +7,7 @@ import logging
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.database import get_user
-from app.services.auth_service import verify_token
+from app.services.auth_service import verify_token, access_revoked
 from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.client_ws")
@@ -22,13 +22,17 @@ async def handle_client_ws(ws: WebSocket) -> None:
 
     # Authenticate via Sec-WebSocket-Protocol token (or access_token cookie). The
     # live metrics stream is read-only dashboard data, so any active user may join.
-    email = verify_token(ws_token(ws))
+    token = ws_token(ws)
+    email = verify_token(token)
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
     user = await get_user(email)
     if not user or not user.get("is_active", True):
         await ws.close(code=4403, reason="Inactive or unknown user")
+        return
+    if await access_revoked(token, user):
+        await ws.close(code=4401, reason="Token revoked")
         return
 
     await ws.accept(subprotocol=accept_subprotocol(ws))

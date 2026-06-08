@@ -18,7 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.config import settings
 from app.database import get_user, get_user_host_accounts
 from app.services import agent_rpc
-from app.services.auth_service import verify_token
+from app.services.auth_service import verify_token, access_revoked
 from app.services.terminal_service import TerminalSession, SESSION_TIMEOUT
 from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
@@ -30,7 +30,8 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         await ws.close(code=4003, reason="Origin mismatch")
         return
 
-    email = verify_token(ws_token(ws))
+    token = ws_token(ws)
+    email = verify_token(token)
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
@@ -44,6 +45,9 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         return
     if user.get("must_change_password"):
         await ws.close(code=4403, reason="Password change required")
+        return
+    if await access_revoked(token, user):
+        await ws.close(code=4401, reason="Token revoked")
         return
 
     agent_id = ws.query_params.get("agent_id", settings.local_agent_id)

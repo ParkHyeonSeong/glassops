@@ -17,7 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.config import settings
 from app.database import get_user
 from app.services import agent_rpc
-from app.services.auth_service import verify_token
+from app.services.auth_service import verify_token, access_revoked
 from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.docker_logs_ws")
@@ -31,7 +31,8 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
         await ws.close(code=4003, reason="Origin mismatch")
         return
 
-    email = verify_token(ws_token(ws))
+    token = ws_token(ws)
+    email = verify_token(token)
     if not email:
         await ws.close(code=4003, reason="Authentication required")
         return
@@ -41,6 +42,9 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
     user = await get_user(email)
     if not user or user.get("role") != "admin" or not user.get("is_active", True):
         await ws.close(code=4403, reason="Admin access required")
+        return
+    if await access_revoked(token, user):
+        await ws.close(code=4401, reason="Token revoked")
         return
 
     container_id = ws.query_params.get("container_id", "")

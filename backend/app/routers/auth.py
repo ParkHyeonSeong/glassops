@@ -16,6 +16,7 @@ from app.services.auth_service import (
     create_refresh_token,
     verify_refresh_token,
     revoke_refresh_token,
+    revoke_access_token,
     change_password,
     force_change_password,
     validate_password,
@@ -114,10 +115,21 @@ class LogoutRequest(BaseModel):
 
 
 @router.post("/logout")
-async def logout(response: Response, body: LogoutRequest | None = None):
+async def logout(request: Request, response: Response, body: LogoutRequest | None = None):
     # Revoke refresh token if provided
     if body and body.refresh_token:
         await revoke_refresh_token(body.refresh_token)
+
+    # Single-device logout: blacklist the current access token so it can't be
+    # reused for the rest of its lifetime. (This route is public — read the token
+    # directly from the cookie or Authorization header.)
+    access = request.cookies.get("access_token", "")
+    if not access:
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            access = auth[7:]
+    if access:
+        await revoke_access_token(access)
 
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/api/auth/refresh")

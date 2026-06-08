@@ -1,6 +1,7 @@
 """Admin user management + per-user host-account mapping."""
 
 import re
+import time
 from typing import Literal
 
 import bcrypt
@@ -101,6 +102,11 @@ async def patch_user(
 
     if not fields:
         return {"ok": True, "noop": True}
+
+    # Invalidate the target's existing tokens on a privilege/credential change
+    # (role change, password reset, or deactivation).
+    if "role" in fields or "password_hash" in fields or fields.get("is_active") == 0:
+        fields["tokens_valid_after"] = time.time()
 
     await update_user(target_email, **fields)
     return {"ok": True}

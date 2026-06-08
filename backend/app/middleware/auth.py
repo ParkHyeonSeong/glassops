@@ -7,7 +7,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("glassops.auth_mw")
 
-from app.services.auth_service import verify_token
+from app.services.auth_service import verify_token, access_revoked
 
 PUBLIC_PATHS = {
     "/health",
@@ -104,6 +104,12 @@ class JWTAuthMiddleware:
             user = None
         if user and not user.get("is_active", True):
             await self._send_403(send, "Account disabled")
+            return
+
+        # Reject explicitly logged-out or bulk-invalidated (password change / role
+        # change / deactivation) access tokens.
+        if await access_revoked(token, user):
+            await self._send_401(send, "Token revoked")
             return
 
         # Defense-in-depth: deny state-changing requests to privileged routers
