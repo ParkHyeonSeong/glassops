@@ -26,11 +26,12 @@ logger = logging.getLogger("glassops.terminal")
 
 
 async def handle_terminal_ws(ws: WebSocket) -> None:
-    # Origin check (cookie CSRF protection)
+    # Origin check (cookie CSRF protection). Compare hostnames only — a reverse
+    # proxy (nginx `$host`) may strip the port, so a netloc compare wrongly rejects.
     origin = ws.headers.get("origin", "")
     host = ws.headers.get("host", "")
     if origin and host:
-        if urlparse(origin).netloc != host:
+        if urlparse(origin).hostname != urlparse("//" + host).hostname:
             await ws.close(code=4003, reason="Origin mismatch")
             return
 

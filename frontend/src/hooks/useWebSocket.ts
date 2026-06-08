@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useMetricsStore, type MetricSnapshot } from "../stores/metricsStore";
+import { useAuthStore } from "../stores/authStore";
 
 // Auto-detect WebSocket URL from current page location
 const WS_URL = (
@@ -18,6 +19,7 @@ export function useWebSocket() {
   const setConnected = useMetricsStore((s) => s.setConnected);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const triedRefresh = useRef(false);
 
   useEffect(() => {
     let unmounted = false;
@@ -25,10 +27,15 @@ export function useWebSocket() {
     function connect() {
       if (unmounted) return;
 
-      const ws = new WebSocket(`${WS_URL}/client`);
+      const token = useAuthStore.getState().accessToken;
+      const qs = token ? `?${new URLSearchParams({ token })}` : "";
+      const ws = new WebSocket(`${WS_URL}/client${qs}`);
       wsRef.current = ws;
+      let opened = false;
 
       ws.onopen = () => {
+        opened = true;
+        triedRefresh.current = false;
         if (!unmounted) setConnected(true);
       };
 
@@ -44,8 +51,18 @@ export function useWebSocket() {
       };
 
       ws.onclose = () => {
-        if (!unmounted) {
-          setConnected(false);
+        if (unmounted) return;
+        setConnected(false);
+        // Closed before the handshake completed (no onopen) → likely an expired
+        // token (or the server is down). Refresh once per failure streak, then
+        // reconnect so the next attempt uses the new token. A live connection that
+        // merely dropped (opened=true) just reconnects without refreshing.
+        if (!opened && !triedRefresh.current) {
+          triedRefresh.current = true;
+          useAuthStore.getState().refresh().finally(() => {
+            if (!unmounted) reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+          });
+        } else {
           reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
         }
       };
