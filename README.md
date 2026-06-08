@@ -307,6 +307,19 @@ This key is used for JWT signing, agent authentication, and SMTP password encryp
 - Refresh token blacklist on logout/rotation
 - Runtime settings validation (username format, CIDR format, boolean strict)
 
+### Container privileges
+
+The container runs with a **least-privilege capability set instead of
+`privileged: true`** — only the capabilities the host terminal (`nsenter` + `su`)
+and `process.kill` actually need (`SYS_ADMIN`, `SYS_PTRACE`, `SYS_CHROOT`,
+`DAC_READ_SEARCH`, `DAC_OVERRIDE`, `SETUID`, `SETGID`, `KILL`, `CHOWN`); everything
+else is dropped. This removes host device access and kernel-module loading. The
+host terminal and Docker control are still inherently high-trust operations
+(`pid: host` and the Docker socket give broad host reach), so treat dashboard
+admin access as equivalent to host root and keep it behind the network controls
+above. `apparmor`/`seccomp` are set to `unconfined` because `nsenter` needs to
+enter the host namespaces.
+
 ## Tech Stack
 
 | Layer | Tech |
