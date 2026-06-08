@@ -9,9 +9,10 @@ import re
 from collections import deque
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import settings
+from app.dependencies import require_admin
 from app.services.agent_dispatch import call_remote, is_local
 
 logger = logging.getLogger("glassops.logs")
@@ -35,7 +36,8 @@ SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
 
 
 @router.get("/sources")
-async def list_sources(agent_id: str = Query(settings.local_agent_id)):
+async def list_sources(agent_id: str = Query(settings.local_agent_id),
+                       _: str = Depends(require_admin)):
     if is_local(agent_id):
         return _local_sources()
     return await call_remote(agent_id, "log.sources")
@@ -48,6 +50,7 @@ async def read_log(
     tail: int = Query(200, ge=1, le=5000),
     search: str = Query(""),
     agent_id: str = Query(settings.local_agent_id),
+    _: str = Depends(require_admin),
 ):
     if not SAFE_ID_PATTERN.match(name):
         raise HTTPException(400, "Invalid name")

@@ -1,9 +1,9 @@
 """Authentication REST API — login, refresh, 2FA setup, password management."""
 
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
+from app.dependencies import get_current_user
 from app.services.auth_service import (
     verify_password,
     must_change_password,
@@ -13,7 +13,6 @@ from app.services.auth_service import (
     confirm_totp,
     create_access_token,
     create_refresh_token,
-    verify_token,
     verify_refresh_token,
     revoke_refresh_token,
     change_password,
@@ -22,23 +21,6 @@ from app.services.auth_service import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-bearer = HTTPBearer(auto_error=False)
-
-
-def get_current_user(request: Request, creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
-    # Try Authorization header first, then cookie fallback
-    token = None
-    if creds:
-        token = creds.credentials
-    else:
-        token = request.cookies.get("access_token")
-
-    if not token:
-        raise HTTPException(401, "Not authenticated")
-    email = verify_token(token)
-    if not email:
-        raise HTTPException(401, "Invalid or expired token")
-    return email
 
 
 class LoginRequest(BaseModel):

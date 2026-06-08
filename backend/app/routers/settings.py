@@ -5,10 +5,11 @@ import os
 import re
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.database import get_runtime_config, set_runtime_configs
+from app.dependencies import require_admin
 from app.services.supervisor_service import restart_service, get_service_status
 
 USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -38,7 +39,7 @@ class RestartRequest(BaseModel):
 
 
 @router.get("/runtime")
-async def get_config():
+async def get_config(_: str = Depends(require_admin)):
     db_config = await get_runtime_config()
     # Merge: DB overrides defaults
     merged = {**DEFAULTS, **db_config}
@@ -46,7 +47,8 @@ async def get_config():
 
 
 @router.post("/runtime")
-async def update_config(body: RuntimeConfigUpdate, request: Request):
+async def update_config(body: RuntimeConfigUpdate, request: Request,
+                        _: str = Depends(require_admin)):
     updates = {}
     for key, value in body.model_dump(exclude_none=True).items():
         # Validate each field
@@ -96,7 +98,7 @@ async def update_config(body: RuntimeConfigUpdate, request: Request):
 
 
 @router.post("/restart")
-async def restart(body: RestartRequest):
+async def restart(body: RestartRequest, _: str = Depends(require_admin)):
     result = await restart_service(body.service)
     if not result.get("ok"):
         raise HTTPException(500, result.get("error", "Restart failed"))
@@ -104,5 +106,5 @@ async def restart(body: RestartRequest):
 
 
 @router.get("/status")
-async def status():
+async def status(_: str = Depends(require_admin)):
     return await get_service_status()

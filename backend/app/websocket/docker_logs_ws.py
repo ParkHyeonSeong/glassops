@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import settings
+from app.database import get_user
 from app.services import agent_rpc
 from app.services.auth_service import verify_token
 
@@ -35,8 +36,16 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
             return
 
     token = ws.query_params.get("token", "") or ws.cookies.get("access_token", "")
-    if not verify_token(token):
+    email = verify_token(token)
+    if not email:
         await ws.close(code=4003, reason="Authentication required")
+        return
+
+    # Container logs are sensitive (may contain secrets) — admin only, matching
+    # the REST endpoint GET /api/docker/containers/{id}/logs.
+    user = await get_user(email)
+    if not user or user.get("role") != "admin" or not user.get("is_active", True):
+        await ws.close(code=4403, reason="Admin access required")
         return
 
     container_id = ws.query_params.get("container_id", "")

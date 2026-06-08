@@ -1,7 +1,6 @@
 """Server-side alert service — SMTP email notifications."""
 
 import base64
-import hashlib
 import json
 import logging
 import time
@@ -10,7 +9,7 @@ from email.mime.text import MIMEText
 import aiosmtplib
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import settings
+from app.config import smtp_fernet_key
 from app.database import get_db
 
 logger = logging.getLogger("glassops.alerts")
@@ -20,8 +19,8 @@ COOLDOWN_SECONDS = 300
 
 
 def _get_fernet() -> Fernet:
-    """Derive Fernet key from GLASSOPS_SECRET_KEY."""
-    key = hashlib.sha256(settings.secret_key.encode()).digest()
+    """Derive Fernet key from the master secret (domain-separated)."""
+    key = smtp_fernet_key()
     return Fernet(base64.urlsafe_b64encode(key))
 
 

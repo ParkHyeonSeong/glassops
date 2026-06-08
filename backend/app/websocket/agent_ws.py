@@ -30,9 +30,11 @@ async def handle_agent_ws(ws: WebSocket) -> None:
         await ws.close(code=4001, reason="Invalid agent ID")
         return
 
-    # Validate agent key against configured secret
-    expected_key = ws.app.state.settings.secret_key if hasattr(ws.app.state, "settings") else ""
-    if not agent_key or not hmac.compare_digest(agent_key, expected_key):
+    # Validate agent key against the derived agent auth key (separate from the
+    # JWT signing secret so handing it to a remote agent never leaks the secret).
+    _state = getattr(ws.app.state, "settings", None)
+    expected_key = _state.agent_key if _state else ""
+    if not expected_key or not agent_key or not hmac.compare_digest(agent_key, expected_key):
         await ws.close(code=4003, reason="Invalid agent key")
         return
 

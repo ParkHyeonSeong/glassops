@@ -1,8 +1,9 @@
 """Alert configuration API — SMTP settings."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 
+from app.dependencies import require_admin
 from app.services.alert_service import get_smtp_config, save_smtp_config, send_alert_email
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
@@ -20,7 +21,7 @@ class SmtpConfig(BaseModel):
 
 
 @router.get("/config")
-async def get_config():
+async def get_config(_: str = Depends(require_admin)):
     config = await get_smtp_config()
     if not config:
         return {"configured": False}
@@ -30,7 +31,7 @@ async def get_config():
 
 
 @router.post("/config")
-async def set_config(body: SmtpConfig):
+async def set_config(body: SmtpConfig, _: str = Depends(require_admin)):
     config = body.model_dump()
     # "********" means "keep existing" — save_smtp_config handles preservation
     await save_smtp_config(config)
@@ -38,7 +39,7 @@ async def set_config(body: SmtpConfig):
 
 
 @router.post("/test")
-async def test_email():
+async def test_email(_: str = Depends(require_admin)):
     result = await send_alert_email(
         "[GlassOps] Test Alert",
         "This is a test email from GlassOps. If you received this, SMTP is configured correctly.",

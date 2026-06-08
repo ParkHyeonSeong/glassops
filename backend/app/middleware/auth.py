@@ -25,6 +25,20 @@ PUBLIC_PREFIXES = (
     "/api/auth/validate-password",
 )
 
+# Defense-in-depth safety net: state-changing requests to these prefixes require
+# admin. Per-route Depends(require_admin) is the primary gate; this backstop
+# catches any privileged write route that forgets to declare it. Sensitive GETs
+# (logs/read, settings/runtime) are still gated only by their route dependency.
+ADMIN_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+ADMIN_WRITE_PREFIXES = (
+    "/api/docker",
+    "/api/process",
+    "/api/settings",
+    "/api/alerts",
+    "/api/logs",
+    "/api/users",
+)
+
 
 class JWTAuthMiddleware:
     def __init__(self, app: ASGIApp) -> None:
@@ -91,6 +105,14 @@ class JWTAuthMiddleware:
         if user and not user.get("is_active", True):
             await self._send_403(send, "Account disabled")
             return
+
+        # Defense-in-depth: deny state-changing requests to privileged routers
+        # for non-admins (fail closed if the user lookup failed).
+        method = scope.get("method", "GET")
+        if method in ADMIN_WRITE_METHODS and path.startswith(ADMIN_WRITE_PREFIXES):
+            if not user or user.get("role") != "admin":
+                await self._send_403(send, "Admin access required")
+                return
 
         # Attach to scope state
         if "state" not in scope:

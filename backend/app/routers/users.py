@@ -17,20 +17,13 @@ from app.database import (
     set_user_host_accounts,
     update_user,
 )
-from app.routers.auth import get_current_user
+from app.dependencies import require_admin
 from app.services.auth_service import validate_password
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 HOST_USER_PATTERN = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,31}$")
 AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-async def require_admin(email: str = Depends(get_current_user)) -> str:
-    user = await get_user(email)
-    if not user or user.get("role") != "admin" or not user.get("is_active", True):
-        raise HTTPException(403, "Admin access required")
-    return email
 
 
 class CreateUserRequest(BaseModel):

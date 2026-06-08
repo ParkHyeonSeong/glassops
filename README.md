@@ -74,12 +74,12 @@ cp .env.example .env
 |----------|---------|-------------|
 | `GLASSOPS_PORT` | `7440` | Web UI port |
 | `GLASSOPS_BIND` | `127.0.0.1` | Bind address of the published port. Use the host's LAN IP (e.g. `10.0.0.9`) to allow remote agents to connect, or `0.0.0.0` (combine with firewall) |
-| `GLASSOPS_SECRET_KEY` | `change-me-in-production` | JWT signing + SMTP encryption key + remote-agent shared secret (**change this**) |
+| `GLASSOPS_SECRET_KEY` | *(auto-generated if empty)* | Master secret. Root of JWT signing + derived agent/SMTP subkeys. **Set a strong value in production** (`openssl rand -hex 32`); if left empty one is generated and persisted at `<data>/secret.key`. Weak/placeholder values are **rejected at startup** |
 | `GLASSOPS_ADMIN_EMAIL` | `admin@glassops.local` | Initial admin email |
 | `GLASSOPS_ADMIN_PASSWORD` | *(random)* | Initial password (printed to logs if unset) |
 | `GLASSOPS_DB_PATH` | `/app/data/glassops.db` | SQLite database path |
 | `GLASSOPS_AGENT_ID` | `local` | Agent identifier (this server's own agent) |
-| `GLASSOPS_AGENT_KEY` | *(auto)* | Auto-set from SECRET_KEY for the built-in agent. Set explicitly on remote agents to match the backend SECRET_KEY |
+| `GLASSOPS_AGENT_KEY` | *(auto)* | Auto-derived from SECRET_KEY for the built-in agent. On **remote** agents set it to the backend's derived agent key: `docker compose exec glassops python -m app.secret_bootstrap agent` |
 | `GLASSOPS_COLLECT_INTERVAL` | `1` | Metrics collection interval (seconds, 1-60) |
 | `GLASSOPS_ENABLE_DOCKER` | `true` | Enable Docker container monitoring |
 | `GLASSOPS_ENABLE_GPU` | `false` | Enable NVIDIA GPU monitoring (requires pynvml) |
@@ -172,7 +172,9 @@ Edit `agent.env`:
 
 ```env
 GLASSOPS_AGENT_ID=dev10                              # unique per host
-GLASSOPS_AGENT_KEY=<same value as backend SECRET_KEY>
+# Backend's derived agent key — get it from the dashboard host with:
+#   docker compose exec glassops python -m app.secret_bootstrap agent
+GLASSOPS_AGENT_KEY=<backend derived agent key>
 GLASSOPS_SERVER_URL=ws://<dashboard-lan-ip>:7440/ws/agent
 GLASSOPS_ENABLE_DOCKER=true
 GLASSOPS_ENABLE_GPU=true                             # set false if no NVIDIA GPU

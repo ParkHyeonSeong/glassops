@@ -4,9 +4,10 @@ import logging
 import os
 import signal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import settings
+from app.dependencies import require_admin
 from app.services.agent_dispatch import call_remote, is_local
 
 router = APIRouter(prefix="/api/process", tags=["process"])
@@ -17,7 +18,8 @@ PROTECTED_PIDS = {0, 1, os.getpid(), os.getppid()}
 
 
 @router.post("/{pid}/kill")
-async def kill_process(pid: int, agent_id: str = Query(settings.local_agent_id)):
+async def kill_process(pid: int, agent_id: str = Query(settings.local_agent_id),
+                       _: str = Depends(require_admin)):
     if is_local(agent_id):
         # Refresh self-protection
         PROTECTED_PIDS.update({os.getpid(), os.getppid()})

@@ -4,10 +4,11 @@ import re
 from datetime import datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
+from app.dependencies import require_admin
 from app.services.agent_dispatch import call_remote, is_local
 from app.services.docker_service import (
     list_containers,
@@ -57,7 +58,8 @@ async def get_container(container_id: str, agent_id: str = _agent_param()):
 
 
 @router.post("/containers/{container_id}/action")
-async def post_action(container_id: str, body: ActionRequest, agent_id: str = _agent_param()):
+async def post_action(container_id: str, body: ActionRequest, agent_id: str = _agent_param(),
+                      _: str = Depends(require_admin)):
     cid = _validate_id(container_id)
     if is_local(agent_id):
         result = container_action(cid, body.action)
@@ -74,6 +76,7 @@ async def get_logs(
     since: Optional[str] = Query(None, description="ISO8601 datetime"),
     until: Optional[str] = Query(None, description="ISO8601 datetime"),
     agent_id: str = _agent_param(),
+    _: str = Depends(require_admin),
 ):
     cid = _validate_id(container_id)
 

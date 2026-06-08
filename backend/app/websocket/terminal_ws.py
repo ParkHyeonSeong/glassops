@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import settings
-from app.database import get_user_host_accounts
+from app.database import get_user, get_user_host_accounts
 from app.services import agent_rpc
 from app.services.auth_service import verify_token
 from app.services.terminal_service import TerminalSession, SESSION_TIMEOUT
@@ -38,6 +38,17 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
     email = verify_token(token)
     if not email:
         await ws.close(code=4003, reason="Authentication required")
+        return
+
+    # Terminal access is admin-only — a shell here is host-root-equivalent under
+    # the privileged container. Verify role, active status, and that the account
+    # is not pending a forced password change.
+    user = await get_user(email)
+    if not user or user.get("role") != "admin" or not user.get("is_active", True):
+        await ws.close(code=4403, reason="Admin access required")
+        return
+    if user.get("must_change_password"):
+        await ws.close(code=4403, reason="Password change required")
         return
 
     agent_id = ws.query_params.get("agent_id", settings.local_agent_id)

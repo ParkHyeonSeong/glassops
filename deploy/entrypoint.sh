@@ -61,4 +61,12 @@ else
   echo "geo \$ip_whitelist { default 1; }" > "$IP_CONF"
 fi
 
+# Resolve the master secret once before services start (generate/persist if
+# unset; refuse to boot if weak) and derive the built-in agent's auth key, so
+# the backend and the bundled agent share the exact same values.
+GLASSOPS_SECRET_KEY="$(cd /app && python3 -m app.secret_bootstrap secret)" || exit 1
+export GLASSOPS_SECRET_KEY
+GLASSOPS_AGENT_KEY="$(cd /app && python3 -m app.secret_bootstrap agent)" || exit 1
+export GLASSOPS_AGENT_KEY
+
 exec "$@"
