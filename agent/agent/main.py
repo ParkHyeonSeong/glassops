@@ -13,7 +13,7 @@ from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
 from agent.collectors import cgroup_stats
-from agent.transport.ws_client import MetricsPusher, serve_rpc
+from agent.transport.ws_client import MetricsPusher, serve_rpc, check_transport_security
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,6 +105,7 @@ async def collect_metrics() -> dict:
 
 async def main() -> None:
     logger.info("GlassOps Agent starting (id=%s, interval=%ds)", AGENT_ID, COLLECT_INTERVAL)
+    check_transport_security()   # warn (or refuse, if GLASSOPS_REQUIRE_AGENT_TLS) on plaintext remote
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

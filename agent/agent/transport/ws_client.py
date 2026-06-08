@@ -7,7 +7,9 @@ Supports unary RPC (`rpc.req` → `rpc.res`) and streaming RPC
 import asyncio
 import json
 import logging
+import ssl
 from typing import Any
+from urllib.parse import urlparse
 
 import websockets
 from websockets.exceptions import (
@@ -17,7 +19,7 @@ from websockets.exceptions import (
     WebSocketException,
 )
 
-from agent.config import AGENT_ID, AGENT_KEY, SERVER_URL
+from agent.config import AGENT_ID, AGENT_KEY, SERVER_URL, TLS_CA, REQUIRE_TLS
 from agent.rpc import (
     dispatch as rpc_dispatch,
     dispatch_stream,
@@ -29,6 +31,34 @@ from agent.rpc import (
 logger = logging.getLogger("glassops.agent")
 
 RECONNECT_DELAY = 1
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
+
+
+def check_transport_security() -> None:
+    """Warn (or refuse, when GLASSOPS_REQUIRE_AGENT_TLS=true) if a remote agent
+    connects over plaintext ws://. Loopback (the built-in agent) and wss:// are
+    exempt. Call once at startup."""
+    parsed = urlparse(SERVER_URL)
+    if parsed.scheme == "wss" or (parsed.hostname or "") in _LOOPBACK:
+        return
+    msg = (
+        f"GLASSOPS_SERVER_URL uses plaintext ws:// to a remote host ({SERVER_URL}). "
+        "The agent key and all RPC traffic (including shell/exec commands) are "
+        "exposed to anyone on the network path. Use wss:// (TLS)."
+    )
+    if REQUIRE_TLS:
+        raise SystemExit("FATAL: " + msg + " (set GLASSOPS_REQUIRE_AGENT_TLS=false to override.)")
+    logger.warning("SECURITY: %s  Set GLASSOPS_REQUIRE_AGENT_TLS=true to enforce.", msg)
+
+
+def _ssl_context() -> ssl.SSLContext:
+    # Verification is always on (no insecure opt-out). For a self-signed / private
+    # CA, GLASSOPS_AGENT_CA adds it to the trust store.
+    ctx = ssl.create_default_context()
+    if TLS_CA:
+        ctx.load_verify_locations(TLS_CA)
+    return ctx
 
 
 class MetricsPusher:
@@ -57,8 +87,7 @@ class MetricsPusher:
 
         while True:
             try:
-                self._ws = await websockets.connect(
-                    SERVER_URL,
+                kwargs: dict[str, Any] = dict(
                     additional_headers={
                         "X-Agent-Id": AGENT_ID,
                         "X-Agent-Key": AGENT_KEY,
@@ -67,6 +96,9 @@ class MetricsPusher:
                     ping_timeout=10,
                     max_size=2_097_152,
                 )
+                if urlparse(SERVER_URL).scheme == "wss":
+                    kwargs["ssl"] = _ssl_context()
+                self._ws = await websockets.connect(SERVER_URL, **kwargs)
                 self._connected = True
                 logger.info("Connected to backend: %s", SERVER_URL)
                 return

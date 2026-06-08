@@ -175,10 +175,20 @@ GLASSOPS_AGENT_ID=dev10                              # unique per host
 # Backend's derived agent key — get it from the dashboard host with:
 #   docker compose exec glassops python -m app.secret_bootstrap agent
 GLASSOPS_AGENT_KEY=<backend derived agent key>
-GLASSOPS_SERVER_URL=ws://<dashboard-lan-ip>:7440/ws/agent
+# Use wss:// (TLS). Plaintext ws:// exposes the agent key + all RPC (shell/exec)
+# to the network; terminate TLS at a reverse proxy or the dashboard host.
+GLASSOPS_SERVER_URL=wss://<dashboard-host>/ws/agent
+# GLASSOPS_AGENT_CA=/path/to/ca.pem      # only for a self-signed / private CA
+# GLASSOPS_REQUIRE_AGENT_TLS=true        # refuse to start on plaintext remote
 GLASSOPS_ENABLE_DOCKER=true
 GLASSOPS_ENABLE_GPU=true                             # set false if no NVIDIA GPU
 ```
+
+> **Remote agents must use `wss://`.** The connection carries the agent key and
+> RPC commands (including shell/exec on the agent host); over plaintext `ws://`
+> anyone on the network path can capture the key and inject commands. Put a TLS
+> reverse proxy (Caddy/nginx/Traefik with Let's Encrypt) in front of the dashboard,
+> or use a self-signed cert and set `GLASSOPS_AGENT_CA` on each agent.
 
 Then start the agent:
 
