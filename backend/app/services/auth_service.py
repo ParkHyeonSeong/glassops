@@ -38,9 +38,15 @@ def validate_password(password: str) -> dict:
     return {"valid": all(checks.values()), "checks": checks}
 
 
+# Precomputed hash to run bcrypt even for non-existent accounts, so login timing
+# doesn't reveal whether an email exists (user enumeration).
+_DUMMY_HASH = bcrypt.hashpw(b"glassops-timing-equalizer", bcrypt.gensalt())
+
+
 async def verify_password(email: str, password: str) -> bool:
     user = await get_user(email)
     if not user:
+        bcrypt.checkpw(password.encode(), _DUMMY_HASH)
         return False
     return bcrypt.checkpw(password.encode(), user["password_hash"].encode())
 

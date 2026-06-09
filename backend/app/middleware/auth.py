@@ -39,6 +39,10 @@ ADMIN_WRITE_PREFIXES = (
     "/api/users",
 )
 
+# A user pending a forced password change may only reach these (plus the public
+# /api/auth/logout); every other /api path is blocked until they change it.
+PWCHANGE_ALLOWED = {"/api/auth/force-password", "/api/auth/password", "/api/auth/me"}
+
 
 class JWTAuthMiddleware:
     def __init__(self, app: ASGIApp) -> None:
@@ -110,6 +114,11 @@ class JWTAuthMiddleware:
         # change / deactivation) access tokens.
         if await access_revoked(token, user):
             await self._send_401(send, "Token revoked")
+            return
+
+        # A forced-password-change account is confined to the password-change flow.
+        if user and user.get("must_change_password") and path not in PWCHANGE_ALLOWED:
+            await self._send_403(send, "Password change required")
             return
 
         # Defense-in-depth: deny state-changing requests to privileged routers

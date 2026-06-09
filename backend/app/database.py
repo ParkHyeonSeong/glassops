@@ -144,14 +144,22 @@ async def init_db() -> None:
             password = env_pw
             must_change = False
         else:
-            # No password configured — generate random one-time password
+            # No password configured — generate a random one-time password and
+            # write it to a 0600 file in the data dir instead of the logs (logs are
+            # captured by supervisord/docker and retained). Operator reads it once,
+            # is forced to change it on first login, then deletes the file.
             password = secrets.token_urlsafe(16)
             must_change = True
-            logger.warning("=" * 60)
-            logger.warning("  INITIAL ADMIN PASSWORD (change immediately!)")
-            logger.warning("  Email:    %s", default_email)
-            logger.warning("  Password: %s", password)
-            logger.warning("=" * 60)
+            pw_file = os.path.join(os.path.dirname(settings.db_path) or ".", "initial_admin_password")
+            try:
+                with open(pw_file, "w") as f:
+                    f.write(f"email: {default_email}\npassword: {password}\n")
+                os.chmod(pw_file, 0o600)
+                logger.warning("Initial admin password generated → %s "
+                               "(read it, log in, change immediately, then delete the file)", pw_file)
+            except OSError:
+                logger.warning("Initial admin password (set GLASSOPS_ADMIN_PASSWORD next time): %s / %s",
+                               default_email, password)
 
         pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         await db.execute(
