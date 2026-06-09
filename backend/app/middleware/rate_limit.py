@@ -15,9 +15,17 @@ LOGIN_LOCKOUT_SECONDS = 300
 API_RPM = 100
 API_WINDOW = 60
 
+# Agent WS (/ws/agent): bad-key lockout (mirrors login) + connection-rate cap per IP.
+AGENT_KEY_MAX_FAILURES = 5
+AGENT_KEY_LOCKOUT_SECONDS = 300
+AGENT_CONN_MAX = 30
+AGENT_CONN_WINDOW = 60
+
 # In-memory stores
 _login_failures: dict[str, list[float]] = {}  # ip -> [timestamps of failures]
 _api_requests: dict[str, list[float]] = {}    # ip -> [timestamps]
+_agent_key_failures: dict[str, list[float]] = {}  # ip -> [bad-key attempt timestamps]
+_agent_conns: dict[str, list[float]] = {}         # ip -> [/ws/agent handshake timestamps]
 
 
 def _cleanup_old(entries: list[float], window: float) -> list[float]:
@@ -47,6 +55,33 @@ def get_lockout_remaining(ip: str) -> int:
     oldest_relevant = failures[-LOGIN_MAX_FAILURES]
     remaining = int(LOGIN_LOCKOUT_SECONDS - (time.time() - oldest_relevant))
     return max(0, remaining)
+
+
+# ── /ws/agent abuse guards (AGENT-06) ────────────────────────────────────
+
+
+def record_agent_key_failure(ip: str) -> None:
+    """Count a rejected /ws/agent handshake (bad agent id or key) for this IP."""
+    now = time.time()
+    _agent_key_failures[ip] = _cleanup_old(
+        _agent_key_failures.get(ip, []), AGENT_KEY_LOCKOUT_SECONDS) + [now]
+
+
+def is_agent_key_locked(ip: str) -> bool:
+    failures = _cleanup_old(_agent_key_failures.get(ip, []), AGENT_KEY_LOCKOUT_SECONDS)
+    _agent_key_failures[ip] = failures
+    return len(failures) >= AGENT_KEY_MAX_FAILURES
+
+
+def agent_conn_allowed(ip: str) -> bool:
+    """Record a /ws/agent handshake from this IP; False if it exceeds the rate.
+    Bounds reconnect floods even when the agent key is correct."""
+    conns = _cleanup_old(_agent_conns.get(ip, []), AGENT_CONN_WINDOW)
+    if len(conns) >= AGENT_CONN_MAX:
+        _agent_conns[ip] = conns
+        return False
+    _agent_conns[ip] = conns + [time.time()]
+    return True
 
 
 class RateLimitMiddleware:

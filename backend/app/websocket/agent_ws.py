@@ -4,10 +4,13 @@ import hmac
 import json
 import logging
 import re
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.database import store_metric
+from app.net import resolve_client_ip
+from app.middleware import rate_limit as rl
 from app.websocket.client_ws import broadcast_to_clients
 from app.services.alert_service import check_and_alert
 from app.services import agent_rpc
@@ -17,16 +20,33 @@ logger = logging.getLogger("glassops.agent_ws")
 AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 MAX_MESSAGE_SIZE = 1_048_576  # 1MB — RPC responses (e.g., container logs) can be sizable
 
+# Per-connection metric-flood guard. RPC chunks (demand-driven log streams) are NOT
+# counted; only the metric path is, whose steady cadence is ~1/s (COLLECT_INTERVAL).
+AGENT_METRIC_MAX = 100
+AGENT_METRIC_WINDOW = 10
+
 # Connected agents: agent_id -> WebSocket
 connected_agents: dict[str, WebSocket] = {}
 
 
 async def handle_agent_ws(ws: WebSocket) -> None:
+    # Abuse guards (AGENT-06): per-IP bad-key lockout + connection-rate cap. IP is
+    # resolved via the trusted-proxy model so it can't be spoofed. Reject before
+    # accept so abusive peers never enter the metric loop.
+    ip = resolve_client_ip(ws.scope)
+    if rl.is_agent_key_locked(ip):
+        await ws.close(code=4029, reason="Too many failed attempts")
+        return
+    if not rl.agent_conn_allowed(ip):
+        await ws.close(code=4029, reason="Too many connections")
+        return
+
     agent_id = ws.headers.get("x-agent-id", "")
     agent_key = ws.headers.get("x-agent-key", "")
 
     # Validate agent_id format
     if not agent_id or not AGENT_ID_PATTERN.match(agent_id):
+        rl.record_agent_key_failure(ip)
         await ws.close(code=4001, reason="Invalid agent ID")
         return
 
@@ -35,6 +55,7 @@ async def handle_agent_ws(ws: WebSocket) -> None:
     _state = getattr(ws.app.state, "settings", None)
     expected_key = _state.agent_key if _state else ""
     if not expected_key or not agent_key or not hmac.compare_digest(agent_key, expected_key):
+        rl.record_agent_key_failure(ip)
         await ws.close(code=4003, reason="Invalid agent key")
         return
 
@@ -49,6 +70,8 @@ async def handle_agent_ws(ws: WebSocket) -> None:
 
     connected_agents[agent_id] = ws
     logger.info("Agent connected: %s", agent_id)
+
+    metric_times: list[float] = []
 
     try:
         while True:
@@ -96,7 +119,14 @@ async def handle_agent_ws(ws: WebSocket) -> None:
                     agent_rpc.on_end(rpc_id, str(err))
                 continue
 
-            # Default path: metric ingestion
+            # Default path: metric ingestion — flood guard (RPC chunks not counted).
+            now = time.time()
+            metric_times = [t for t in metric_times if t > now - AGENT_METRIC_WINDOW]
+            if len(metric_times) >= AGENT_METRIC_MAX:
+                logger.warning("Agent %s exceeded metric rate; disconnecting", agent_id)
+                break
+            metric_times.append(now)
+
             timestamp = data.get("timestamp", 0)
             if not isinstance(timestamp, (int, float)) or timestamp <= 0:
                 continue

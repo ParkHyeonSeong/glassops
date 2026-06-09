@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import smtp_fernet_key
 from app.database import get_db
+from app.services.smtp_validate import validate_smtp_target
 
 logger = logging.getLogger("glassops.alerts")
 
@@ -98,6 +99,14 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
     config = await get_smtp_config()
     if not config or not config.get("host"):
         return {"ok": False, "error": "SMTP not configured"}
+
+    # Defense-in-depth: re-validate at send time so a config written before this
+    # check (or by another code path) can't be used as an SSRF primitive.
+    try:
+        validate_smtp_target(config["host"], config.get("port", 587))
+    except ValueError as e:
+        logger.warning("Refusing to send via disallowed SMTP target: %s", e)
+        return {"ok": False, "error": "SMTP host not allowed"}
 
     try:
         msg = MIMEText(body, "plain", "utf-8")

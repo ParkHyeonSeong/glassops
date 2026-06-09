@@ -10,14 +10,19 @@ cd glassops
 make up
 ```
 
-Open **http://localhost:7440** and log in:
+Open **http://localhost:7440** and log in.
 
-| | |
-|---|---|
-| Email | `admin@glassops.local` |
-| Password | `admin` (or check `make logs` for generated password) |
+On first run GlassOps creates the admin account (`admin@glassops.local`) with a
+**random one-time password** written to `data/initial_admin_password` (mode 0600, in
+the mounted data volume — `/app/data/initial_admin_password` inside the container).
+Read it, log in, and you'll be required to change it immediately:
 
-> Change the default password via Settings or set `GLASSOPS_ADMIN_PASSWORD` in `.env` before first run. If unset, a random password is generated and printed to the container logs.
+```bash
+cat data/initial_admin_password
+```
+
+> Prefer your own password? Set `GLASSOPS_ADMIN_PASSWORD` in `.env` before the first run.
+> (If that file can't be written, the password is logged once instead — check `make logs`.)
 
 ## What's Inside
 
@@ -76,7 +81,7 @@ cp .env.example .env
 | `GLASSOPS_BIND` | `127.0.0.1` | Bind address of the published port. Use the host's LAN IP (e.g. `10.0.0.9`) to allow remote agents to connect, or `0.0.0.0` (combine with firewall) |
 | `GLASSOPS_SECRET_KEY` | *(auto-generated if empty)* | Master secret. Root of JWT signing + derived agent/SMTP subkeys. **Set a strong value in production** (`openssl rand -hex 32`); if left empty one is generated and persisted at `<data>/secret.key`. Weak/placeholder values are **rejected at startup** |
 | `GLASSOPS_ADMIN_EMAIL` | `admin@glassops.local` | Initial admin email |
-| `GLASSOPS_ADMIN_PASSWORD` | *(random)* | Initial password (printed to logs if unset) |
+| `GLASSOPS_ADMIN_PASSWORD` | *(random)* | Initial admin password. If unset, a random one-time password is written to `<data>/initial_admin_password` (0600) and a change is forced on first login |
 | `GLASSOPS_DB_PATH` | `/app/data/glassops.db` | SQLite database path |
 | `GLASSOPS_AGENT_ID` | `local` | Agent identifier (this server's own agent) |
 | `GLASSOPS_AGENT_KEY` | *(auto)* | Auto-derived from SECRET_KEY for the built-in agent. On **remote** agents set it to the backend's derived agent key: `docker compose exec glassops python -m app.secret_bootstrap agent` |
@@ -325,7 +330,7 @@ enter the host namespaces.
 | Layer | Tech |
 |-------|------|
 | Frontend | React 18, TypeScript, Vite, zustand, recharts, xterm.js, react-rnd |
-| Backend | FastAPI, SQLite (aiosqlite), python-jose (JWT), bcrypt, pyotp, Fernet |
+| Backend | FastAPI, SQLite (aiosqlite), PyJWT, bcrypt, pyotp, Fernet |
 | Agent | psutil, pynvml (GPU), Docker SDK for Python, websockets |
 | Infra | Single Docker container, nginx, supervisord |
 

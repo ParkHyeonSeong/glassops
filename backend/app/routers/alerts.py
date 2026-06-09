@@ -5,6 +5,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.dependencies import require_admin
 from app.services.alert_service import get_smtp_config, save_smtp_config, send_alert_email
+from app.services.smtp_validate import validate_smtp_target
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -32,6 +33,11 @@ async def get_config(_: str = Depends(require_admin)):
 
 @router.post("/config")
 async def set_config(body: SmtpConfig, _: str = Depends(require_admin)):
+    # Reject SSRF/internal-scan targets before persisting (INJECT-04).
+    try:
+        validate_smtp_target(body.host, body.port)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     config = body.model_dump()
     # "********" means "keep existing" — save_smtp_config handles preservation
     await save_smtp_config(config)

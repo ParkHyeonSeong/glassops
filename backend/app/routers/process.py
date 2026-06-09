@@ -36,7 +36,8 @@ async def kill_process(pid: int, agent_id: str = Query(settings.local_agent_id),
             raise HTTPException(404, f"Process {pid} not found")
         except PermissionError:
             raise HTTPException(403, f"Permission denied to kill PID {pid}")
-        except Exception as e:
-            raise HTTPException(500, f"Failed to kill process: {e}")
+        except Exception:
+            logger.exception("Failed to kill PID %d", pid)
+            raise HTTPException(500, "Failed to kill process")
 
     return await call_remote(agent_id, "process.kill", {"pid": pid})

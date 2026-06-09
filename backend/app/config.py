@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # trust. Default = the bundled nginx (loopback). Add upstream LB/proxy IPs here.
     trusted_proxies: str = "127.0.0.1,::1"
     force_secure_cookies: bool = False   # set true when TLS is terminated upstream
+    # CSWSH guard: browser origins permitted on WebSockets (comma-separated, e.g.
+    # "https://ops.lan,http://10.0.0.9:7440"). Empty = match the request Host (same-host LAN).
+    allowed_origins: str = ""
+    # Restrict which SMTP relay hosts the alert config may use (comma-separated).
+    # Empty = any host that passes the SSRF checks (loopback/link-local/metadata blocked).
+    smtp_allowed_hosts: str = ""
 
     model_config = {"env_prefix": "GLASSOPS_"}
 

@@ -25,6 +25,24 @@ logger = logging.getLogger("glassops.docker_logs_ws")
 CONTAINER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
 AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
+# Client-facing error codes — keep raw docker SDK / agent exception text out of the
+# browser (it leaks host paths and internal detail); the real cause is logged server-side.
+_ERR_MESSAGES = {
+    "stream_failed": "Log stream error",
+    "docker_unavailable": "Docker is not available",
+    "container_not_found": "Container not found",
+    "agent_unavailable": "Agent not connected",
+}
+
+
+async def _send_error(ws: WebSocket, code: str) -> None:
+    try:
+        await ws.send_text(json.dumps(
+            {"event": "error", "code": code, "error": _ERR_MESSAGES.get(code, "Log stream error")}
+        ))
+    except Exception:
+        pass
+
 
 async def handle_docker_logs_ws(ws: WebSocket) -> None:
     if not origin_ok(ws):
@@ -38,10 +56,14 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
         return
 
     # Container logs are sensitive (may contain secrets) — admin only, matching
-    # the REST endpoint GET /api/docker/containers/{id}/logs.
+    # the REST endpoint GET /api/docker/containers/{id}/logs, and confined like the
+    # terminal: active admin, not pending a forced password change, not revoked.
     user = await get_user(email)
     if not user or user.get("role") != "admin" or not user.get("is_active", True):
         await ws.close(code=4403, reason="Admin access required")
+        return
+    if user.get("must_change_password"):
+        await ws.close(code=4403, reason="Password change required")
         return
     if await access_revoked(token, user):
         await ws.close(code=4401, reason="Token revoked")
@@ -73,12 +95,9 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
             await _stream_remote(ws, agent_id, container_id, tail)
     except WebSocketDisconnect:
         pass
-    except Exception as e:
+    except Exception:
         logger.exception("Log stream failed")
-        try:
-            await ws.send_text(json.dumps({"event": "error", "error": str(e)}))
-        except Exception:
-            pass
+        await _send_error(ws, "stream_failed")
 
 
 # ── local path ────────────────────────────────────────────────────────
@@ -89,18 +108,21 @@ async def _stream_local(ws: WebSocket, container_id: str, tail: int) -> None:
     try:
         from app.services.docker_service import _get_client
     except ImportError:
-        await ws.send_text(json.dumps({"event": "error", "error": "docker_service unavailable"}))
+        logger.error("docker_service unavailable")
+        await _send_error(ws, "docker_unavailable")
         return
 
     client = _get_client()
     if client is None:
-        await ws.send_text(json.dumps({"event": "error", "error": "Docker not available"}))
+        logger.error("Docker client unavailable")
+        await _send_error(ws, "docker_unavailable")
         return
 
     try:
         container = client.containers.get(container_id)
-    except Exception as e:
-        await ws.send_text(json.dumps({"event": "error", "error": f"Container not found: {e}"}))
+    except Exception:
+        logger.warning("Container lookup failed for %s", container_id, exc_info=True)
+        await _send_error(ws, "container_not_found")
         return
 
     loop = asyncio.get_running_loop()
@@ -145,7 +167,8 @@ async def _stream_local(ws: WebSocket, container_id: str, tail: int) -> None:
                     await ws.send_text(json.dumps({"event": "end"}))
                     return
                 if isinstance(item, tuple) and item and item[0] == "__err__":
-                    await ws.send_text(json.dumps({"event": "error", "error": item[1]}))
+                    logger.warning("Log producer error: %s", item[1])
+                    await _send_error(ws, "stream_failed")
                     return
                 await ws.send_text(json.dumps({"line": item}))
     finally:
@@ -173,7 +196,8 @@ async def _stream_remote(ws: WebSocket, agent_id: str, container_id: str, tail: 
             on_chunk,
         )
     except agent_rpc.AgentNotConnected as e:
-        await ws.send_text(json.dumps({"event": "error", "error": str(e)}))
+        logger.warning("docker logs: agent %s not connected: %s", agent_id, e)
+        await _send_error(ws, "agent_unavailable")
         return
 
     async def reader() -> None:
@@ -195,7 +219,8 @@ async def _stream_remote(ws: WebSocket, agent_id: str, container_id: str, tail: 
                 end_task.result()
                 await ws.send_text(json.dumps({"event": "end"}))
             except agent_rpc.RpcError as e:
-                await ws.send_text(json.dumps({"event": "error", "error": str(e)}))
+                logger.warning("docker logs RPC error for agent %s: %s", agent_id, e)
+                await _send_error(ws, "stream_failed")
     finally:
         if not reader_task.done():
             reader_task.cancel()

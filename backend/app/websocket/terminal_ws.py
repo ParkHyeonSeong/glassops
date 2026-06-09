@@ -193,8 +193,9 @@ async def _bridge_remote(ws: WebSocket, agent_id: str, host_user: str) -> None:
             try:
                 end_task.result()
             except agent_rpc.RpcError as e:
+                logger.warning("terminal RPC error for agent %s: %s", agent_id, e)
                 try:
-                    await ws.send_text(json.dumps({"type": "timeout", "message": str(e)}))
+                    await ws.send_text(json.dumps({"type": "timeout", "message": "Terminal session error"}))
                 except Exception:
                     pass
     finally:

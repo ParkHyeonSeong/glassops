@@ -11,18 +11,47 @@ from urllib.parse import urlparse
 
 from fastapi import WebSocket
 
+from app.config import settings
+
 _BEARER = "bearer"
+
+_origin_cache: dict = {"raw": None, "hosts": set()}
+
+
+def _allowed_hosts() -> set[str]:
+    """Hostnames parsed from GLASSOPS_ALLOWED_ORIGINS (cached on the raw string)."""
+    raw = settings.allowed_origins or ""
+    if _origin_cache["raw"] != raw:
+        hosts = set()
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            host = urlparse(entry if "//" in entry else "//" + entry).hostname
+            if host:
+                hosts.add(host.lower())
+        _origin_cache["raw"] = raw
+        _origin_cache["hosts"] = hosts
+    return _origin_cache["hosts"]
 
 
 def origin_ok(ws: WebSocket) -> bool:
-    """CSWSH/CSRF guard. Compare hostnames only — a reverse proxy (nginx `$host`)
-    may strip the port, so a netloc compare would wrongly reject same-host browsers.
-    A missing Origin (non-browser client) is allowed; it still needs a valid token."""
+    """CSWSH/CSRF guard for the browser WS channels (the agent transport does NOT
+    use this — it authenticates with x-agent-key headers and sends no Origin).
+
+    Fail-closed: a missing Origin is rejected (real browsers always send one on WS
+    handshakes). When GLASSOPS_ALLOWED_ORIGINS is set, the Origin hostname must be
+    in that allowlist. Otherwise fall back to matching the request Host hostname
+    (port-insensitive, since nginx `$host` may strip the port for same-host LAN)."""
     origin = ws.headers.get("origin", "")
+    o_host = urlparse(origin).hostname if origin else ""
+    if not o_host:
+        return False
+    allowed = _allowed_hosts()
+    if allowed:
+        return o_host.lower() in allowed
     host = ws.headers.get("host", "")
-    if origin and host:
-        return urlparse(origin).hostname == urlparse("//" + host).hostname
-    return True
+    return bool(host) and o_host == urlparse("//" + host).hostname
 
 
 def _offered(ws: WebSocket) -> list[str]:
