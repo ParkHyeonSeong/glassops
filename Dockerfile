@@ -24,7 +24,8 @@ ENV SHELL=/bin/bash
 # Python deps (backend + agent)
 COPY backend/requirements.txt /tmp/backend-requirements.txt
 COPY agent/requirements.txt /tmp/agent-requirements.txt
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
     -r /tmp/backend-requirements.txt \
     -r /tmp/agent-requirements.txt \
     && rm /tmp/*-requirements.txt

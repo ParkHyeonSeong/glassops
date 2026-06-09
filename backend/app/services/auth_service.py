@@ -7,7 +7,8 @@ import time
 
 import bcrypt
 import pyotp
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 
 from app.config import settings
 from app.database import get_user, update_user, blacklist_token, is_token_blacklisted
@@ -117,7 +118,7 @@ def verify_token(token: str, token_type: str = "access") -> str | None:
         if payload.get("exp", 0) < time.time():
             return None
         return payload.get("sub")
-    except JWTError:
+    except PyJWTError:
         return None
 
 
@@ -134,7 +135,7 @@ async def verify_refresh_token(token: str) -> str | None:
             token, settings.secret_key, algorithms=[ALGORITHM],
             options={"verify_exp": False},
         )
-    except JWTError:
+    except PyJWTError:
         return None
     user = await get_user(email)
     if not user or payload.get("iat", 0) < (user.get("tokens_valid_after") or 0):
@@ -153,7 +154,7 @@ async def access_revoked(token: str, user: dict | None) -> bool:
             token, settings.secret_key, algorithms=[ALGORITHM],
             options={"verify_exp": False},
         )
-    except JWTError:
+    except PyJWTError:
         return True
     return payload.get("iat", 0) < ((user or {}).get("tokens_valid_after") or 0)
 
@@ -167,7 +168,7 @@ async def revoke_refresh_token(token: str) -> None:
         )
         expires = payload.get("exp", time.time() + REFRESH_TOKEN_EXPIRE)
         await blacklist_token(_hash_token(token), expires)
-    except JWTError:
+    except PyJWTError:
         pass
 
 
@@ -180,7 +181,7 @@ async def revoke_access_token(token: str) -> None:
         )
         expires = payload.get("exp", time.time() + ACCESS_TOKEN_EXPIRE)
         await blacklist_token(_hash_token(token), expires)
-    except JWTError:
+    except PyJWTError:
         pass
 
 
