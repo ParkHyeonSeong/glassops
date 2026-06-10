@@ -29,8 +29,6 @@ AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # browser (it leaks host paths and internal detail); the real cause is logged server-side.
 _ERR_MESSAGES = {
     "stream_failed": "Log stream error",
-    "docker_unavailable": "Docker is not available",
-    "container_not_found": "Container not found",
     "agent_unavailable": "Agent not connected",
 }
 
@@ -87,12 +85,10 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
 
     await ws.accept(subprotocol=accept_subprotocol(ws))
 
-    is_local = agent_id == settings.local_agent_id
+    # Both local and remote hosts stream via the agent RPC (the bundled local agent
+    # serves agent_id=local); the backend opens no docker log iterator itself.
     try:
-        if is_local:
-            await _stream_local(ws, container_id, tail)
-        else:
-            await _stream_remote(ws, agent_id, container_id, tail)
+        await _stream_remote(ws, agent_id, container_id, tail)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -100,88 +96,7 @@ async def handle_docker_logs_ws(ws: WebSocket) -> None:
         await _send_error(ws, "stream_failed")
 
 
-# ── local path ────────────────────────────────────────────────────────
-
-
-async def _stream_local(ws: WebSocket, container_id: str, tail: int) -> None:
-    """Run a blocking log iterator in a thread, forward chunks via the queue."""
-    try:
-        from app.services.docker_service import _get_client
-    except ImportError:
-        logger.error("docker_service unavailable")
-        await _send_error(ws, "docker_unavailable")
-        return
-
-    client = _get_client()
-    if client is None:
-        logger.error("Docker client unavailable")
-        await _send_error(ws, "docker_unavailable")
-        return
-
-    try:
-        container = client.containers.get(container_id)
-    except Exception:
-        logger.warning("Container lookup failed for %s", container_id, exc_info=True)
-        await _send_error(ws, "container_not_found")
-        return
-
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
-    SENTINEL = object()
-
-    log_iter = container.logs(stream=True, follow=True, tail=tail, timestamps=True)
-
-    def producer() -> None:
-        try:
-            for raw in log_iter:
-                if isinstance(raw, bytes):
-                    text = raw.decode("utf-8", errors="replace")
-                else:
-                    text = str(raw)
-                fut = asyncio.run_coroutine_threadsafe(queue.put(text), loop)
-                fut.result()
-            asyncio.run_coroutine_threadsafe(queue.put(SENTINEL), loop).result()
-        except BaseException as e:
-            asyncio.run_coroutine_threadsafe(queue.put(("__err__", str(e))), loop).result()
-
-    producer_task = loop.run_in_executor(None, producer)
-
-    async def reader() -> None:
-        # Detect client-side close.
-        while True:
-            await ws.receive_text()  # we ignore body; just detect disconnect
-
-    reader_task = asyncio.create_task(reader())
-
-    try:
-        while True:
-            done, _ = await asyncio.wait(
-                {asyncio.create_task(queue.get()), reader_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for fut in done:
-                if fut is reader_task:
-                    return  # client disconnected
-                item = fut.result()
-                if item is SENTINEL:
-                    await ws.send_text(json.dumps({"event": "end"}))
-                    return
-                if isinstance(item, tuple) and item and item[0] == "__err__":
-                    logger.warning("Log producer error: %s", item[1])
-                    await _send_error(ws, "stream_failed")
-                    return
-                await ws.send_text(json.dumps({"line": item}))
-    finally:
-        reader_task.cancel()
-        try:
-            log_iter.close()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        if not producer_task.done():
-            producer_task.cancel()
-
-
-# ── remote path ───────────────────────────────────────────────────────
+# ── stream path (via agent RPC) ──────────────────────────────────────
 
 
 async def _stream_remote(ws: WebSocket, agent_id: str, container_id: str, tail: int) -> None:

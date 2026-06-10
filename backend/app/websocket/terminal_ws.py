@@ -21,7 +21,6 @@ from app.database import get_user, get_user_host_accounts, audit
 from app.net import resolve_client_ip
 from app.services import agent_rpc
 from app.services.auth_service import verify_token, access_revoked
-from app.services.terminal_service import TerminalSession, SESSION_TIMEOUT
 from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.terminal")
@@ -72,10 +71,9 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
                 {"host_user": host_user or "(env default)", "ip": resolve_client_ip(ws.scope)})
 
     try:
-        if agent_id == settings.local_agent_id:
-            await _bridge_local(ws, host_user)
-        else:
-            await _bridge_remote(ws, agent_id, host_user)
+        # Both local and remote hosts go through the agent RPC stream; the bundled
+        # local agent serves agent_id=local. The backend spawns no PTY itself.
+        await _bridge_remote(ws, agent_id, host_user)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -86,60 +84,7 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
                      "duration_s": round(time.monotonic() - started, 1)})
 
 
-# ── local PTY bridge ─────────────────────────────────────────────────
-
-
-async def _bridge_local(ws: WebSocket, host_user: str) -> None:
-    session = TerminalSession()
-    try:
-        session.spawn(host_user or None)
-    except Exception:
-        logger.exception("Failed to spawn terminal")
-        await ws.close(code=4000, reason="Failed to spawn terminal")
-        return
-
-    async def read_loop():
-        while session.is_alive:
-            data = await session.read()
-            if data:
-                try:
-                    await ws.send_bytes(data)
-                except Exception:
-                    break
-            if session.idle_seconds > SESSION_TIMEOUT:
-                try:
-                    await ws.send_text(json.dumps({
-                        "type": "timeout",
-                        "message": "Session timed out due to inactivity",
-                    }))
-                except Exception:
-                    pass
-                break
-
-    read_task = asyncio.create_task(read_loop())
-
-    try:
-        while True:
-            msg = await ws.receive()
-            if msg.get("type") == "websocket.disconnect":
-                break
-            if "text" in msg:
-                try:
-                    ctrl = json.loads(msg["text"])
-                    if ctrl.get("type") == "resize":
-                        session.resize(int(ctrl.get("rows", 24)), int(ctrl.get("cols", 80)))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            elif "bytes" in msg:
-                session.write(msg["bytes"])
-    except WebSocketDisconnect:
-        pass
-    finally:
-        read_task.cancel()
-        session.kill()
-
-
-# ── remote agent RPC bridge ──────────────────────────────────────────
+# ── agent RPC bridge (local + remote) ────────────────────────────────
 
 
 async def _bridge_remote(ws: WebSocket, agent_id: str, host_user: str) -> None:

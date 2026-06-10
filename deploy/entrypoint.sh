@@ -1,19 +1,8 @@
 #!/bin/sh
-# Auto-detect docker socket GID and grant appuser access
-if [ -S /var/run/docker.sock ]; then
-  SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock 2>/dev/null)
-  if [ -n "$SOCK_GID" ] && [ "$SOCK_GID" != "0" ]; then
-    getent group "$SOCK_GID" >/dev/null 2>&1 || addgroup --gid "$SOCK_GID" dockerhost 2>/dev/null
-    GRP_NAME=$(getent group "$SOCK_GID" | cut -d: -f1)
-    adduser appuser "$GRP_NAME" 2>/dev/null
-  else
-    adduser appuser root 2>/dev/null
-  fi
-fi
-
-# Ensure data directory
+# The backend runs unprivileged (supervisord user=appuser) and reaches the host
+# Docker daemon only via the bundled agent (root) — so it needs no docker.sock
+# group grant. The data dir is chowned to appuser after the secret bootstrap below.
 mkdir -p /app/data
-chown appuser:appuser /app/data
 
 # NVIDIA GPU: copy host libnvidia-ml into container if available via /proc
 # privileged mode gives access to host /proc where we can find nvidia libs
@@ -89,5 +78,14 @@ GLASSOPS_SECRET_KEY="$(cd /app && python3 -m app.secret_bootstrap secret)" || ex
 export GLASSOPS_SECRET_KEY
 GLASSOPS_AGENT_KEY="$(cd /app && python3 -m app.secret_bootstrap agent)" || exit 1
 export GLASSOPS_AGENT_KEY
+
+# The bundled agent IS the dashboard's local agent — pin its id to the backend's
+# local_agent_id so local panels (which dispatch to agent_id=local) always reach it,
+# even if .env omits GLASSOPS_AGENT_ID.
+export GLASSOPS_AGENT_ID="${GLASSOPS_LOCAL_AGENT_ID:-local}"
+
+# Make the data dir (incl. any root-owned glassops.db / secret.key from older
+# images) writable by the now-unprivileged backend.
+chown -R appuser:appuser /app/data
 
 exec "$@"
