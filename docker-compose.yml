@@ -4,6 +4,13 @@ services:
     ports:
       - "${GLASSOPS_BIND:-127.0.0.1}:${GLASSOPS_PORT:-7440}:7440"
     pid: host
+    # Required for per-container CPU/MEM metrics — do NOT remove. The agent reads
+    # /proc/<pid>/cgroup and joins it onto the :ro /sys/fs/cgroup mount; the kernel
+    # renders that path relative to the READER's cgroup namespace, so under a private
+    # namespace sibling containers resolve to /../docker-<id>.scope (outside the mount)
+    # and per-container stats silently read 0. Dropping it also buys no security: the
+    # mount is :ro (no release_agent escape) and the terminal cap set already grants
+    # host reach. See docs note in README "Container privileges".
     cgroup: host
     # Least privilege instead of `privileged: true`. The web terminal enters the
     # host namespaces via nsenter and su's to a host user, which needs exactly this

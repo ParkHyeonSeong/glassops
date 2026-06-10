@@ -1,0 +1,57 @@
+# OPT-IN hardening override — route the dashboard's Docker access through a
+# socket proxy instead of mounting the raw /var/run/docker.sock.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.socket-proxy.yml up -d
+#
+# Caps the Docker blast radius to list / inspect / logs / start / stop / restart:
+# a compromised backend can no longer create privileged containers, exec into one,
+# build, pull, or remove anything. Verified carve-out (POST=0 + ALLOW_START/STOP/
+# RESTARTS): create / exec / build / images-create / DELETE all return 403.
+#
+# HONEST LIMIT: the web terminal still nsenters into host PID 1 (SYS_ADMIN +
+# pid:host), so the container stays host-root-equivalent by design — this override
+# hardens the Docker API path only. It is most meaningful for a future no-terminal /
+# metrics-only profile, and for defense-in-depth against a Docker-API confused deputy.
+#
+# Image: linuxserver/socket-proxy (the canonical tecnativa image lacks the granular
+# ALLOW_START/ALLOW_STOP carve-out, so POST=0 there would also block start/stop).
+# Requires Docker Compose >= 2.24.4 for the `!override` volume merge tag.
+services:
+  docker-proxy:
+    image: lscr.io/linuxserver/socket-proxy@sha256:de8215f99a9ce4bbff5d8853d7a5ae4bbe6baa0ed868046a0251320a4fb05aa2
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run
+    environment:
+      - CONTAINERS=1      # list + inspect
+      - IMAGES=1          # Images tab + image-label resolution
+      - VOLUMES=1         # Volumes tab
+      - NETWORKS=1        # Networks tab
+      - INFO=1            # system info
+      - POST=0            # block create/exec/build/pull/commit by default …
+      - ALLOW_START=1     # … but carve out the three container actions the UI needs
+      - ALLOW_STOP=1
+      - ALLOW_RESTARTS=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket_proxy
+
+  glassops:
+    environment:
+      - DOCKER_HOST=tcp://docker-proxy:2375
+    # Re-declare volumes WITHOUT the raw docker.sock mount (the proxy replaces it).
+    volumes: !override
+      - glassops_data:/app/data
+      - /var/log:/host/log:ro
+      - /proc:/host/proc:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /etc/os-release:/host/os-release:ro
+    networks:
+      - default
+      - socket_proxy
+
+networks:
+  socket_proxy:
+    driver: bridge

@@ -5,6 +5,8 @@ services:
     container_name: glassops-agent
     restart: unless-stopped
     pid: host
+    # Required for per-container CPU/MEM metrics — do NOT remove (see docker-compose.yml
+    # for why: /proc/<pid>/cgroup paths are cgroup-namespace-relative).
     cgroup: host
     # Least privilege instead of `privileged: true` (see docker-compose.yml). The
     # agent's remote terminal uses nsenter+su just like the dashboard, so it needs

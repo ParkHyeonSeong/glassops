@@ -1,7 +1,10 @@
-.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs
+.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs refresh-digests
 
 # Default port
 PORT ?= 7440
+
+# Dockerfiles whose base-image digests are pinned (kept in lockstep)
+DOCKERFILES := Dockerfile backend/Dockerfile agent/Dockerfile frontend/Dockerfile frontend/Dockerfile.dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -83,3 +86,14 @@ agent-down: ## Stop agent
 
 agent-logs: ## Tail agent logs
 	docker logs -f glassops-agent
+
+refresh-digests: ## Re-pin base image digests to current upstream (run on a dev machine, commit the diff — NOT on a deploy host)
+	@for img in python:3.12-slim node:22-alpine nginx:alpine; do \
+	  base=$${img%%:*}; \
+	  digest=$$(docker buildx imagetools inspect $$img --format '{{.Manifest.Digest}}'); \
+	  echo "  $$img -> $$digest"; \
+	  for f in $(DOCKERFILES); do \
+	    sed -i.bak -E "s#($$base:[^@[:space:]]+)(@sha256:[a-f0-9]+)?#\1@$$digest#g" $$f && rm -f $$f.bak; \
+	  done; \
+	done
+	@echo "  Done — review 'git diff' and commit."

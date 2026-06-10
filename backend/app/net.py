@@ -36,6 +36,12 @@ def _peer_trusted(peer: str) -> bool:
         addr = ipaddress.ip_address(peer)
     except ValueError:
         return False
+    # The bundled nginx (and in-container health checks) reach uvicorn over loopback;
+    # trust it implicitly so overriding GLASSOPS_TRUSTED_PROXIES with only an upstream
+    # LB CIDR doesn't silently drop trust in the bundled proxy and collapse every
+    # client to 127.0.0.1. Safe because uvicorn is loopback-bound.
+    if addr.is_loopback:
+        return True
     return any(addr in net for net in _trusted_nets())
 
 

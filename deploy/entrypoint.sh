@@ -61,6 +61,27 @@ else
   echo "geo \$ip_whitelist { default 1; }" > "$IP_CONF"
 fi
 
+# Generate nginx real_ip config: believe X-Forwarded-For ONLY from configured
+# upstream proxies (the same trust list the backend uses), so the geo IP whitelist
+# and per-IP rate limits key on the TRUE client IP behind a reverse proxy. Unset
+# (the bundled nginx is the edge) leaves this comment-only — a no-op.
+REALIP_CONF="/etc/nginx/conf.d/real-ip.conf"
+echo "# Auto-generated from GLASSOPS_TRUSTED_PROXIES" > "$REALIP_CONF"
+REALIP_SET=0
+IFS=','
+for cidr in ${GLASSOPS_TRUSTED_PROXIES:-}; do
+  cidr=$(echo "$cidr" | xargs)  # trim
+  case "$cidr" in ""|127.0.0.1*|::1*) continue ;; esac  # skip empty + loopback
+  echo "set_real_ip_from $cidr;" >> "$REALIP_CONF"
+  REALIP_SET=1
+done
+unset IFS
+if [ "$REALIP_SET" = "1" ]; then
+  echo "real_ip_header X-Forwarded-For;" >> "$REALIP_CONF"
+  echo "real_ip_recursive on;" >> "$REALIP_CONF"
+  echo "nginx real_ip: trusting X-Forwarded-For from $GLASSOPS_TRUSTED_PROXIES"
+fi
+
 # Resolve the master secret once before services start (generate/persist if
 # unset; refuse to boot if weak) and derive the built-in agent's auth key, so
 # the backend and the bundled agent share the exact same values.

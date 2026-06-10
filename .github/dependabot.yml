@@ -1,0 +1,11 @@
+# Auto-bump base-image digest pins via monthly PRs once the repo is on GitHub.
+# Covers the two live build paths (root image + agent); `make refresh-digests` is
+# the offline/manual equivalent.
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/agent"
+    schedule:
+      interval: "monthly"

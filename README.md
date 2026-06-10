@@ -91,7 +91,8 @@ cp .env.example .env
 | `GLASSOPS_LOCAL_AGENT_ID` | `local` | Agent ID treated as "local" by the backend. Local-agent REST calls bypass RPC and hit the docker socket directly |
 | `GLASSOPS_RPC_TIMEOUT` | `30` | Timeout (s) for backend → agent RPC calls (logs, actions, etc.) |
 | `GLASSOPS_TERMINAL_USER` | *(login prompt)* | Host user for web terminal |
-| `GLASSOPS_ALLOWED_IPS` | *(all)* | Comma-separated CIDR whitelist |
+| `GLASSOPS_ALLOWED_IPS` | *(all)* | Comma-separated CIDR whitelist. Matches the **real** client IP — behind an upstream proxy, set `GLASSOPS_TRUSTED_PROXIES` so the whitelist sees through it |
+| `GLASSOPS_TRUSTED_PROXIES` | `127.0.0.1,::1` | CIDRs of upstream proxies whose forwarded headers are believed. Drives backend IP/scheme trust **and** nginx `real_ip`, keeping the whitelist + per-IP rate limits correct behind an LB/TLS proxy |
 
 > Most settings can also be changed at runtime via **Settings > Server** in the web UI without editing `.env`.
 
@@ -278,6 +279,8 @@ deny all;
 GLASSOPS_ALLOWED_IPS=10.0.0.0/8,192.168.0.0/16
 ```
 
+> **Behind a reverse proxy?** GlassOps matches the real client IP. If you front it with an LB/TLS proxy, also set `GLASSOPS_TRUSTED_PROXIES` to that proxy's CIDR — otherwise every request looks like it came from the proxy and the whitelist (and per-IP rate limits) misfire. The same list is honored by nginx `real_ip` and the backend, so there is one knob, not two.
+
 ### Terminal User
 
 By default the web terminal opens a login prompt on the host. To preset a user:
@@ -324,6 +327,26 @@ host terminal and Docker control are still inherently high-trust operations
 admin access as equivalent to host root and keep it behind the network controls
 above. `apparmor`/`seccomp` are set to `unconfined` because `nsenter` needs to
 enter the host namespaces.
+
+> `cgroup: host` in the compose file is **required** for per-container CPU/MEM
+> metrics and must not be removed — the `:ro` cgroup mount alone is not enough, as
+> the kernel renders `/proc/<pid>/cgroup` paths relative to the reader's namespace.
+
+### Docker socket proxy (optional)
+
+By default the dashboard reaches the host Docker daemon over the mounted
+`/var/run/docker.sock`, which is root-equivalent. An opt-in override routes it
+through a socket proxy that permits only container **list / inspect / logs / start /
+stop / restart** and blocks `create`, `exec`, `build`, `pull`, and `remove`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.socket-proxy.yml up -d
+```
+
+Every Docker feature in the UI keeps working; only the dangerous write verbs are
+denied. This hardens the Docker API path only — the web terminal still enters the
+host namespaces, so dashboard admin remains host-root-equivalent. Recommended for
+public/multi-tenant deployments; for a trusted single-operator LAN it is optional.
 
 ## Tech Stack
 
