@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.database import get_runtime_config, set_runtime_configs
+from app.database import get_runtime_config, set_runtime_configs, audit
 from app.dependencies import require_admin
 from app.net import resolve_client_ip
 from app.services.supervisor_service import restart_service, get_service_status
@@ -49,7 +49,7 @@ async def get_config(_: str = Depends(require_admin)):
 
 @router.post("/runtime")
 async def update_config(body: RuntimeConfigUpdate, request: Request,
-                        _: str = Depends(require_admin)):
+                        actor: str = Depends(require_admin)):
     updates = {}
     for key, value in body.model_dump(exclude_none=True).items():
         # Validate each field
@@ -94,15 +94,17 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
 
     if updates:
         await set_runtime_configs(updates)
+        await audit(actor, "settings.update", detail={"updated": updates})
 
     return {"ok": True, "updated": list(updates.keys())}
 
 
 @router.post("/restart")
-async def restart(body: RestartRequest, _: str = Depends(require_admin)):
+async def restart(body: RestartRequest, actor: str = Depends(require_admin)):
     result = await restart_service(body.service)
     if not result.get("ok"):
         raise HTTPException(500, result.get("error", "Restart failed"))
+    await audit(actor, "service.restart", detail={"service": body.service})
     return result
 
 

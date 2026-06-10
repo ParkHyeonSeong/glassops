@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel
 
+from app.database import audit
 from app.dependencies import get_current_user
 from app.net import resolve_client_ip, request_is_secure
 from app.services.auth_service import (
@@ -74,6 +75,7 @@ async def login(body: LoginRequest, request: Request, response: Response):
 
     if not await verify_password(body.email, body.password):
         record_login_failure(client_ip)
+        await audit(body.email, "auth.login_failed", detail={"ip": client_ip, "reason": "password"})
         raise HTTPException(401, "Invalid credentials")
 
     # Block disabled accounts after credentials check (avoids leaking which accounts exist).
@@ -87,9 +89,11 @@ async def login(body: LoginRequest, request: Request, response: Response):
             return {"requires_totp": True}
         if not await verify_totp(body.email, body.totp_code):
             record_login_failure(client_ip)
+            await audit(body.email, "auth.login_failed", detail={"ip": client_ip, "reason": "totp"})
             raise HTTPException(401, "Invalid TOTP code")
 
     clear_login_failures(client_ip)
+    await audit(body.email, "auth.login", detail={"ip": client_ip})
 
     access = create_access_token(body.email)
     refresh = create_refresh_token(body.email)

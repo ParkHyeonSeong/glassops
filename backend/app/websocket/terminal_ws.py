@@ -12,11 +12,13 @@ import asyncio
 import base64
 import json
 import logging
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import settings
-from app.database import get_user, get_user_host_accounts
+from app.database import get_user, get_user_host_accounts, audit
+from app.net import resolve_client_ip
 from app.services import agent_rpc
 from app.services.auth_service import verify_token, access_revoked
 from app.services.terminal_service import TerminalSession, SESSION_TIMEOUT
@@ -41,6 +43,9 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
     # is not pending a forced password change.
     user = await get_user(email)
     if not user or user.get("role") != "admin" or not user.get("is_active", True):
+        await audit(email, "terminal.denied",
+                    ws.query_params.get("agent_id", settings.local_agent_id),
+                    {"reason": "not_admin", "ip": resolve_client_ip(ws.scope)})
         await ws.close(code=4403, reason="Admin access required")
         return
     if user.get("must_change_password"):
@@ -62,6 +67,9 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
 
     await ws.accept(subprotocol=accept_subprotocol(ws))
     logger.info("Terminal WebSocket: user=%s agent=%s host_user=%s", email, agent_id, host_user or "(env default)")
+    started = time.monotonic()
+    await audit(email, "terminal.open", agent_id,
+                {"host_user": host_user or "(env default)", "ip": resolve_client_ip(ws.scope)})
 
     try:
         if agent_id == settings.local_agent_id:
@@ -72,6 +80,10 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         pass
     except Exception:
         logger.exception("Terminal session failed")
+    finally:
+        await audit(email, "terminal.close", agent_id,
+                    {"host_user": host_user or "(env default)",
+                     "duration_s": round(time.monotonic() - started, 1)})
 
 
 # ── local PTY bridge ─────────────────────────────────────────────────

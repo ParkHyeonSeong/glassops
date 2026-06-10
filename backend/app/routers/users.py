@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from app.database import (
+    audit,
     count_active_admins,
     create_user,
     delete_user,
@@ -53,7 +54,7 @@ async def get_users(_: str = Depends(require_admin)):
 
 
 @router.post("")
-async def post_user(body: CreateUserRequest, _: str = Depends(require_admin)):
+async def post_user(body: CreateUserRequest, actor: str = Depends(require_admin)):
     if await get_user(body.email):
         raise HTTPException(409, "User already exists")
     pw_check = validate_password(body.password)
@@ -63,6 +64,7 @@ async def post_user(body: CreateUserRequest, _: str = Depends(require_admin)):
     ok = await create_user(body.email, pw_hash, role=body.role, must_change_password=True)
     if not ok:
         raise HTTPException(500, "Failed to create user")
+    await audit(actor, "user.create", detail={"target": body.email, "role": body.role})
     return {"ok": True, "email": body.email}
 
 
@@ -109,6 +111,9 @@ async def patch_user(
         fields["tokens_valid_after"] = time.time()
 
     await update_user(target_email, **fields)
+    await audit(actor, "user.update", detail={"target": target_email,
+                                              "fields": [k for k in fields if k != "password_hash"],
+                                              "password_reset": "password_hash" in fields})
     return {"ok": True}
 
 
@@ -122,6 +127,7 @@ async def delete_user_route(target_email: str, actor: str = Depends(require_admi
     if target["role"] == "admin" and await count_active_admins() <= 1:
         raise HTTPException(400, "Cannot delete the last active admin")
     await delete_user(target_email)
+    await audit(actor, "user.delete", detail={"target": target_email})
     return {"ok": True}
 
 
@@ -136,7 +142,7 @@ async def get_hosts(target_email: str, _: str = Depends(require_admin)):
 
 
 @router.put("/{target_email}/hosts")
-async def put_hosts(target_email: str, body: HostMappingRequest, _: str = Depends(require_admin)):
+async def put_hosts(target_email: str, body: HostMappingRequest, actor: str = Depends(require_admin)):
     if not await get_user(target_email):
         raise HTTPException(404, "User not found")
     cleaned: dict[str, str] = {}
@@ -147,4 +153,6 @@ async def put_hosts(target_email: str, body: HostMappingRequest, _: str = Depend
             raise HTTPException(400, f"Invalid host_user for {agent_id}")
         cleaned[agent_id] = host_user
     await set_user_host_accounts(target_email, cleaned)
+    await audit(actor, "user.hosts", detail={"target": target_email,
+                                             "mapping": {k: v for k, v in cleaned.items() if v}})
     return {"ok": True}

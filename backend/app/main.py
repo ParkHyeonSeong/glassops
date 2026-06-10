@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist
+from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist, cleanup_audit_log
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -20,6 +20,7 @@ from app.routers.process import router as process_router
 from app.routers.alerts import router as alerts_router
 from app.routers.settings import router as settings_router
 from app.routers.users import router as users_router
+from app.routers.audit import router as audit_router
 from app.websocket.terminal_ws import handle_terminal_ws
 from app.websocket.docker_logs_ws import handle_docker_logs_ws
 
@@ -56,6 +57,10 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                         logger.debug("Cleaned up %d raw metrics", deleted)
 
                     await cleanup_blacklist()
+
+                    pruned = await cleanup_audit_log()
+                    if pruned:
+                        logger.debug("Pruned %d audit rows", pruned)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -98,6 +103,7 @@ app.include_router(process_router)
 app.include_router(alerts_router)
 app.include_router(settings_router)
 app.include_router(users_router)
+app.include_router(audit_router)
 
 
 # ── REST endpoints ──────────────────────────────────────

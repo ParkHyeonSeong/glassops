@@ -130,6 +130,20 @@ async def init_db() -> None:
         )
     """)
 
+    # Audit log — attributable record of host-root-equivalent actions and the
+    # account lifecycle, persisted across restarts (survives container log rotation).
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            user_email TEXT NOT NULL,
+            action TEXT NOT NULL,
+            agent_id TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '{}'
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (timestamp)")
+
     # Create default admin if no users exist at all
     cursor = await db.execute("SELECT COUNT(*) FROM users")
     user_count = (await cursor.fetchone())[0]
@@ -610,6 +624,66 @@ async def cleanup_blacklist() -> int:
     )
     await db.commit()
     return cursor.rowcount
+
+
+# ── Audit log ────────────────────────────────────────
+
+
+async def audit(user: str, action: str, agent_id: str = "", detail: dict | None = None) -> None:
+    """Best-effort audit insert — never raises, so it can't block the action it
+    records. A wedged audit DB must not stop an admin from killing a runaway process."""
+    try:
+        db = await get_db()
+        await db.execute(
+            "INSERT INTO audit_log (timestamp, user_email, action, agent_id, detail) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (time.time(), (user or "")[:256], action, agent_id or "", json.dumps(detail or {})),
+        )
+        await db.commit()
+    except Exception:
+        logger.exception("audit insert failed: %s %s", user, action)
+
+
+async def get_audit_log(limit: int = 200, before: float | None = None,
+                        user: str | None = None, action: str | None = None) -> list[dict]:
+    db = await get_db()
+    clauses, params = [], []
+    if before is not None:
+        clauses.append("timestamp < ?"); params.append(before)
+    if user:
+        clauses.append("user_email = ?"); params.append(user)
+    if action:
+        clauses.append("action = ?"); params.append(action)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(max(1, min(limit, 1000)))
+    cursor = await db.execute(
+        f"SELECT timestamp, user_email, action, agent_id, detail FROM audit_log{where} "
+        "ORDER BY timestamp DESC LIMIT ?", params,
+    )
+    out = []
+    for r in await cursor.fetchall():
+        try:
+            detail = json.loads(r["detail"])
+        except (ValueError, TypeError):
+            detail = {}
+        out.append({"timestamp": r["timestamp"], "user": r["user_email"],
+                    "action": r["action"], "agent_id": r["agent_id"], "detail": detail})
+    return out
+
+
+async def cleanup_audit_log(max_age_days: int = 90, max_rows: int = 100_000) -> int:
+    """Two-tier prune: drop rows older than max_age_days, then FIFO-cap at max_rows."""
+    db = await get_db()
+    cutoff = time.time() - max_age_days * 86400
+    cursor = await db.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,))
+    removed = cursor.rowcount
+    cursor = await db.execute(
+        "DELETE FROM audit_log WHERE id NOT IN "
+        "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)", (max_rows,),
+    )
+    removed += cursor.rowcount
+    await db.commit()
+    return removed
 
 
 # ── Users ────────────────────────────────────────────

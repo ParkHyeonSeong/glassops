@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
+from app.database import audit
 from app.dependencies import require_admin
 from app.services.agent_dispatch import call_remote, is_local
 from app.services.docker_service import (
@@ -59,14 +60,19 @@ async def get_container(container_id: str, agent_id: str = _agent_param()):
 
 @router.post("/containers/{container_id}/action")
 async def post_action(container_id: str, body: ActionRequest, agent_id: str = _agent_param(),
-                      _: str = Depends(require_admin)):
+                      actor: str = Depends(require_admin)):
     cid = _validate_id(container_id)
     if is_local(agent_id):
         result = container_action(cid, body.action)
+        await audit(actor, f"docker.{body.action}", agent_id,
+                    {"container": cid, "ok": result.get("ok", False),
+                     **({"error": result["error"]} if not result.get("ok") and result.get("error") else {})})
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Action failed"))
         return result
-    return await call_remote(agent_id, "docker.action", {"container_id": cid, "action": body.action})
+    result = await call_remote(agent_id, "docker.action", {"container_id": cid, "action": body.action})
+    await audit(actor, f"docker.{body.action}", agent_id, {"container": cid, "ok": result.get("ok", True)})
+    return result
 
 
 @router.get("/containers/{container_id}/logs")
