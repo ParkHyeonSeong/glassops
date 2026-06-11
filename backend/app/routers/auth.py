@@ -45,6 +45,11 @@ class ForcePasswordRequest(BaseModel):
     new_password: str
 
 
+class ForceChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class TotpConfirmRequest(BaseModel):
     code: str
 
@@ -142,12 +147,13 @@ async def logout(request: Request, response: Response, body: LogoutRequest | Non
 
 @router.post("/force-password")
 async def force_password(
-    body: ForcePasswordRequest,
+    body: ForceChangeRequest,
     email: str = Depends(get_current_user),
 ):
-    result = await force_change_password(email, body.new_password)
+    result = await force_change_password(email, body.current_password, body.new_password)
     if not result.get("ok"):
-        raise HTTPException(400, result)
+        raise HTTPException(400, result.get("error", "Failed to change password"))
+    await audit(email, "auth.force_change")
     return {"ok": True}
 
 

@@ -150,6 +150,9 @@ async def handle_agent_ws(ws: WebSocket) -> None:
     except Exception:
         logger.exception("Agent handler error for %s", agent_id)
     finally:
+        # Only tear down this agent's RPC state if we're still the current connection.
+        # On a reconnect-replace the new handler already owns connected_agents[agent_id]
+        # and its streams; cancelling by agent_id here would kill the new session too.
         if connected_agents.get(agent_id) is ws:
             connected_agents.pop(agent_id, None)
-        agent_rpc.cancel_for_agent(agent_id)
+            agent_rpc.cancel_for_agent(agent_id)

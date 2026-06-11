@@ -198,12 +198,16 @@ async def change_password(email: str, old_password: str, new_password: str) -> d
     return {"ok": True}
 
 
-async def force_change_password(email: str, new_password: str) -> dict:
+async def force_change_password(email: str, current_password: str, new_password: str) -> dict:
     user = await get_user(email)
     if not user:
         return {"ok": False, "error": "User not found"}
     if not user.get("must_change_password"):
         return {"ok": False, "error": "Password change not required"}
+    # Prove knowledge of the current (temporary) password — a leaked access token for
+    # a just-created/reset account must not be enough to seize it by setting a new one.
+    if not await verify_password(email, current_password):
+        return {"ok": False, "error": "Invalid current password"}
     validation = validate_password(new_password)
     if not validation["valid"]:
         return {"ok": False, "error": "Password does not meet requirements", "checks": validation["checks"]}

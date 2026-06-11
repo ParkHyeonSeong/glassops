@@ -50,6 +50,7 @@ function PolicyCheck({ ok, label }: { ok: boolean; label: string }) {
 }
 
 export default function PasswordChangeScreen() {
+  const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
@@ -85,7 +86,7 @@ export default function PasswordChangeScreen() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!allValid) return;
+    if (!allValid || !currentPassword) return;
 
     setLoading(true);
     setError("");
@@ -97,7 +98,7 @@ export default function PasswordChangeScreen() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ new_password: password }),
+        body: JSON.stringify({ current_password: currentPassword, new_password: password }),
       });
 
       if (res.ok) {
@@ -126,11 +127,18 @@ export default function PasswordChangeScreen() {
           <div className="pw-input-group">
             <input
               type="password"
+              placeholder="Current (temporary) password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              className="pw-input"
+              autoFocus
+            />
+            <input
+              type="password"
               placeholder="New password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="pw-input"
-              autoFocus
             />
             <input
               type="password"
@@ -165,7 +173,7 @@ export default function PasswordChangeScreen() {
 
           {error && <p className="pw-error">{error}</p>}
 
-          <button type="submit" className="pw-submit" disabled={!allValid || loading}>
+          <button type="submit" className="pw-submit" disabled={!allValid || !currentPassword || loading}>
             {loading ? "Saving..." : "Set Password & Continue"}
           </button>
         </form>

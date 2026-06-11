@@ -25,6 +25,19 @@ from app.websocket.ws_auth import accept_subprotocol, origin_ok, ws_token
 
 logger = logging.getLogger("glassops.terminal")
 
+# A web terminal is a host shell (nsenter+su on the agent), so bound both the
+# concurrent count (resource exhaustion) and the idle lifetime (abandoned root shell).
+MAX_TERMINAL_SESSIONS = 5          # per user
+IDLE_TIMEOUT = 1800                # seconds of no I/O before the session is closed
+_sessions: dict[str, int] = {}     # email -> active terminal count
+
+
+def _release_session(email: str) -> None:
+    if _sessions.get(email, 0) <= 1:
+        _sessions.pop(email, None)
+    else:
+        _sessions[email] -= 1
+
 
 async def handle_terminal_ws(ws: WebSocket) -> None:
     if not origin_ok(ws):
@@ -48,6 +61,9 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         await ws.close(code=4403, reason="Admin access required")
         return
     if user.get("must_change_password"):
+        await audit(email, "terminal.denied",
+                    ws.query_params.get("agent_id", settings.local_agent_id),
+                    {"reason": "must_change_password", "ip": resolve_client_ip(ws.scope)})
         await ws.close(code=4403, reason="Password change required")
         return
     if await access_revoked(token, user):
@@ -64,7 +80,21 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         await ws.close(code=4003, reason=f"No shell access on host '{agent_id}'")
         return
 
-    await ws.accept(subprotocol=accept_subprotocol(ws))
+    if _sessions.get(email, 0) >= MAX_TERMINAL_SESSIONS:
+        await audit(email, "terminal.denied", agent_id,
+                    {"reason": "session_limit", "ip": resolve_client_ip(ws.scope)})
+        await ws.close(code=4429, reason="Too many terminal sessions")
+        return
+
+    # Reserve the slot synchronously (before any await) so two concurrent opens can't
+    # both pass the cap check above between the test and the increment.
+    _sessions[email] = _sessions.get(email, 0) + 1
+    try:
+        await ws.accept(subprotocol=accept_subprotocol(ws))
+    except Exception:
+        _release_session(email)
+        raise
+
     logger.info("Terminal WebSocket: user=%s agent=%s host_user=%s", email, agent_id, host_user or "(env default)")
     started = time.monotonic()
     await audit(email, "terminal.open", agent_id,
@@ -79,6 +109,7 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
     except Exception:
         logger.exception("Terminal session failed")
     finally:
+        _release_session(email)
         await audit(email, "terminal.close", agent_id,
                     {"host_user": host_user or "(env default)",
                      "duration_s": round(time.monotonic() - started, 1)})
@@ -88,7 +119,11 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
 
 
 async def _bridge_remote(ws: WebSocket, agent_id: str, host_user: str) -> None:
+    last_activity = time.monotonic()
+
     async def on_chunk(b64: str) -> None:
+        nonlocal last_activity
+        last_activity = time.monotonic()  # output counts as activity (e.g. tail -f)
         try:
             await ws.send_bytes(base64.b64decode(b64))
         except Exception:
@@ -110,11 +145,13 @@ async def _bridge_remote(ws: WebSocket, agent_id: str, host_user: str) -> None:
     end_task = asyncio.create_task(agent_rpc.await_stream_end(rpc_id))
 
     async def reader() -> None:
+        nonlocal last_activity
         try:
             while True:
                 msg = await ws.receive()
                 if msg.get("type") == "websocket.disconnect":
                     return
+                last_activity = time.monotonic()  # client input is activity
                 if "text" in msg:
                     try:
                         ctrl = json.loads(msg["text"])
@@ -137,15 +174,37 @@ async def _bridge_remote(ws: WebSocket, agent_id: str, host_user: str) -> None:
         except (agent_rpc.RpcError, agent_rpc.AgentNotConnected):
             return
 
+    async def idle_watchdog() -> None:
+        # Close an abandoned shell after IDLE_TIMEOUT of no input or output.
+        while True:
+            await asyncio.sleep(30)
+            if time.monotonic() - last_activity > IDLE_TIMEOUT:
+                try:
+                    await ws.send_text(json.dumps({
+                        "type": "timeout",
+                        "message": "Session timed out due to inactivity",
+                    }))
+                except Exception:
+                    pass
+                return
+
     reader_task = asyncio.create_task(reader())
+    idle_task = asyncio.create_task(idle_watchdog())
 
     try:
         done, pending = await asyncio.wait(
-            {reader_task, end_task},
+            {reader_task, end_task, idle_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
         for t in pending:
             t.cancel()
+        if idle_task in done:
+            # Idle watchdog fired — explicitly close the browser side so its onclose
+            # fires promptly (don't rely on the server closing on handler return).
+            try:
+                await ws.close(code=1001, reason="Idle timeout")
+            except Exception:
+                pass
         if end_task in done:
             try:
                 end_task.result()
