@@ -6,7 +6,8 @@ const WS_BASE = (
   `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`
 ).replace(/\/+$/, "");
 
-const RECONNECT_DELAY = 3000;
+const RECONNECT_BASE = 1000;
+const MAX_RECONNECT_DELAY = 30000;
 
 export type LogStreamStatus = "idle" | "connecting" | "streaming" | "ended" | "error";
 
@@ -27,6 +28,8 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const attempt = useRef(0);
+  const endedRef = useRef(false);
   const onLineRef = useRef(onLine);
 
   useEffect(() => {
@@ -41,6 +44,7 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
     function connect() {
       if (unmounted || !containerId || !agentId) return;
       setError(null);
+      endedRef.current = false;  // fresh stream — clear any prior natural-end state
 
       const params = new URLSearchParams({
         agent_id: agentId,
@@ -57,6 +61,7 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
       setStatus("connecting");
 
       ws.onopen = () => {
+        attempt.current = 0;  // reset backoff on a successful connection
         if (!unmounted) setStatus("streaming");
       };
 
@@ -66,6 +71,7 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
           if (typeof msg.line === "string") {
             onLineRef.current(msg.line);
           } else if (msg.event === "end") {
+            endedRef.current = true;  // natural end — don't reconnect on the close
             setStatus("ended");
           } else if (msg.event === "error") {
             setStatus("error");
@@ -92,9 +98,18 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
           setError(ev.reason || "Bad request");
           return;
         }
-        // Reconnect on unexpected close unless we already ended.
-        setStatus((s) => (s === "ended" ? s : "connecting"));
-        reconnectRef.current = setTimeout(connect, RECONNECT_DELAY);
+        // Natural end → stop; don't re-stream the whole log on the close.
+        if (endedRef.current) {
+          setStatus("ended");
+          return;
+        }
+        // Otherwise reconnect on unexpected close with exponential backoff + jitter
+        // (capped) so a flapping stream doesn't hammer the server.
+        setStatus("connecting");
+        const delay = Math.min(MAX_RECONNECT_DELAY, RECONNECT_BASE * 2 ** attempt.current)
+          + Math.random() * 1000;
+        attempt.current += 1;
+        reconnectRef.current = setTimeout(connect, delay);
       };
     }
 

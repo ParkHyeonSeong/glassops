@@ -2,7 +2,6 @@
 
 import ipaddress
 import os
-import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,9 +10,8 @@ from pydantic import BaseModel
 from app.database import get_runtime_config, set_runtime_configs, audit
 from app.dependencies import require_admin
 from app.net import resolve_client_ip
+from app.runtime_config_validate import validate_config_value
 from app.services.supervisor_service import restart_service, get_service_status
-
-USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -52,43 +50,24 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
                         actor: str = Depends(require_admin)):
     updates = {}
     for key, value in body.model_dump(exclude_none=True).items():
-        # Validate each field
-        if key == "collect_interval":
-            try:
-                val = int(value)
-                if val < 1 or val > 60:
-                    raise HTTPException(400, "Interval must be 1-60")
-            except ValueError:
-                raise HTTPException(400, "Interval must be a number")
+        # Shared format validation (same checks the DB setter enforces).
+        try:
+            validate_config_value(key, value)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
-        elif key in ("enable_gpu", "enable_docker"):
-            if value not in ("true", "false"):
-                raise HTTPException(400, f"{key} must be 'true' or 'false'")
-
-        elif key == "terminal_user":
-            if value and not USERNAME_PATTERN.match(value):
-                raise HTTPException(400, "Invalid username format")
-
-        elif key == "allowed_ips":
-            if value:
-                # Validate CIDR + self-lockout check
-                client_ip = resolve_client_ip(request.scope)
-                entries = [e.strip() for e in value.split(",") if e.strip()]
-                for entry in entries:
-                    try:
-                        ipaddress.ip_network(entry, strict=False)
-                    except ValueError:
-                        raise HTTPException(400, f"Invalid CIDR: {entry}")
-
-                # Check if current client IP would be locked out
-                if client_ip and entries:
-                    client_addr = ipaddress.ip_address(client_ip)
-                    allowed = any(
-                        client_addr in ipaddress.ip_network(e, strict=False)
-                        for e in entries
-                    )
-                    if not allowed:
-                        raise HTTPException(400, f"Your IP ({client_ip}) would be blocked. Add it to the whitelist.")
+        # allowed_ips: additional request-context self-lockout guard.
+        if key == "allowed_ips" and value:
+            client_ip = resolve_client_ip(request.scope)
+            entries = [e.strip() for e in value.split(",") if e.strip()]
+            if client_ip and entries:
+                client_addr = ipaddress.ip_address(client_ip)
+                allowed = any(
+                    client_addr in ipaddress.ip_network(e, strict=False)
+                    for e in entries
+                )
+                if not allowed:
+                    raise HTTPException(400, f"Your IP ({client_ip}) would be blocked. Add it to the whitelist.")
 
         updates[key] = value
 

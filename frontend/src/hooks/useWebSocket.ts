@@ -7,7 +7,9 @@ const WS_URL = (
   import.meta.env.VITE_WS_URL ||
   `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`
 ).replace(/\/+$/, "");
-const RECONNECT_DELAY = 3000;
+const RECONNECT_BASE = 1000;
+const MAX_RECONNECT_DELAY = 30000;
+const AUTH_REJECT_CODES = [4001, 4003, 4403];
 
 interface WsMessage {
   agent_id: string;
@@ -20,6 +22,7 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triedRefresh = useRef(false);
+  const attempt = useRef(0);
 
   useEffect(() => {
     let unmounted = false;
@@ -37,6 +40,7 @@ export function useWebSocket() {
       ws.onopen = () => {
         opened = true;
         triedRefresh.current = false;
+        attempt.current = 0;  // reset backoff on a successful connection
         if (!unmounted) setConnected(true);
       };
 
@@ -51,25 +55,36 @@ export function useWebSocket() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev: CloseEvent) => {
         if (unmounted) return;
         setConnected(false);
+        const authReject = AUTH_REJECT_CODES.includes(ev.code);
+        // Auth rejected on a live connection, or still rejected after we refreshed →
+        // re-login (don't keep reconnecting with a known-bad token).
+        if (authReject && (opened || triedRefresh.current)) {
+          useAuthStore.getState().logout();
+          return;
+        }
         // Closed before the handshake completed (no onopen) → likely an expired
-        // token (or the server is down). Refresh once per failure streak, then
-        // reconnect so the next attempt uses the new token. A live connection that
-        // merely dropped (opened=true) just reconnects without refreshing.
+        // token. Refresh once per failure streak, then reconnect with the new token.
         if (!opened && !triedRefresh.current) {
           triedRefresh.current = true;
           useAuthStore.getState().refresh().finally(() => {
-            if (!unmounted) reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+            if (!unmounted) reconnectTimer.current = setTimeout(connect, RECONNECT_BASE);
           });
-        } else {
-          reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+          return;
         }
+        // Otherwise reconnect with exponential backoff + jitter, capped, so a down or
+        // rejecting server isn't hit every 3s forever.
+        const delay = Math.min(MAX_RECONNECT_DELAY, RECONNECT_BASE * 2 ** attempt.current)
+          + Math.random() * 1000;
+        attempt.current += 1;
+        reconnectTimer.current = setTimeout(connect, delay);
       };
 
       ws.onerror = () => {
-        ws.close();
+        // The browser fires onclose right after onerror — let onclose own the
+        // reconnect/backoff so we don't double up the close path.
       };
     }
 

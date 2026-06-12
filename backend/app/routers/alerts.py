@@ -26,8 +26,9 @@ async def get_config(_: str = Depends(require_admin)):
     config = await get_smtp_config()
     if not config:
         return {"configured": False}
-    # Mask password
-    safe = {**config, "password": "********" if config.get("password") else ""}
+    # Mask password + drop internal keys (e.g. _decrypt_failed) from the API shape.
+    safe = {k: v for k, v in config.items() if not k.startswith("_")}
+    safe["password"] = "********" if config.get("password") else ""
     return {"configured": True, **safe}
 
 

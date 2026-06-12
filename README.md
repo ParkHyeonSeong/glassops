@@ -283,13 +283,20 @@ GLASSOPS_ALLOWED_IPS=10.0.0.0/8,192.168.0.0/16
 
 ### Terminal User
 
-By default the web terminal opens a login prompt on the host. To preset a user:
+The web terminal runs as a host user, resolved one of three ways:
 
 ```env
-GLASSOPS_TERMINAL_USER=ubuntu
+GLASSOPS_TERMINAL_USER=ubuntu          # a single host user for the local terminal
 ```
 
-The user's password is still required — GlassOps web login + host password = two-factor access.
+- **Per-user host mappings** (Settings → Users) give each dashboard user a specific
+  host account per host.
+- `GLASSOPS_ALLOW_LOGIN_PROMPT=true` opts into a host `login` prompt (lets an admin
+  authenticate as **any** host account, including root). **Off by default** — with
+  none of the above configured, the terminal is refused rather than exposing a login
+  prompt to every admin.
+
+The host account's password is still required — GlassOps web login + host password = two-factor access.
 
 ### Secret Key
 

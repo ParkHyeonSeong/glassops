@@ -578,12 +578,14 @@ async def get_runtime_config() -> dict[str, str]:
 
 
 async def set_runtime_config(key: str, value: str) -> None:
+    from app.runtime_config_validate import validate_config_value
     ALLOWED_KEYS = {
         "enable_gpu", "enable_docker", "collect_interval",
         "terminal_user", "allowed_ips",
     }
     if key not in ALLOWED_KEYS:
         return
+    validate_config_value(key, value)  # defense-in-depth: reject bad values at the setter too
     db = await get_db()
     await db.execute(
         "INSERT OR REPLACE INTO runtime_config (key, value) VALUES (?, ?)",

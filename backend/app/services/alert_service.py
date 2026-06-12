@@ -1,6 +1,7 @@
 """Server-side alert service — SMTP email notifications."""
 
 import base64
+import copy
 import json
 import logging
 import time
@@ -17,6 +18,15 @@ logger = logging.getLogger("glassops.alerts")
 
 _last_sent: dict[str, float] = {}
 COOLDOWN_SECONDS = 300
+
+# The SMTP config changes rarely but check_and_alert() runs on every metric message
+# from every agent — cache it so we don't hit the DB + Fernet-decrypt per message.
+_cfg_cache: dict = {"value": None, "ts": 0.0, "cached": False}
+_CFG_TTL = 30.0
+
+
+def _invalidate_config_cache() -> None:
+    _cfg_cache["cached"] = False
 
 
 def _get_fernet() -> Fernet:
@@ -42,22 +52,31 @@ def _decrypt(value: str) -> str:
 
 
 async def get_smtp_config() -> dict | None:
+    now = time.time()
+    if _cfg_cache["cached"] and now - _cfg_cache["ts"] < _CFG_TTL:
+        cached = _cfg_cache["value"]
+        return copy.deepcopy(cached) if cached is not None else None  # deep copy so callers can't mutate the cache
+
     db = await get_db()
     cursor = await db.execute("SELECT config FROM alert_config WHERE id = 1")
     row = await cursor.fetchone()
+    config: dict | None
     if not row:
-        return None
-    config = json.loads(row["config"])
-    # Decrypt password — keep encrypted value if decryption fails (key rotation)
-    if config.get("password_enc"):
-        decrypted = _decrypt(config["password_enc"])
-        if decrypted:
-            config["password"] = decrypted
-        else:
-            config["password"] = ""
-            config["_decrypt_failed"] = True
-        del config["password_enc"]
-    return config
+        config = None
+    else:
+        config = json.loads(row["config"])
+        # Decrypt password — keep encrypted value if decryption fails (key rotation)
+        if config.get("password_enc"):
+            decrypted = _decrypt(config["password_enc"])
+            if decrypted:
+                config["password"] = decrypted
+            else:
+                config["password"] = ""
+                config["_decrypt_failed"] = True
+            del config["password_enc"]
+
+    _cfg_cache.update(value=config, ts=now, cached=True)
+    return copy.deepcopy(config) if config is not None else None
 
 
 async def save_smtp_config(config: dict) -> None:
@@ -85,6 +104,7 @@ async def save_smtp_config(config: dict) -> None:
         (json.dumps(store),),
     )
     await db.commit()
+    _invalidate_config_cache()  # next read reflects the change immediately
 
 
 async def send_alert_email(subject: str, body: str, key: str | None = None) -> dict:
