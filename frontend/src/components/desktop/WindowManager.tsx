@@ -1,4 +1,4 @@
-import { useWindowStore } from "../../stores/windowStore";
+import { useWindowStore, APP_DEFINITIONS } from "../../stores/windowStore";
 import { useAuthStore } from "../../stores/authStore";
 import Window from "./Window";
 import SystemMonitor from "../apps/SystemMonitor";
@@ -24,6 +24,13 @@ function AppContent({
   params?: Record<string, string>;
 }) {
   const role = useAuthStore((s) => s.role);
+  // Defense-in-depth: an admin-only app (adminOnly flag = single source of truth)
+  // never renders its body for a non-admin, even via a forged window. The API
+  // enforces authz regardless; this also auto-covers any future admin-only app.
+  const def = APP_DEFINITIONS.find((a) => a.id === appId);
+  if (def?.adminOnly && role !== "admin") {
+    return <AppPlaceholder appId={appId} title={title} />;
+  }
   switch (appId) {
     case "system-monitor":
       return <SystemMonitor />;
@@ -42,9 +49,6 @@ function AppContent({
     case "settings":
       return <SettingsApp />;
     case "users":
-      // Defense-in-depth: the dock already hides this for non-admins, but a forged
-      // window state must not render the admin UI. The API enforces authz regardless.
-      if (role !== "admin") return <AppPlaceholder appId={appId} title={title} />;
       return <UserManager />;
     case "container-logs":
       if (!params?.containerName || !params?.agentId) return null;

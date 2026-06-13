@@ -16,7 +16,8 @@ logger = logging.getLogger("glassops.process")
 
 
 @router.post("/{pid}/kill")
-async def kill_process(pid: int, agent_id: str = Query(settings.local_agent_id),
+async def kill_process(pid: int,
+                       agent_id: str = Query(settings.local_agent_id, pattern=r"^[a-zA-Z0-9_-]{1,64}$"),
                        actor: str = Depends(require_admin)):
     result = await call_remote(agent_id, "process.kill", {"pid": pid})
     await audit(actor, "process.kill", agent_id, {"pid": pid, "ok": result.get("ok", True)})

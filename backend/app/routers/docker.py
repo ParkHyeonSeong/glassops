@@ -35,12 +35,13 @@ class ActionRequest(BaseModel):
 
 
 @router.get("/containers")
-async def get_containers(agent_id: str = _agent_param()):
+async def get_containers(agent_id: str = _agent_param(), _: str = Depends(require_admin)):
     return await call_remote(agent_id, "docker.list")
 
 
 @router.get("/containers/{container_id}")
-async def get_container(container_id: str, agent_id: str = _agent_param()):
+async def get_container(container_id: str, agent_id: str = _agent_param(),
+                        _: str = Depends(require_admin)):
     cid = _validate_id(container_id)
     return await call_remote(agent_id, "docker.detail", {"container_id": cid})
 
@@ -85,15 +86,15 @@ async def get_logs(
 
 
 @router.get("/images")
-async def get_images(agent_id: str = _agent_param()):
+async def get_images(agent_id: str = _agent_param(), _: str = Depends(require_admin)):
     return await call_remote(agent_id, "docker.images")
 
 
 @router.get("/volumes")
-async def get_volumes(agent_id: str = _agent_param()):
+async def get_volumes(agent_id: str = _agent_param(), _: str = Depends(require_admin)):
     return await call_remote(agent_id, "docker.volumes")
 
 
 @router.get("/networks")
-async def get_networks(agent_id: str = _agent_param()):
+async def get_networks(agent_id: str = _agent_param(), _: str = Depends(require_admin)):
     return await call_remote(agent_id, "docker.networks")

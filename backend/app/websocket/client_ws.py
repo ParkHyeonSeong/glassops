@@ -31,6 +31,12 @@ async def handle_client_ws(ws: WebSocket) -> None:
     if not user or not user.get("is_active", True):
         await ws.close(code=4403, reason="Inactive or unknown user")
         return
+    if user.get("must_change_password"):
+        # A user pending a forced password change is confined to that flow — they
+        # must not receive the live host-metrics stream (matches the terminal/docker
+        # WS gates and the HTTP middleware's must_change confinement).
+        await ws.close(code=4403, reason="Password change required")
+        return
     if await access_revoked(token, user):
         await ws.close(code=4401, reason="Token revoked")
         return

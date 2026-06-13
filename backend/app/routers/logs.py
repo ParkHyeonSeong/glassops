@@ -16,7 +16,7 @@ SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
 
 
 @router.get("/sources")
-async def list_sources(agent_id: str = Query(settings.local_agent_id),
+async def list_sources(agent_id: str = Query(settings.local_agent_id, pattern=r"^[a-zA-Z0-9_-]{1,64}$"),
                        _: str = Depends(require_admin)):
     return await call_remote(agent_id, "log.sources")
 
@@ -27,7 +27,7 @@ async def read_log(
     name: str = Query(...),
     tail: int = Query(200, ge=1, le=5000),
     search: str = Query(""),
-    agent_id: str = Query(settings.local_agent_id),
+    agent_id: str = Query(settings.local_agent_id, pattern=r"^[a-zA-Z0-9_-]{1,64}$"),
     _: str = Depends(require_admin),
 ):
     if not SAFE_ID_PATTERN.match(name):

@@ -58,6 +58,14 @@ export function useWebSocket() {
       ws.onclose = (ev: CloseEvent) => {
         if (unmounted) return;
         setConnected(false);
+        // 4401 = token revoked (logout / password / role change / deactivation). The
+        // server closes with this BEFORE the handshake opens, and a refresh can't
+        // recover a revoked session (the refresh token is invalidated too), so log out
+        // immediately rather than burning a refresh round-trip + reconnect first.
+        if (ev.code === 4401) {
+          useAuthStore.getState().logout();
+          return;
+        }
         const authReject = AUTH_REJECT_CODES.includes(ev.code);
         // Auth rejected on a live connection, or still rejected after we refreshed →
         // re-login (don't keep reconnecting with a known-bad token).

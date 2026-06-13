@@ -88,9 +88,16 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
 
       ws.onclose = (ev) => {
         if (unmounted) return;
-        if (ev.code === 4003) {
+        // Permanent auth/authz rejections for this token — stop reconnecting (this
+        // hook has no refresh/logout) and surface it. 4003 = auth required, 4401 =
+        // token revoked, 4403 = not allowed (non-admin / inactive / must-change).
+        if (ev.code === 4003 || ev.code === 4401 || ev.code === 4403) {
           setStatus("error");
-          setError("Authentication required");
+          setError(
+            ev.code === 4401 ? "Session ended — please sign in again"
+              : ev.code === 4403 ? "Access denied"
+                : "Authentication required",
+          );
           return;
         }
         if (ev.code === 4400) {

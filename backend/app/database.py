@@ -16,6 +16,23 @@ _db_path = settings.db_path
 _conn: aiosqlite.Connection | None = None
 
 
+def _initial_admin_pw_file() -> str:
+    """Path of the one-time initial-admin password file (data dir, alongside the DB)."""
+    return os.path.join(os.path.dirname(_db_path) or ".", "initial_admin_password")
+
+
+async def clear_initial_admin_password_file() -> None:
+    """Best-effort removal of the one-time initial-admin password file once the admin
+    has changed their password, so the plaintext credential doesn't linger on disk."""
+    try:
+        os.remove(_initial_admin_pw_file())
+        logger.info("Removed initial admin password file after password change")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Could not remove initial admin password file", exc_info=True)
+
+
 async def get_db() -> aiosqlite.Connection:
     global _conn
     if _conn is None:
@@ -164,16 +181,22 @@ async def init_db() -> None:
             # is forced to change it on first login, then deletes the file.
             password = secrets.token_urlsafe(16)
             must_change = True
-            pw_file = os.path.join(os.path.dirname(settings.db_path) or ".", "initial_admin_password")
+            pw_file = _initial_admin_pw_file()
             try:
                 with open(pw_file, "w") as f:
                     f.write(f"email: {default_email}\npassword: {password}\n")
                 os.chmod(pw_file, 0o600)
                 logger.warning("Initial admin password generated → %s "
                                "(read it, log in, change immediately, then delete the file)", pw_file)
-            except OSError:
-                logger.warning("Initial admin password (set GLASSOPS_ADMIN_PASSWORD next time): %s / %s",
-                               default_email, password)
+            except OSError as e:
+                # Never log the plaintext credential (logs are captured/retained).
+                # The data dir already holds the DB we just wrote, so this is
+                # near-impossible; fail closed and tell the operator how to recover.
+                raise RuntimeError(
+                    f"Could not write initial admin password file ({pw_file}): {e}. "
+                    "Fix the data directory permissions, or set GLASSOPS_ADMIN_PASSWORD "
+                    "and restart."
+                ) from e
 
         pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         await db.execute(
@@ -458,14 +481,24 @@ async def cleanup_old_metrics(max_age_hours: int = 1) -> int:
     now = time.time()
     db = await get_db()
 
-    # Raw: keep last 1 hour only (downsampled covers the rest)
+    # Raw: keep last 1 hour only (downsampled covers the rest). Also drop any row
+    # timestamped in the future: the ingest path clamps forged timestamps (LOGIC-08),
+    # but this is the defense-in-depth net for rows persisted before that landed, or
+    # if the clamp is ever bypassed — otherwise an age-based cutoff never reaches them.
     raw_cutoff = now - (max_age_hours * 3600)
-    cursor = await db.execute("DELETE FROM metrics WHERE timestamp < ?", (raw_cutoff,))
+    future_cutoff = now + 300  # matches the ingest clamp's +300s tolerance
+    cursor = await db.execute(
+        "DELETE FROM metrics WHERE timestamp < ? OR timestamp > ?",
+        (raw_cutoff, future_cutoff),
+    )
     raw_deleted = cursor.rowcount
 
-    # Downsampled: keep 7 days
+    # Downsampled: keep 7 days (and likewise prune any future-dated rows)
     ds_cutoff = now - (7 * 86400)
-    await db.execute("DELETE FROM metrics_downsampled WHERE timestamp < ?", (ds_cutoff,))
+    await db.execute(
+        "DELETE FROM metrics_downsampled WHERE timestamp < ? OR timestamp > ?",
+        (ds_cutoff, future_cutoff),
+    )
 
     await db.commit()
     return raw_deleted

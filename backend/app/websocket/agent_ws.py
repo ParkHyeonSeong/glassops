@@ -3,6 +3,7 @@
 import hmac
 import json
 import logging
+import math
 import re
 import time
 
@@ -18,6 +19,13 @@ from app.services import agent_rpc
 logger = logging.getLogger("glassops.agent_ws")
 
 AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _reject_nonfinite(_constant: str):
+    """parse_constant hook: reject the JSON literals NaN/Infinity/-Infinity at the
+    trust boundary so an agent can't smuggle a non-finite value into stored/broadcast
+    metrics (NaN in particular slips past every numeric comparison)."""
+    raise ValueError("non-finite JSON literal")
 MAX_MESSAGE_SIZE = 1_048_576  # 1MB — RPC responses (e.g., container logs) can be sizable
 
 # Per-connection metric-flood guard. RPC chunks (demand-driven log streams) are NOT
@@ -83,8 +91,8 @@ async def handle_agent_ws(ws: WebSocket) -> None:
                 continue
 
             try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
+                data = json.loads(raw, parse_constant=_reject_nonfinite)
+            except (json.JSONDecodeError, ValueError):
                 logger.warning("Invalid JSON from agent %s", agent_id)
                 continue
 
@@ -128,7 +136,11 @@ async def handle_agent_ws(ws: WebSocket) -> None:
             metric_times.append(now)
 
             timestamp = data.get("timestamp", 0)
-            if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+            # math.isfinite also rejects inf from a huge numeric literal (e.g. 1e400),
+            # which parse_constant above does NOT catch (it only sees the bare NaN/
+            # Infinity tokens). bool is an int subclass, so exclude it explicitly.
+            if (not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool)
+                    or not math.isfinite(timestamp) or timestamp <= 0):
                 continue
             # Clamp an implausible (clock-skewed / forged) timestamp to server time so
             # one agent can't poison metric ordering or time-range charts.

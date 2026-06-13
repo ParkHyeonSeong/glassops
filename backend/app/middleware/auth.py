@@ -120,13 +120,22 @@ class JWTAuthMiddleware:
             await self._send_401(send, "Invalid or expired token")
             return
 
-        # Reject tokens that belong to disabled users (deferred import to avoid cycle).
+        # Reject tokens that belong to disabled/deleted users (deferred import to
+        # avoid cycle). Fail CLOSED: a transient lookup error denies the request
+        # (503) rather than letting the token through, and a token whose user no
+        # longer exists (deleted account) is rejected instead of slipping past the
+        # `user and ...` guard with user=None.
         from app.database import get_user
         try:
             user = await get_user(email)
         except Exception:
-            user = None
-        if user and not user.get("is_active", True):
+            logger.exception("User lookup failed for %s", email)
+            await self._send_status(send, 503, "Authentication backend unavailable")
+            return
+        if user is None:
+            await self._send_401(send, "Invalid or expired token")
+            return
+        if not user.get("is_active", True):
             await self._send_403(send, "Account disabled")
             return
 

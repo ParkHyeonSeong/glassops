@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { WindowState, AppDefinition, WindowBounds } from "../types";
+import { useAuthStore } from "./authStore";
 
 export const APP_DEFINITIONS: AppDefinition[] = [
   {
@@ -50,6 +51,7 @@ export const APP_DEFINITIONS: AppDefinition[] = [
     defaultHeight: 500,
     minWidth: 480,
     minHeight: 360,
+    adminOnly: true,   // container env/mounts/networks + actions are admin-only (API-enforced)
   },
   {
     id: "network",
@@ -208,6 +210,12 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
     const params = options?.params;
     const app = APP_DEFINITIONS.find((a) => a.id === appId);
     if (!app) return;
+
+    // Defense-in-depth: never open an admin-only app for a non-admin, even if the
+    // call is forged (the dock already hides these, and the API enforces authz).
+    // Reusing the adminOnly flag here is the single source of truth, so any future
+    // admin-only app is covered automatically.
+    if (app.adminOnly && useAuthStore.getState().role !== "admin") return;
 
     // For multi-instance apps we dedupe by (appId + params); single-instance
     // apps dedupe by appId alone (existing behavior).

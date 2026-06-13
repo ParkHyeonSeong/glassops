@@ -11,7 +11,10 @@ import jwt
 from jwt import PyJWTError
 
 from app.config import settings
-from app.database import get_user, update_user, blacklist_token, is_token_blacklisted
+from app.database import (
+    get_user, update_user, blacklist_token, is_token_blacklisted,
+    clear_initial_admin_password_file,
+)
 
 logger = logging.getLogger("glassops.auth")
 
@@ -108,10 +111,15 @@ def _hash_token(token: str) -> str:
 
 def verify_token(token: str, token_type: str = "access") -> str | None:
     """Sync token verification (used by ASGI middleware). No blacklist check.
-    Lets PyJWT validate exp (and signature) — the revocation paths below decode
-    with verify_exp=False where they intentionally need to read expired tokens."""
+    Lets PyJWT validate the signature and exp, and REQUIRES the exp claim to be
+    present — without `require`, a token that simply omits exp would never expire.
+    The revocation paths below decode with verify_exp=False where they intentionally
+    need to read expired tokens."""
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[ALGORITHM],
+            options={"require": ["exp"]},
+        )
         if payload.get("type") != token_type:
             return None
         return payload.get("sub")
@@ -192,6 +200,7 @@ async def change_password(email: str, old_password: str, new_password: str) -> d
     # Invalidate every previously-issued token for this user (all devices).
     await update_user(email, password_hash=pw_hash, must_change_password=0,
                       tokens_valid_after=time.time())
+    await clear_initial_admin_password_file()
     return {"ok": True}
 
 
@@ -212,4 +221,5 @@ async def force_change_password(email: str, current_password: str, new_password:
     # First-login forced change — the triggering event (creation / admin reset)
     # already set the invalidation floor, so don't bounce this fresh session.
     await update_user(email, password_hash=pw_hash, must_change_password=0)
+    await clear_initial_admin_password_file()
     return {"ok": True}

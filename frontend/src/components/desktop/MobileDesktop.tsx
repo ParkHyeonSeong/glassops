@@ -100,7 +100,11 @@ export default function MobileDesktop({
       {/* Content */}
       {activeAppId && activeApp ? (
         <div className="mobile-app-content">
-          {activeAppId === "system-monitor" ? (
+          {activeApp.adminOnly && role !== "admin" ? (
+            // Defense-in-depth: admin-only app body never renders for a non-admin
+            // (adminOnly flag is the single source of truth; API enforces authz).
+            <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
+          ) : activeAppId === "system-monitor" ? (
             <SystemMonitor />
           ) : activeAppId === "gpu-monitor" ? (
             <GpuMonitor />
@@ -117,7 +121,7 @@ export default function MobileDesktop({
           ) : activeAppId === "settings" ? (
             <SettingsApp />
           ) : activeAppId === "users" ? (
-            role === "admin" ? <UserManager /> : <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
+            <UserManager />
           ) : (
             <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
           )}
