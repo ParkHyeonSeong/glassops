@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Path
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -25,6 +25,11 @@ from app.websocket.terminal_ws import handle_terminal_ws
 from app.websocket.docker_logs_ws import handle_docker_logs_ws
 
 logger = logging.getLogger("glassops")
+
+# Path-param validators for the metrics routes (defense-in-depth: reject malformed
+# agent/container identifiers at the routing layer before they reach the DB).
+_AGENT_ID = Path(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+_CONTAINER_NAME = Path(pattern=r"^[a-zA-Z0-9_.-]{1,128}$")
 
 
 @asynccontextmanager
@@ -87,8 +92,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 from app.middleware.auth import JWTAuthMiddleware
@@ -143,13 +148,13 @@ async def list_agents():
 
 
 @app.get("/api/metrics/{agent_id}/history")
-async def metrics_history(agent_id: str, limit: int = 60):
+async def metrics_history(agent_id: str = _AGENT_ID, limit: int = 60):
     data = await get_recent_metrics(agent_id, min(limit, 300))
     return {"agent_id": agent_id, "metrics": data}
 
 
 @app.get("/api/metrics/{agent_id}/range")
-async def metrics_range(agent_id: str, duration: str = "1h"):
+async def metrics_range(agent_id: str = _AGENT_ID, duration: str = "1h"):
     """Get metrics for a time range. duration: 5m, 1h, 6h, 24h, 7d"""
     now = time.time()
     durations = {"5m": 300, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
@@ -159,7 +164,9 @@ async def metrics_range(agent_id: str, duration: str = "1h"):
 
 
 @app.get("/api/metrics/{agent_id}/containers/{container_name}/range")
-async def container_metrics_range(agent_id: str, container_name: str, duration: str = "1h"):
+async def container_metrics_range(agent_id: str = _AGENT_ID,
+                                  container_name: str = _CONTAINER_NAME,
+                                  duration: str = "1h"):
     """Per-container CPU/Mem history. Keyed by container name (stable across recreates)."""
     now = time.time()
     durations = {"5m": 300, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}

@@ -26,7 +26,8 @@ def _validate_id(container_id: str) -> str:
 
 
 def _agent_param() -> str:
-    return Query(settings.local_agent_id, description="Agent ID; defaults to local")
+    return Query(settings.local_agent_id, pattern=r"^[a-zA-Z0-9_-]{1,64}$",
+                 description="Agent ID; defaults to local")
 
 
 class ActionRequest(BaseModel):

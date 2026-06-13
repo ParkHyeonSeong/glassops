@@ -35,23 +35,40 @@ def _allowed_hosts() -> set[str]:
     return _origin_cache["hosts"]
 
 
-def origin_ok(ws: WebSocket) -> bool:
-    """CSWSH/CSRF guard for the browser WS channels (the agent transport does NOT
-    use this — it authenticates with x-agent-key headers and sends no Origin).
-
-    Fail-closed: a missing Origin is rejected (real browsers always send one on WS
-    handshakes). When GLASSOPS_ALLOWED_ORIGINS is set, the Origin hostname must be
-    in that allowlist. Otherwise fall back to matching the request Host hostname
-    (port-insensitive, since nginx `$host` may strip the port for same-host LAN)."""
-    origin = ws.headers.get("origin", "")
+def _origin_host_trusted(origin: str, host: str) -> bool:
+    """Whether an Origin header's hostname is same-site: in the configured
+    GLASSOPS_ALLOWED_ORIGINS allowlist, or (when none is set) matching the request
+    Host hostname (port-insensitive, since nginx `$host` may strip the port for
+    same-host LAN). An empty Origin is NOT trusted here — callers decide how to
+    treat a missing Origin."""
     o_host = urlparse(origin).hostname if origin else ""
     if not o_host:
         return False
     allowed = _allowed_hosts()
     if allowed:
         return o_host.lower() in allowed
-    host = ws.headers.get("host", "")
     return bool(host) and o_host == urlparse("//" + host).hostname
+
+
+def origin_ok(ws: WebSocket) -> bool:
+    """CSWSH/CSRF guard for the browser WS channels (the agent transport does NOT
+    use this — it authenticates with x-agent-key headers and sends no Origin).
+
+    Fail-closed: a missing Origin is rejected (real browsers always send one on WS
+    handshakes)."""
+    return _origin_host_trusted(ws.headers.get("origin", ""), ws.headers.get("host", ""))
+
+
+def csrf_origin_ok(origin: str, host: str) -> bool:
+    """CSRF guard for state-changing HTTP requests (WEB-07). Unlike the WS check
+    this is fail-OPEN on a missing Origin: non-browser clients (curl, the bundled
+    agent, health probes, TestClient) legitimately omit it and aren't subject to
+    the ambient-cookie CSRF this defends against. A *present* Origin, however, must
+    be same-site — a cross-site browser request (the attack vector, riding the
+    access_token cookie since it can't forge the Bearer header) always carries one."""
+    if not origin:
+        return True
+    return _origin_host_trusted(origin, host)
 
 
 def _offered(ws: WebSocket) -> list[str]:

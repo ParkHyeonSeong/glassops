@@ -20,7 +20,10 @@ from typing import Any, Awaitable, Callable, Iterator
 
 logger = logging.getLogger("glassops.agent.rpc")
 
-_SENSITIVE_KEYS = {"PASSWORD", "SECRET", "KEY", "TOKEN", "CREDENTIAL", "API_KEY"}
+_SENSITIVE_KEYS = {
+    "PASSWORD", "PASSWD", "PWD", "SECRET", "KEY", "TOKEN", "CREDENTIAL", "API_KEY",
+    "AUTH", "DSN", "PRIVATE", "CERT", "SALT", "SIGNING", "CONNECTION", "ACCESS_KEY",
+}
 _HOST_LOG = os.environ.get("HOST_LOG", "/var/log")
 _SYSTEM_LOG_PATHS = [
     f"{_HOST_LOG}/syslog",
@@ -33,6 +36,9 @@ _SYSTEM_LOG_PATHS = [
     f"{_HOST_LOG}/daemon.log",
 ]
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
+# Defense-in-depth: the agent runs `su - <host_user>`, so validate it host-side too
+# (a compromised/malicious backend must not be able to send an arbitrary string).
+_HOST_USER_PATTERN = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,31}$")
 
 
 def _docker_client():
@@ -286,6 +292,8 @@ async def terminal_open(params: dict, ctx: Any) -> None:
     from agent.terminal import TerminalSession
 
     host_user = (params.get("host_user") or "").strip() or None
+    if host_user is not None and not _HOST_USER_PATTERN.match(host_user):
+        raise RuntimeError("Invalid host user")
     rows = int(params.get("rows") or 24)
     cols = int(params.get("cols") or 80)
 

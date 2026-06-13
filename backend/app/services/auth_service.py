@@ -107,15 +107,12 @@ def _hash_token(token: str) -> str:
 
 
 def verify_token(token: str, token_type: str = "access") -> str | None:
-    """Sync token verification (used by ASGI middleware). No blacklist check."""
+    """Sync token verification (used by ASGI middleware). No blacklist check.
+    Lets PyJWT validate exp (and signature) — the revocation paths below decode
+    with verify_exp=False where they intentionally need to read expired tokens."""
     try:
-        payload = jwt.decode(
-            token, settings.secret_key, algorithms=[ALGORITHM],
-            options={"verify_exp": False},
-        )
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         if payload.get("type") != token_type:
-            return None
-        if payload.get("exp", 0) < time.time():
             return None
         return payload.get("sub")
     except PyJWTError:

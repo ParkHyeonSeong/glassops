@@ -1,4 +1,5 @@
 import { useWindowStore } from "../../stores/windowStore";
+import { useAuthStore } from "../../stores/authStore";
 import Window from "./Window";
 import SystemMonitor from "../apps/SystemMonitor";
 import GpuMonitor from "../apps/GpuMonitor";
@@ -22,6 +23,7 @@ function AppContent({
   title: string;
   params?: Record<string, string>;
 }) {
+  const role = useAuthStore((s) => s.role);
   switch (appId) {
     case "system-monitor":
       return <SystemMonitor />;
@@ -40,6 +42,9 @@ function AppContent({
     case "settings":
       return <SettingsApp />;
     case "users":
+      // Defense-in-depth: the dock already hides this for non-admins, but a forged
+      // window state must not render the admin UI. The API enforces authz regardless.
+      if (role !== "admin") return <AppPlaceholder appId={appId} title={title} />;
       return <UserManager />;
     case "container-logs":
       if (!params?.containerName || !params?.agentId) return null;

@@ -8,6 +8,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 logger = logging.getLogger("glassops.auth_mw")
 
 from app.services.auth_service import verify_token, access_revoked
+from app.websocket.ws_auth import csrf_origin_ok
+
+# State-changing methods get a CSRF Origin check (WEB-07). Safe methods (GET/HEAD/
+# OPTIONS) are exempt so CORS preflight and reads are untouched.
+CSRF_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 PUBLIC_PATHS = {
     "/health",
@@ -60,6 +65,21 @@ class JWTAuthMiddleware:
         if not path.startswith("/api/"):
             await self.app(scope, receive, send)
             return
+
+        # CSRF guard (WEB-07): reject a state-changing request whose Origin is
+        # cross-site. Runs before the public-path skips so cookie-bearing auth
+        # routes (refresh/logout) are covered too. Missing Origin is allowed —
+        # see csrf_origin_ok. Header scan is cheap and only for /api writes.
+        if scope.get("method", "GET") in CSRF_METHODS:
+            origin = host = ""
+            for name, value in scope.get("headers", []):
+                if name == b"origin":
+                    origin = value.decode("latin-1")
+                elif name == b"host":
+                    host = value.decode("latin-1")
+            if not csrf_origin_ok(origin, host):
+                await self._send_403(send, "Cross-origin request blocked")
+                return
 
         # Skip public paths
         if path in PUBLIC_PATHS:

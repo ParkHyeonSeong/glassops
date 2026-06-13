@@ -23,8 +23,10 @@ class Settings(BaseSettings):
     # trust. Default = the bundled nginx (loopback). Add upstream LB/proxy IPs here.
     trusted_proxies: str = "127.0.0.1,::1"
     force_secure_cookies: bool = False   # set true when TLS is terminated upstream
-    # CSWSH guard: browser origins permitted on WebSockets (comma-separated, e.g.
-    # "https://ops.lan,http://10.0.0.9:7440"). Empty = match the request Host (same-host LAN).
+    # Browser origins trusted for BOTH the WebSocket CSWSH guard and the HTTP CSRF
+    # check on state-changing requests (comma-separated, e.g. "https://ops.lan,
+    # http://10.0.0.9:7440"). Empty = match the request Host (same-host LAN). Separate
+    # from GLASSOPS_CORS_ORIGINS (main.py), which only sets CORS response headers.
     allowed_origins: str = ""
     # Restrict which SMTP relay hosts the alert config may use (comma-separated).
     # Empty = any host that passes the SSRF checks (loopback/link-local/metadata blocked).

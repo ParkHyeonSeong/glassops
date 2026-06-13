@@ -117,7 +117,7 @@ export default function MobileDesktop({
           ) : activeAppId === "settings" ? (
             <SettingsApp />
           ) : activeAppId === "users" ? (
-            <UserManager />
+            role === "admin" ? <UserManager /> : <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
           ) : (
             <AppPlaceholder appId={activeApp.id} title={activeApp.title} />
           )}

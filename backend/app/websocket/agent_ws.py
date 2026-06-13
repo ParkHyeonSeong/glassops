@@ -130,6 +130,14 @@ async def handle_agent_ws(ws: WebSocket) -> None:
             timestamp = data.get("timestamp", 0)
             if not isinstance(timestamp, (int, float)) or timestamp <= 0:
                 continue
+            # Clamp an implausible (clock-skewed / forged) timestamp to server time so
+            # one agent can't poison metric ordering or time-range charts.
+            if timestamp > now + 300 or timestamp < now - 86400:
+                timestamp = now
+            # Write the canonical timestamp back so the broadcast + alert consumers
+            # below see the same server-verified value the DB row gets — not the raw
+            # (possibly forged) field still sitting in `data`.
+            data["timestamp"] = timestamp
 
             try:
                 await store_metric(agent_id, timestamp, data)
