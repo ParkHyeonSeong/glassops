@@ -22,7 +22,7 @@ cat data/initial_admin_password
 ```
 
 > Prefer your own password? Set `GLASSOPS_ADMIN_PASSWORD` in `.env` before the first run.
-> (If that file can't be written, the password is logged once instead — check `make logs`.)
+> (If that file can't be written, startup fails with an error instead of logging the password — fix the data-dir permissions or set `GLASSOPS_ADMIN_PASSWORD`.)
 
 ## What's Inside
 
@@ -264,6 +264,8 @@ sudo certbot --nginx -d ops.example.com
 ```
 
 When HTTPS is active, auth tokens are stored in httpOnly cookies instead of sessionStorage (more secure against XSS).
+
+> **Terminating TLS at an upstream proxy?** The bundled edge speaks plain HTTP internally and deliberately does **not** trust a forwarded `X-Forwarded-Proto` from it (that header is client-spoofable at a loopback edge). So when an external proxy terminates TLS, set `GLASSOPS_FORCE_SECURE_COOKIES=true` so auth cookies still get the `Secure` flag. Without it, cookies are issued without `Secure` even over your HTTPS front end.
 
 ### IP Restriction
 

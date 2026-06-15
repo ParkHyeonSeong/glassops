@@ -140,6 +140,24 @@ _active_streams: dict[str, asyncio.Task] = {}
 _active_bidi_ctx: dict[str, "StreamContext"] = {}
 
 
+def _teardown_all_streams() -> None:
+    """Cancel every in-flight stream/terminal — used when the backend link drops.
+    The backend can't deliver a per-id rpc.cancel over a dead socket, so we do the
+    equivalent locally for ALL active ids: a cancelled terminal's _run_bidi unwinds
+    and runs `finally: session.kill()`, terminating the host shell. Snapshot the
+    dicts first (cancel triggers done-callbacks that mutate them). Idempotent."""
+    for ctx in list(_active_bidi_ctx.values()):
+        try:
+            ctx.cancel()   # push the rpc.cancel sentinel so controller() returns
+        except Exception:
+            pass
+    for task in list(_active_streams.values()):
+        if not task.done():
+            task.cancel()
+    _active_bidi_ctx.clear()
+    _active_streams.clear()
+
+
 class StreamContext:
     """Hands a bidirectional stream handler a way to push chunks out and read control messages in."""
 
@@ -266,6 +284,9 @@ async def serve_rpc(pusher: MetricsPusher, stop: asyncio.Event) -> None:
         try:
             raw = await pusher.ws.recv()
         except (ConnectionClosedError, ConnectionClosedOK):
+            # Link dropped — the backend can't send rpc.cancel over a dead socket,
+            # so tear down any open terminals/streams here (idempotent).
+            _teardown_all_streams()
             await asyncio.sleep(0.5)
             continue
         except Exception:

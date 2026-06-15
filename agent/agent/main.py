@@ -14,6 +14,7 @@ from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
 from agent.collectors import cgroup_stats
 from agent.transport.ws_client import MetricsPusher, serve_rpc, check_transport_security
+from agent.terminal import reap_orphans
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,6 +121,13 @@ async def main() -> None:
     psutil.cpu_percent(interval=0)
 
     while not stop.is_set():
+        # Backstop: reap any exited terminal child a per-session reaper missed,
+        # so no <defunct> zombie can outlive its session regardless of teardown path.
+        try:
+            reap_orphans()
+        except OSError:
+            pass
+
         # Ensure connection
         if not pusher.connected:
             try:

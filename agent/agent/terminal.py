@@ -17,30 +17,47 @@ import termios
 
 logger = logging.getLogger("glassops.agent.terminal")
 
-SESSION_TIMEOUT = 300  # 5 minutes idle
-
 # Background SIGKILL-escalation tasks (held so the loop doesn't GC them mid-run).
 _reap_tasks: set = set()
 
 
+def reap_orphans() -> None:
+    """Process-wide backstop: reap any of OUR exited fork children that a
+    per-session reaper missed. Safe because spawn()'s os.fork() is the agent's
+    ONLY child source — there is no subprocess/Popen/posix_spawn anywhere in the
+    agent, so waitpid(-1) can only ever reap a shell we spawned. Non-blocking
+    (WNOHANG); call once per main-loop tick.
+
+    Do NOT replace this with signal(SIGCHLD, SIG_IGN): that makes the explicit
+    waitpid() calls below fail with ECHILD."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return  # no children, or a transient error — nothing to reap
+        if pid == 0:
+            return  # children exist but none have exited
+        logger.debug("Reaped orphan child pid=%d", pid)
+
+
 async def _reap_and_kill(pid: int) -> None:
-    """Wait briefly for a SIGTERM'd child to exit; SIGKILL if it ignores it, then reap.
-    Safe against PID reuse: an unreaped child PID is never recycled, and the caller
-    ensures this is the only reaper for that pid (the session's read loop has ended)."""
+    """Escalate a SIGTERM'd child to SIGKILL if it won't exit on its own. The final
+    reap (waitpid) is delegated to the process-wide reap_orphans() backstop in the
+    main loop, so we never block a thread-pool worker on a wedged (D-state) child.
+    Safe against PID reuse: an unreaped child PID is never recycled."""
     for _ in range(30):  # ~3s grace for a clean exit
         await asyncio.sleep(0.1)
         try:
             if os.waitpid(pid, os.WNOHANG)[0] == pid:
                 return  # exited and reaped
-        except ChildProcessError:
+        except (ChildProcessError, OSError):
             return  # already gone
     try:
         os.kill(pid, signal.SIGKILL)
-        # Reap off the event loop — a process wedged in D-state can't be reaped
-        # immediately and a blocking waitpid here would freeze all clients.
-        await asyncio.get_running_loop().run_in_executor(None, os.waitpid, pid, 0)
-    except (ProcessLookupError, ChildProcessError, OSError):
+    except (ProcessLookupError, OSError):
         pass
+    # The SIGKILLed child briefly becomes a zombie until reap_orphans() sweeps it
+    # (<= one COLLECT_INTERVAL). No blocking waitpid here.
 
 
 def _schedule_reap(pid: int) -> None:
@@ -52,14 +69,16 @@ def _schedule_reap(pid: int) -> None:
         t = loop.create_task(_reap_and_kill(pid))
         _reap_tasks.add(t)
         t.add_done_callback(_reap_tasks.discard)
-    else:  # no event loop (rare) — best-effort synchronous escalation
+    else:  # no event loop (rare) — best-effort synchronous escalation + reap
+        # No event loop means reap_orphans() isn't running, so this path must reap
+        # the child itself (it's off the loop, so a blocking waitpid is fine here).
         import time as _time
         for _ in range(30):
             _time.sleep(0.1)
             try:
                 if os.waitpid(pid, os.WNOHANG)[0] == pid:
                     return
-            except ChildProcessError:
+            except (ChildProcessError, OSError):
                 return
         try:
             os.kill(pid, signal.SIGKILL)
@@ -72,7 +91,6 @@ class TerminalSession:
     def __init__(self) -> None:
         self.master_fd: int | None = None
         self.pid: int | None = None
-        self._last_activity = asyncio.get_event_loop().time()
 
     @property
     def is_alive(self) -> bool:
@@ -88,10 +106,6 @@ class TerminalSession:
         except (ChildProcessError, ProcessLookupError, OSError):
             self.pid = None
             return False
-
-    @property
-    def idle_seconds(self) -> float:
-        return asyncio.get_event_loop().time() - self._last_activity
 
     def spawn(self, host_user: str | None = None) -> None:
         """Spawn a shell in a PTY. Uses nsenter to reach the host (pid=host)."""
@@ -165,7 +179,6 @@ class TerminalSession:
     def write(self, data: bytes) -> None:
         if self.master_fd is None:
             return
-        self._last_activity = asyncio.get_event_loop().time()
         os.write(self.master_fd, data)
 
     def resize(self, rows: int, cols: int) -> None:
