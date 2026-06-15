@@ -20,71 +20,94 @@ logger = logging.getLogger("glassops.agent.terminal")
 # Background SIGKILL-escalation tasks (held so the loop doesn't GC them mid-run).
 _reap_tasks: set = set()
 
+# Live child pid -> owning TerminalSession. spawn() registers; whoever reaps the
+# child removes it. This keeps the two reapers (a session's own is_alive and the
+# process-wide reap_orphans backstop) from breaking the invariant that a live
+# session's pid is never silently recycled: when ANY reaper reaps a child it
+# clears the owner's `pid`, so kill()/_reap_and_kill never signal a pid that has
+# been reaped (and possibly recycled to another process).
+_owned_pids: dict[int, "TerminalSession"] = {}
+
 
 def reap_orphans() -> None:
-    """Process-wide backstop: reap any of OUR exited fork children that a
-    per-session reaper missed. Safe because spawn()'s os.fork() is the agent's
-    ONLY child source — there is no subprocess/Popen/posix_spawn anywhere in the
-    agent, so waitpid(-1) can only ever reap a shell we spawned. Non-blocking
-    (WNOHANG); call once per main-loop tick.
+    """Reap every exited fork child and notify its owning session.
 
-    Do NOT replace this with signal(SIGCHLD, SIG_IGN): that makes the explicit
-    waitpid() calls below fail with ECHILD."""
+    Safe because spawn()'s os.fork() is the agent's ONLY child source (no
+    subprocess/Popen/posix_spawn anywhere in the agent), so waitpid(-1) can only
+    ever reap a shell we spawned. Non-blocking (WNOHANG). Called once per
+    main-loop tick as the backstop for any child a session's own reaper missed
+    (e.g. a session torn down before its reader observed the exit).
+
+    Do NOT use signal(SIGCHLD, SIG_IGN) instead: that makes the explicit
+    waitpid() calls elsewhere fail with ECHILD."""
     while True:
         try:
             pid, _ = os.waitpid(-1, os.WNOHANG)
-        except (ChildProcessError, OSError):
-            return  # no children, or a transient error — nothing to reap
+        except ChildProcessError:
+            return  # no children left
+        except OSError:
+            return  # unexpected — leave the rest for the next tick
         if pid == 0:
             return  # children exist but none have exited
-        logger.debug("Reaped orphan child pid=%d", pid)
+        session = _owned_pids.pop(pid, None)
+        if session is not None:
+            session.pid = None  # owner must not later signal this (recyclable) pid
+        logger.debug("Reaped child pid=%d%s", pid, "" if session else " (orphan)")
 
 
-async def _reap_and_kill(pid: int) -> None:
-    """Escalate a SIGTERM'd child to SIGKILL if it won't exit on its own. The final
-    reap (waitpid) is delegated to the process-wide reap_orphans() backstop in the
-    main loop, so we never block a thread-pool worker on a wedged (D-state) child.
-    Safe against PID reuse: an unreaped child PID is never recycled."""
+async def _reap_and_kill(pid: int, session: "TerminalSession") -> None:
+    """Escalate a SIGTERM'd child to SIGKILL if it won't exit on its own. Reaping
+    is delegated to reap_orphans() / the session's is_alive, so we never block a
+    thread-pool worker on a wedged (D-state) child.
+
+    Ownership-checked against PID reuse: if the child is reaped during the grace
+    period, `_owned_pids[pid]` is cleared (or, if the pid was recycled, reassigned
+    to a different session), so we stop before SIGKILLing a pid we no longer own."""
     for _ in range(30):  # ~3s grace for a clean exit
+        if _owned_pids.get(pid) is not session:
+            return  # reaped (and maybe recycled) elsewhere — no longer ours
         await asyncio.sleep(0.1)
-        try:
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
-                return  # exited and reaped
-        except (ChildProcessError, OSError):
-            return  # already gone
+    if _owned_pids.get(pid) is not session:
+        return
     try:
         os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass
-    # The SIGKILLed child briefly becomes a zombie until reap_orphans() sweeps it
-    # (<= one COLLECT_INTERVAL). No blocking waitpid here.
+    # The SIGKILLed child becomes a brief zombie until reap_orphans() sweeps it.
 
 
-def _schedule_reap(pid: int) -> None:
+def _schedule_reap(pid: int, session: "TerminalSession") -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
-    if loop is not None:
-        t = loop.create_task(_reap_and_kill(pid))
-        _reap_tasks.add(t)
-        t.add_done_callback(_reap_tasks.discard)
-    else:  # no event loop (rare) — best-effort synchronous escalation + reap
-        # No event loop means reap_orphans() isn't running, so this path must reap
-        # the child itself (it's off the loop, so a blocking waitpid is fine here).
-        import time as _time
-        for _ in range(30):
-            _time.sleep(0.1)
-            try:
-                if os.waitpid(pid, os.WNOHANG)[0] == pid:
-                    return
-            except (ChildProcessError, OSError):
-                return
+        # No running loop — should never happen (kill() only runs inside the loop).
+        # Best effort, NON-blocking: the reaper isn't running here, so just SIGKILL
+        # and leave the eventual init-reparent to reap; never block on waitpid(pid,0)
+        # (a D-state child would hang the caller forever).
+        logger.warning("_schedule_reap with no running loop; best-effort SIGKILL pid=%d", pid)
         try:
             os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except (ProcessLookupError, ChildProcessError, OSError):
+        except OSError:
             pass
+        _owned_pids.pop(pid, None)
+        return
+    t = loop.create_task(_reap_and_kill(pid, session))
+    _reap_tasks.add(t)
+    t.add_done_callback(_reap_tasks.discard)
+
+
+async def shutdown_reap(timeout: float = 5.0) -> None:
+    """On agent shutdown, drive the reaper while in-flight SIGKILL escalations
+    finish, then do a final sweep — the per-tick backstop stops once the main loop
+    exits, so an escalated child would otherwise be abandoned mid-grace. Polling
+    reap_orphans() here also lets a cleanly-exiting shell be reaped at once instead
+    of waiting out the full grace (its escalation then short-circuits)."""
+    for _ in range(max(1, int(timeout / 0.1))):
+        reap_orphans()
+        if not _reap_tasks:
+            break
+        await asyncio.sleep(0.1)
+    reap_orphans()
 
 
 class TerminalSession:
@@ -94,16 +117,19 @@ class TerminalSession:
 
     @property
     def is_alive(self) -> bool:
-        if self.pid is None:
+        pid = self.pid
+        if pid is None:
             return False
         try:
-            reaped, _ = os.waitpid(self.pid, os.WNOHANG)
-            if reaped == self.pid:
+            reaped, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
+                _owned_pids.pop(pid, None)
                 self.pid = None   # exited and reaped — clear so kill() won't signal a
                 return False       # (possibly reused) pid, and we don't double-reap
-            os.kill(self.pid, 0)
+            os.kill(pid, 0)
             return True
         except (ChildProcessError, ProcessLookupError, OSError):
+            _owned_pids.pop(pid, None)
             self.pid = None
             return False
 
@@ -142,21 +168,29 @@ class TerminalSession:
             raise
 
         if child_pid == 0:
-            # Child
-            os.close(master_fd)
-            os.setsid()
-            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-            os.dup2(slave_fd, 0)
-            os.dup2(slave_fd, 1)
-            os.dup2(slave_fd, 2)
-            os.close(slave_fd)
-            os.environ["TERM"] = "xterm-256color"
-            os.environ["SHELL"] = "/bin/bash"
-            os.environ["HOME"] = os.environ.get("HOME", "/root")
-            os.execvp(cmd[0], cmd)
+            # Child — must NEVER return into the parent's inherited Python stack.
+            # Any failure here (exec of a missing nsenter/su/SHELL, ioctl/setsid
+            # error) must _exit, not raise: otherwise the forked child unwinds back
+            # up into the agent's event loop and runs a second agent on the
+            # inherited backend socket. os._exit skips atexit/buffer flushing.
+            try:
+                os.close(master_fd)
+                os.setsid()
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+                os.dup2(slave_fd, 0)
+                os.dup2(slave_fd, 1)
+                os.dup2(slave_fd, 2)
+                os.close(slave_fd)
+                os.environ["TERM"] = "xterm-256color"
+                os.environ["SHELL"] = "/bin/bash"
+                os.environ["HOME"] = os.environ.get("HOME", "/root")
+                os.execvp(cmd[0], cmd)
+            except BaseException:
+                os._exit(127)
         else:
             os.close(slave_fd)
             self.pid = child_pid
+            _owned_pids[child_pid] = self
             logger.info("Terminal spawned: pid=%d nsenter=%s user=%s", child_pid, use_nsenter, terminal_user or "(login)")
 
     async def read(self) -> bytes:
@@ -193,8 +227,8 @@ class TerminalSession:
         if pid is not None:
             try:
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pid = None  # already gone
+            except OSError:
+                pid = None  # already gone (or unsignalable) — nothing to escalate
         if self.master_fd is not None:
             try:
                 os.close(self.master_fd)
@@ -203,5 +237,6 @@ class TerminalSession:
             self.master_fd = None
         if pid is not None:
             # SIGTERM may be ignored (a trapping shell / wedged su) — escalate to
-            # SIGKILL after a grace period so a host shell can't linger.
-            _schedule_reap(pid)
+            # SIGKILL after a grace period so a host shell can't linger. Ownership
+            # stays in _owned_pids until the child is reaped (see _reap_and_kill).
+            _schedule_reap(pid, self)

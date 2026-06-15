@@ -337,14 +337,19 @@ async def terminal_open(params: dict, ctx: Any) -> None:
     controller_task = asyncio.create_task(controller())
 
     try:
-        done, pending = await asyncio.wait(
+        await asyncio.wait(
             {reader_task, controller_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for t in pending:
-            t.cancel()
     finally:
+        # Always cancel BOTH children — including when a CancelledError lands on
+        # the await above (which would skip a post-wait cancel) — so neither is
+        # left dangling. session.kill() is synchronous and runs first so the host
+        # shell is always signalled, even if the gather below is interrupted.
+        reader_task.cancel()
+        controller_task.cancel()
         session.kill()
+        await asyncio.gather(reader_task, controller_task, return_exceptions=True)
 
 
 BIDI_STREAM_HANDLERS: dict[str, Callable[[dict, Any], Awaitable[None]]] = {

@@ -13,8 +13,10 @@ from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
 from agent.collectors import cgroup_stats
-from agent.transport.ws_client import MetricsPusher, serve_rpc, check_transport_security
-from agent.terminal import reap_orphans
+from agent.transport.ws_client import (
+    MetricsPusher, serve_rpc, check_transport_security, teardown_all_streams,
+)
+from agent.terminal import reap_orphans, shutdown_reap
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,50 +122,65 @@ async def main() -> None:
     import psutil
     psutil.cpu_percent(interval=0)
 
-    while not stop.is_set():
-        # Backstop: reap any exited terminal child a per-session reaper missed,
-        # so no <defunct> zombie can outlive its session regardless of teardown path.
-        try:
-            reap_orphans()
-        except OSError:
-            pass
-
-        # Ensure connection
-        if not pusher.connected:
-            try:
-                await asyncio.wait_for(pusher.connect(), timeout=10)
-            except asyncio.TimeoutError:
-                logger.warning("Connect timeout, will retry next cycle...")
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=COLLECT_INTERVAL)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-
-        # Collect & push
-        try:
-            metrics = await collect_metrics()
-            success = await pusher.send(metrics)
-            if not success:
-                continue
-            logger.debug("Pushed metrics: %s", json.dumps(metrics)[:200])
-        except Exception:
-            logger.exception("Error collecting/pushing metrics")
-
-        # Wait for next cycle or stop signal
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=COLLECT_INTERVAL)
-        except asyncio.TimeoutError:
-            pass
-
-    rpc_task.cancel()
     try:
-        await rpc_task
-    except asyncio.CancelledError:
-        pass
-    await pusher.close()
-    shutdown_nvml()
-    logger.info("Agent stopped.")
+        while not stop.is_set():
+            # Backstop: reap any exited terminal child a per-session reaper missed,
+            # so no <defunct> zombie can outlive its session regardless of path.
+            try:
+                reap_orphans()
+            except OSError:
+                pass
+
+            # Ensure connection
+            if not pusher.connected:
+                try:
+                    await asyncio.wait_for(pusher.connect(), timeout=10)
+                except asyncio.TimeoutError:
+                    logger.warning("Connect timeout, will retry next cycle...")
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=COLLECT_INTERVAL)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+            # Collect & push
+            try:
+                metrics = await collect_metrics()
+                success = await pusher.send(metrics)
+                if not success:
+                    continue
+                logger.debug("Pushed metrics: %s", json.dumps(metrics)[:200])
+            except Exception:
+                logger.exception("Error collecting/pushing metrics")
+
+            # Wait for next cycle or stop signal
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=COLLECT_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        # Runs on EVERY exit — graceful stop, exception, or cancellation — so an
+        # nsenter host shell is never abandoned (it lives in the host pid namespace
+        # and would outlive the agent). teardown_all_streams() is synchronous, so
+        # it cancels the terminal tasks even mid-cancel; the awaits below are
+        # best-effort (a hard cancel finalizes the tasks via asyncio.run instead).
+        stream_tasks = teardown_all_streams()
+        rpc_task.cancel()
+        for t in (rpc_task, *stream_tasks):
+            try:
+                await t  # terminal_open's finally: session.kill() runs here
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            await shutdown_reap()
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await pusher.close()
+        except (asyncio.CancelledError, Exception):
+            pass
+        shutdown_nvml()
+        logger.info("Agent stopped.")
 
 
 if __name__ == "__main__":

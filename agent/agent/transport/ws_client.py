@@ -140,22 +140,28 @@ _active_streams: dict[str, asyncio.Task] = {}
 _active_bidi_ctx: dict[str, "StreamContext"] = {}
 
 
-def _teardown_all_streams() -> None:
-    """Cancel every in-flight stream/terminal — used when the backend link drops.
-    The backend can't deliver a per-id rpc.cancel over a dead socket, so we do the
-    equivalent locally for ALL active ids: a cancelled terminal's _run_bidi unwinds
-    and runs `finally: session.kill()`, terminating the host shell. Snapshot the
-    dicts first (cancel triggers done-callbacks that mutate them). Idempotent."""
+def teardown_all_streams() -> list[asyncio.Task]:
+    """Cancel every in-flight stream/terminal and return the cancelled tasks (so a
+    caller can await them to let each terminal's `finally: session.kill()` run).
+
+    Used when the backend link drops — the backend can't deliver a per-id
+    rpc.cancel over a dead socket, so we do the equivalent locally for ALL active
+    ids — and on agent shutdown. For a bidi terminal we also push the rpc.cancel
+    sentinel via ctx.cancel(); shell teardown is guaranteed by terminal_open's
+    finally either way. Idempotent. (We iterate snapshots and clear at the end;
+    cancel() schedules cancellation but does not synchronously run the tasks'
+    done-callbacks, so the dicts are not mutated mid-iteration.)"""
     for ctx in list(_active_bidi_ctx.values()):
         try:
             ctx.cancel()   # push the rpc.cancel sentinel so controller() returns
         except Exception:
             pass
-    for task in list(_active_streams.values()):
-        if not task.done():
-            task.cancel()
+    tasks = [t for t in _active_streams.values() if not t.done()]
+    for task in tasks:
+        task.cancel()
     _active_bidi_ctx.clear()
     _active_streams.clear()
+    return tasks
 
 
 class StreamContext:
@@ -286,7 +292,7 @@ async def serve_rpc(pusher: MetricsPusher, stop: asyncio.Event) -> None:
         except (ConnectionClosedError, ConnectionClosedOK):
             # Link dropped — the backend can't send rpc.cancel over a dead socket,
             # so tear down any open terminals/streams here (idempotent).
-            _teardown_all_streams()
+            teardown_all_streams()
             await asyncio.sleep(0.5)
             continue
         except Exception:
