@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import ssl
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -218,18 +219,37 @@ async def _run_stream(pusher: MetricsPusher, rpc_id: str, method: str, params: d
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue(maxsize=128)
     SENTINEL = object()
+    stop = threading.Event()
 
     def producer() -> None:
-        """Runs in a worker thread: drives the blocking generator."""
+        """Runs in a DAEMON worker thread: drives the blocking generator (e.g. the
+        docker follow iterator). Daemon so a thread parked waiting for the next log
+        line can never make interpreter shutdown hang ~5 min joining it. `stop` lets
+        it exit promptly after cancel at the next chunk; a quiet stream's thread just
+        dies with the process. A blocking iterator can't be interrupted from outside
+        (no clean way without closing the docker stream), so daemon-ness is the
+        guard, not cancellation."""
         try:
             for chunk in dispatch_stream(method, params):
-                fut = asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
-                fut.result()  # back-pressure if queue full
-            asyncio.run_coroutine_threadsafe(queue.put(SENTINEL), loop).result()
+                if stop.is_set():
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
+                except BaseException:
+                    return  # consumer gone / loop closed — stop streaming
+            if not stop.is_set():
+                try:
+                    asyncio.run_coroutine_threadsafe(queue.put(SENTINEL), loop).result()
+                except BaseException:
+                    pass
         except BaseException as e:  # includes generator close on cancel
-            asyncio.run_coroutine_threadsafe(queue.put(("__err__", str(e))), loop).result()
+            if not stop.is_set():
+                try:
+                    asyncio.run_coroutine_threadsafe(queue.put(("__err__", str(e))), loop).result()
+                except BaseException:
+                    pass
 
-    producer_task = loop.run_in_executor(None, producer)
+    threading.Thread(target=producer, name=f"glassops-stream-{rpc_id}", daemon=True).start()
 
     try:
         while True:
@@ -249,11 +269,10 @@ async def _run_stream(pusher: MetricsPusher, rpc_id: str, method: str, params: d
             pass
         raise
     finally:
-        # Best-effort: producer thread will exit when generator's docker stream closes.
-        # We don't have a clean way to interrupt a blocking iterator from outside,
-        # but generators tied to docker streams stop when the upstream socket is closed.
-        if not producer_task.done():
-            producer_task.cancel()
+        # Signal the daemon producer to stop at its next chunk. A thread already
+        # blocked inside the docker iterator can't be interrupted, but being a
+        # daemon it won't hold up shutdown.
+        stop.set()
 
 
 async def _run_bidi(pusher: MetricsPusher, rpc_id: str, method: str, params: dict) -> None:
