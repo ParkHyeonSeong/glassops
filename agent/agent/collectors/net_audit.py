@@ -228,3 +228,145 @@ class HostNetnsProcSource(ConnectionSource):
 
     def interface_counters(self) -> dict[str, dict]:
         return parse_proc_net_dev(self._read(self._net_path("dev")) or "")
+
+
+import time as _time
+
+_WILDCARD = {"", "0.0.0.0", "::"}
+
+
+def _conn_key(c: dict) -> tuple:
+    return (c["proto"], c["laddr"], c["lport"], c["raddr"], c["rport"])
+
+
+class NetAuditCollector:
+    def __init__(self, source: ConnectionSource, max_events: int = 200,
+                 top_talkers: int = 20, clock=_time.time):
+        self._source = source
+        self._max_events = max_events
+        self._top_talkers = top_talkers
+        self._clock = clock
+        # conn key -> {"ts": open_ts, "pid", "pname", "status"} — attribution kept
+        # so the eventual close can report which process's connection ended (P2).
+        self._prev: dict[tuple, dict] = {}
+        self._bucket: int | None = None            # current minute bucket (epoch // 60)
+        self._bucket_start_if: dict | None = None  # iface counters at bucket start (P1)
+        # raddr -> set of DISTINCT active conn keys observed while this bucket was
+        # open. Counting distinct active connections (not just new opens) means a
+        # long-lived SSH/C2/DB tunnel appears in the top-talkers of EVERY bucket it
+        # spans, not only the bucket it opened in (review P2).
+        self._bucket_conns: dict[str, set] = {}
+        # Set when a source outage crosses a minute boundary: the pending bucket is
+        # no longer a clean 1-min window (its byte delta would span the whole gap),
+        # so the next good tick discards it and re-baselines instead (review P1).
+        self._bucket_invalid = False
+
+    def collect(self) -> dict:
+        now = self._clock()
+        snap = self._source.snapshot()
+        if not snap.ok:
+            # Source unavailable this tick: SKIP the diff entirely. Diffing a failed
+            # read against _prev would emit a false 'close' for every live connection
+            # (and a false 're-open' next tick), poisoning the audit trail (review P1).
+            # Keep all state (_prev, bucket accounting) intact and emit nothing. If the
+            # outage has crossed into a new minute, mark the pending bucket invalid so
+            # its (now gap-spanning) delta is discarded rather than mis-stored (review P1).
+            if self._bucket is not None and int(now // 60) != self._bucket:
+                self._bucket_invalid = True
+            logger.warning("net_audit: source unavailable (%s); skipping tick", snap.reason)
+            return {"events": [], "rollups": [], "dropped": 0}
+        conns = [c for c in snap.conns if c.get("raddr") not in _WILDCARD]
+        current = {_conn_key(c): c for c in conns}
+
+        opens: list[dict] = []
+        for key, c in current.items():
+            if key not in self._prev:
+                self._prev[key] = {"ts": now, "pid": c.get("pid"),
+                                   "pname": c.get("pname", ""), "status": c.get("status", "")}
+                opens.append(self._event("open", now, c, None))
+
+        closes: list[dict] = []
+        for key in list(self._prev):
+            if key not in current:
+                meta = self._prev.pop(key)
+                proto, laddr, lport, raddr, rport = key
+                closes.append({
+                    "event": "close", "ts": now, "proto": proto,
+                    "laddr": laddr, "lport": lport, "raddr": raddr, "rport": rport,
+                    "status": meta["status"], "pid": meta["pid"], "pname": meta["pname"],
+                    "duration": round(now - meta["ts"], 3),
+                })
+
+        # Cap policy (P2): keep every close first (they carry duration + attribution),
+        # fill the remaining budget with opens, and report how many were dropped.
+        events = closes + opens
+        dropped = 0
+        if len(events) > self._max_events:
+            dropped = len(events) - self._max_events
+            logger.warning("net_audit: dropping %d events over cap %d",
+                           dropped, self._max_events)
+            events = events[:self._max_events]
+
+        # Flush the PREVIOUS bucket before recording this cycle's active conns, so a
+        # persistent connection is attributed to every bucket it is alive in (P2).
+        rollups = self._maybe_rollup(now)
+        for key, c in current.items():
+            self._bucket_conns.setdefault(c["raddr"], set()).add(key)
+
+        return {"events": events, "rollups": rollups, "dropped": dropped}
+
+    def _event(self, kind: str, ts: float, c: dict, duration) -> dict:
+        return {
+            "event": kind, "ts": ts, "proto": c["proto"],
+            "laddr": c["laddr"], "lport": c["lport"],
+            "raddr": c["raddr"], "rport": c["rport"], "status": c.get("status", ""),
+            "pid": c.get("pid"), "pname": c.get("pname", ""), "duration": duration,
+        }
+
+    def _maybe_rollup(self, now: float) -> list[dict]:
+        bucket = int(now // 60)
+        if self._bucket is None:
+            self._bucket = bucket
+            self._bucket_start_if = self._source.interface_counters()
+            return []
+        if bucket == self._bucket:
+            return []
+        # bucket changed -> flush the previous bucket with per-bucket byte DELTAS.
+        cur_if = self._source.interface_counters()
+        if self._bucket_invalid:
+            # A source outage crossed this bucket's boundary; its delta would span the
+            # whole gap (e.g. 12:00 baseline, 12:01-12:03 down, 12:04 up => 4 min of
+            # bytes mis-stored as the 12:00 one-minute rollup). Discard and re-baseline
+            # cleanly on this good tick instead (review P1).
+            self._bucket = bucket
+            self._bucket_start_if = cur_if
+            self._bucket_conns = {}
+            self._bucket_invalid = False
+            return []
+        start_if = self._bucket_start_if or {}
+        ifaces = []
+        for name, c in cur_if.items():
+            if name not in start_if:
+                # No baseline for this interface — /proc/net/dev was unreadable at
+                # bucket start (baseline {}) or the interface appeared mid-bucket.
+                # Skip it: subtracting a missing baseline would store the full
+                # cumulative counter as if it were one minute of traffic (review P2).
+                continue
+            s = start_if[name]
+            ifaces.append({
+                "name": name,
+                "bytes_in": max(0, c.get("bytes_in", 0) - s.get("bytes_in", 0)),
+                "bytes_out": max(0, c.get("bytes_out", 0) - s.get("bytes_out", 0)),
+            })
+        # conns = number of distinct active connections to that peer during the bucket.
+        talkers = sorted(((r, len(keys)) for r, keys in self._bucket_conns.items()),
+                         key=lambda kv: kv[1], reverse=True)
+        rollup = {
+            "ts": float(self._bucket * 60),
+            "interfaces": ifaces,
+            "top_talkers": [{"raddr": r, "conns": n} for r, n in talkers[:self._top_talkers]],
+        }
+        self._bucket = bucket
+        self._bucket_start_if = cur_if
+        self._bucket_conns = {}
+        return [rollup]
