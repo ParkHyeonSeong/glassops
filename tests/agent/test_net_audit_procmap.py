@@ -48,3 +48,15 @@ def test_parse_proc_net_dev():
     assert out["eth0"]["bytes_out"] == 2000
     assert out["eth0"]["packets_in"] == 10
     assert out["lo"]["bytes_out"] == 500
+
+
+def test_budget_overflow_flags_degraded_and_returns_partial(tmp_path):
+    # Review P2: exceeding the fd-scan budget must bump _scan_degraded, log, and
+    # return a partial map rather than scanning unbounded.
+    import agent.collectors.net_audit as na
+    _make_proc(tmp_path, 4321, "sshd", 67890)
+    _make_proc(tmp_path, 4322, "nginx", 11111)
+    before = na._scan_degraded
+    m = na.build_inode_pid_map(str(tmp_path), budget=1)
+    assert na._scan_degraded == before + 1   # budget exceeded -> counter bumped
+    assert len(m) < 2                          # partial map (not everything resolved)
