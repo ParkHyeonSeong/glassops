@@ -370,3 +370,27 @@ class NetAuditCollector:
         self._bucket_start_if = cur_if
         self._bucket_conns = {}
         return [rollup]
+
+
+_collector: NetAuditCollector | None = None
+
+
+def reset_collector(host_proc: str | None = None) -> None:
+    """(Re)initialise the process-wide collector. Called at startup / in tests."""
+    global _collector
+    from agent.config import NET_AUDIT_MAX_EVENTS, NET_AUDIT_TOP_TALKERS
+    source = HostNetnsProcSource(host_proc=host_proc)
+    _collector = NetAuditCollector(source, max_events=NET_AUDIT_MAX_EVENTS,
+                                   top_talkers=NET_AUDIT_TOP_TALKERS)
+
+
+def collect() -> dict:
+    """Return {'events': [...], 'rollups': [...]} for this cycle."""
+    global _collector
+    if _collector is None:
+        reset_collector()
+    try:
+        return _collector.collect()
+    except Exception:
+        logger.exception("net_audit collect failed")
+        return {"events": [], "rollups": [], "dropped": 0}

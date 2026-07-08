@@ -10,3 +10,6 @@ REQUIRE_TLS = os.getenv("GLASSOPS_REQUIRE_AGENT_TLS", "false").lower() == "true"
 COLLECT_INTERVAL = max(1, int(os.getenv("GLASSOPS_COLLECT_INTERVAL", "1")))
 ENABLE_GPU = os.getenv("GLASSOPS_ENABLE_GPU", "false").lower() == "true"
 ENABLE_DOCKER = os.getenv("GLASSOPS_ENABLE_DOCKER", "false").lower() == "true"
+ENABLE_NET_AUDIT = os.getenv("GLASSOPS_ENABLE_NET_AUDIT", "false").lower() == "true"
+NET_AUDIT_MAX_EVENTS = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_MAX_EVENTS", "200")))
+NET_AUDIT_TOP_TALKERS = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_TOP_TALKERS", "20")))

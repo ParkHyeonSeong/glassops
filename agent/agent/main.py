@@ -6,13 +6,13 @@ import logging
 import signal
 import time as _time
 
-from agent.config import AGENT_ID, COLLECT_INTERVAL, ENABLE_GPU, ENABLE_DOCKER
+from agent.config import AGENT_ID, COLLECT_INTERVAL, ENABLE_GPU, ENABLE_DOCKER, ENABLE_NET_AUDIT
 from agent.collectors.system import collect_all as collect_system
 from agent.collectors.gpu import collect_gpu, shutdown_nvml
 from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
-from agent.collectors import cgroup_stats
+from agent.collectors import cgroup_stats, net_audit
 from agent.transport.ws_client import (
     MetricsPusher, serve_rpc, check_transport_security, teardown_all_streams,
 )
@@ -100,6 +100,8 @@ async def collect_metrics() -> dict:
             metrics["containers"] = containers
 
     metrics["network"] = collect_network()
+    if ENABLE_NET_AUDIT:
+        metrics["net_audit"] = net_audit.collect()
     metrics["processes"] = collect_processes()
     metrics["agent_id"] = AGENT_ID
     metrics["timestamp"] = _time.time()
