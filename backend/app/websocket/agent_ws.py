@@ -14,6 +14,7 @@ from app.net import resolve_client_ip
 from app.middleware import rate_limit as rl
 from app.websocket.client_ws import broadcast_to_clients
 from app.services.alert_service import check_and_alert
+from app.services.net_audit_ingest import extract_and_store_net_audit
 from app.services import agent_rpc
 
 logger = logging.getLogger("glassops.agent_ws")
@@ -150,6 +151,11 @@ async def handle_agent_ws(ws: WebSocket) -> None:
             # below see the same server-verified value the DB row gets — not the raw
             # (possibly forged) field still sitting in `data`.
             data["timestamp"] = timestamp
+
+            try:
+                await extract_and_store_net_audit(agent_id, timestamp, data)
+            except Exception:
+                logger.exception("net_audit ingest failed for %s", agent_id)
 
             try:
                 await store_metric(agent_id, timestamp, data)
