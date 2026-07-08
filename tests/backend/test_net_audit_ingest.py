@@ -111,3 +111,41 @@ async def test_event_ts_pinned_to_server_timestamp(fresh_db):
     await extract_and_store_net_audit("a1", 5.0, _mk(ev))
     row = (await db.get_net_conn_events("a1"))[0]
     assert row["ts"] == 5.0
+
+
+async def test_rollup_count_capped(fresh_db):
+    # Server cap: at most 5 rollups per message are stored.
+    rolls = [{"ts": 60.0 + i * 60, "interfaces": [], "top_talkers": []} for i in range(6)]
+    await extract_and_store_net_audit("a1", 1_000_000.0,
+                                      {"net_audit": {"events": [], "rollups": rolls}})
+    got = await db.get_net_flow_rollup("a1", 0, 2_000_000)
+    assert len(got) == 5   # 6 sent -> capped to _MAX_ROLLUPS
+
+
+async def test_rollup_ts_future_clamped(fresh_db):
+    # A forged far-future rollup ts must be clamped to the server timestamp.
+    roll = {"ts": 9_999_999_999.0, "interfaces": [], "top_talkers": []}
+    await extract_and_store_net_audit("a1", 5.0,
+                                      {"net_audit": {"events": [], "rollups": [roll]}})
+    got = await db.get_net_flow_rollup("a1", 0, 1000)
+    assert len(got) == 1
+    assert got[0]["ts"] == 5.0   # clamped to server_ts (would be out-of-range if unclamped)
+
+
+async def test_status_length_capped(fresh_db):
+    ev = {"event": "open", "ts": 1.0, "proto": "tcp", "laddr": "10.0.0.9", "lport": 1,
+          "raddr": "8.8.8.8", "rport": 2, "status": "S" * 100, "pid": 1, "pname": "x",
+          "duration": None}
+    await extract_and_store_net_audit("a1", 5.0, {"net_audit": {"events": [ev], "rollups": []}})
+    row = (await db.get_net_conn_events("a1"))[0]
+    assert len(row["status"]) == 32
+
+
+async def test_laddr_invalid_blanked(fresh_db):
+    # laddr validated symmetrically with raddr: an invalid IP becomes "".
+    ev = {"event": "open", "ts": 1.0, "proto": "tcp", "laddr": "not-an-ip", "lport": 1,
+          "raddr": "8.8.8.8", "rport": 2, "status": "E", "pid": 1, "pname": "x", "duration": None}
+    await extract_and_store_net_audit("a1", 5.0, {"net_audit": {"events": [ev], "rollups": []}})
+    row = (await db.get_net_conn_events("a1"))[0]
+    assert row["laddr"] == ""
+    assert row["raddr"] == "8.8.8.8"
