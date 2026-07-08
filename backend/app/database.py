@@ -161,6 +161,32 @@ async def init_db() -> None:
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (timestamp)")
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS net_conn_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            ts REAL NOT NULL,
+            event TEXT NOT NULL,
+            proto TEXT NOT NULL,
+            laddr TEXT, lport INTEGER,
+            raddr TEXT, rport INTEGER,
+            status TEXT,
+            pid INTEGER, pname TEXT,
+            duration REAL
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_nce_agent_ts ON net_conn_events (agent_id, ts)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_nce_raddr ON net_conn_events (agent_id, raddr)")
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS net_flow_rollup (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            ts REAL NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nfr_unique ON net_flow_rollup (agent_id, ts)")
+
     # Create default admin if no users exist at all
     cursor = await db.execute("SELECT COUNT(*) FROM users")
     user_count = (await cursor.fetchone())[0]
@@ -502,6 +528,84 @@ async def cleanup_old_metrics(max_age_hours: int = 1) -> int:
 
     await db.commit()
     return raw_deleted
+
+
+async def store_net_audit(agent_id: str, ts: float, events: list, rollups: list) -> None:
+    """Persist connection events + minute rollups. Metadata only — no payloads."""
+    db = await get_db()
+    if events:
+        await db.executemany(
+            "INSERT INTO net_conn_events "
+            "(agent_id, ts, event, proto, laddr, lport, raddr, rport, status, pid, pname, duration) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(agent_id, float(e.get("ts", ts)), str(e.get("event", "")), str(e.get("proto", "")),
+              e.get("laddr"), e.get("lport"), e.get("raddr"), e.get("rport"),
+              e.get("status"), e.get("pid"), e.get("pname"), e.get("duration"))
+             for e in events],
+        )
+    for r in rollups:
+        await db.execute(
+            "INSERT OR REPLACE INTO net_flow_rollup (agent_id, ts, data) VALUES (?,?,?)",
+            (agent_id, float(r.get("ts", ts)), json.dumps(
+                {"interfaces": r.get("interfaces", []), "top_talkers": r.get("top_talkers", [])})),
+        )
+    await db.commit()
+
+
+async def cleanup_net_audit(event_days: int = 7, rollup_days: int = 30) -> int:
+    now = time.time()
+    future = now + 300
+    db = await get_db()
+    cur = await db.execute(
+        "DELETE FROM net_conn_events WHERE ts < ? OR ts > ?",
+        (now - event_days * 86400, future),
+    )
+    deleted = cur.rowcount
+    await db.execute(
+        "DELETE FROM net_flow_rollup WHERE ts < ? OR ts > ?",
+        (now - rollup_days * 86400, future),
+    )
+    await db.commit()
+    return deleted
+
+
+async def get_net_conn_events(agent_id: str, before: float | None = None, limit: int = 200,
+                              proto: str | None = None, raddr: str | None = None,
+                              port: int | None = None, pid: int | None = None) -> list:
+    db = await get_db()
+    clauses = ["agent_id = ?"]
+    params: list = [agent_id]
+    if before is not None:
+        clauses.append("ts < ?"); params.append(before)
+    if proto:
+        clauses.append("proto = ?"); params.append(proto)
+    if raddr:
+        clauses.append("raddr = ?"); params.append(raddr)
+    if port is not None:
+        clauses.append("(lport = ? OR rport = ?)"); params.extend([port, port])
+    if pid is not None:
+        clauses.append("pid = ?"); params.append(pid)
+    params.append(max(1, min(limit, 1000)))  # clamp lower bound too: SQLite LIMIT -1 is unbounded (review P2)
+    cur = await db.execute(
+        f"SELECT ts, event, proto, laddr, lport, raddr, rport, status, pid, pname, duration "
+        f"FROM net_conn_events WHERE {' AND '.join(clauses)} ORDER BY ts DESC LIMIT ?",
+        params,
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_net_flow_rollup(agent_id: str, start: float, end: float) -> list:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT ts, data FROM net_flow_rollup WHERE agent_id = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+        (agent_id, start, end),
+    )
+    out = []
+    for r in await cur.fetchall():
+        d = json.loads(r["data"])
+        out.append({"ts": r["ts"], "interfaces": d.get("interfaces", []),
+                    "top_talkers": d.get("top_talkers", [])})
+    return out
 
 
 # ── Users ────────────────────────────────────────────
