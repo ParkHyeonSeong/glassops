@@ -54,3 +54,86 @@ def parse_proc_net(text: str, proto: str) -> list[dict]:
             "raddr": raddr, "rport": rport, "status": status, "inode": inode,
         })
     return rows
+
+
+import re
+
+_SOCKET_RE = re.compile(r"socket:\[(\d+)\]")
+_FD_SCAN_BUDGET = 200_000   # cap fds inspected per call (high-fd hosts)
+_scan_degraded = 0          # bumped + logged when the budget is hit
+
+
+def build_inode_pid_map(host_proc: str, wanted: set[int] | None = None,
+                        budget: int = _FD_SCAN_BUDGET) -> dict[int, tuple[int, str]]:
+    """Map socket inode -> (pid, comm) by scanning <host_proc>/<pid>/fd/*.
+
+    When `wanted` is given, only those inodes are resolved and the scan stops as
+    soon as all are found — so steady state (no new connections) costs almost
+    nothing (review P2). `budget` caps total fds inspected; on overflow the scan
+    stops early, logs, and bumps a degraded counter instead of stalling the loop.
+    """
+    global _scan_degraded
+    mapping: dict[int, tuple[int, str]] = {}
+    scanned = 0
+    try:
+        entries = os.listdir(host_proc)
+    except OSError:
+        return mapping
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        if wanted is not None and not (wanted - mapping.keys()):
+            break  # every wanted inode already resolved
+        pid = int(entry)
+        fd_dir = os.path.join(host_proc, entry, "fd")
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue  # process gone or not readable
+        comm = ""
+        for fd in fds:
+            scanned += 1
+            if scanned > budget:
+                _scan_degraded += 1
+                logger.warning("net_audit: fd scan budget %d exceeded; inode map "
+                               "partial (degraded=%d)", budget, _scan_degraded)
+                return mapping
+            try:
+                target = os.readlink(os.path.join(fd_dir, fd))
+            except OSError:
+                continue
+            m = _SOCKET_RE.match(target)
+            if not m:
+                continue
+            inode = int(m.group(1))
+            if wanted is not None and inode not in wanted:
+                continue
+            if not comm:
+                try:
+                    with open(os.path.join(host_proc, entry, "comm")) as f:
+                        comm = f.read().strip()
+                except OSError:
+                    comm = ""
+            mapping[inode] = (pid, comm)
+    return mapping
+
+
+def parse_proc_net_dev(text: str) -> dict[str, dict]:
+    """Parse /proc/net/dev into per-interface counters."""
+    out: dict[str, dict] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        name, _, rest = line.partition(":")
+        name = name.strip()
+        cols = rest.split()
+        if len(cols) < 16:
+            continue
+        try:
+            out[name] = {
+                "bytes_in": int(cols[0]), "packets_in": int(cols[1]),
+                "bytes_out": int(cols[8]), "packets_out": int(cols[9]),
+            }
+        except (ValueError, IndexError):
+            continue
+    return out
