@@ -137,3 +137,94 @@ def parse_proc_net_dev(text: str) -> dict[str, dict]:
         except (ValueError, IndexError):
             continue
     return out
+
+
+from abc import ABC, abstractmethod
+from typing import NamedTuple
+
+_PROTOS = ("tcp", "tcp6", "udp", "udp6")
+
+
+class Snapshot(NamedTuple):
+    conns: list          # list[dict]
+    ok: bool             # False -> source could not be read this tick
+    reason: str = ""     # degraded reason when not ok
+
+
+class ConnectionSource(ABC):
+    """Pluggable source of the host connection table. Default impl parses
+    /host/proc/<netns_pid>/net/*; future impls could use conntrack or eBPF."""
+
+    @abstractmethod
+    def snapshot(self) -> Snapshot: ...
+
+    @abstractmethod
+    def interface_counters(self) -> dict[str, dict]: ...
+
+
+class HostNetnsProcSource(ConnectionSource):
+    def __init__(self, host_proc: str | None = None, netns_pid: int = 1):
+        self._proc = host_proc or os.environ.get("HOST_PROC", "/host/proc")
+        self._netns_pid = netns_pid
+        # inode -> (pid, comm) cache. Only NEW connection inodes trigger a scan;
+        # steady state does zero fd scanning (review P2).
+        self._inode_cache: dict[int, tuple[int, str]] = {}
+
+    def _net_path(self, name: str) -> str:
+        return os.path.join(self._proc, str(self._netns_pid), "net", name)
+
+    def _read_proto(self, path: str) -> tuple[str, str | None]:
+        """Read a /proc/net proto table. Returns ("ok", text); ("absent", None) if
+        the file does not exist (optional proto, e.g. IPv6 disabled); or
+        ("error", None) if it exists but could not be read."""
+        try:
+            with open(path) as f:
+                return ("ok", f.read())
+        except FileNotFoundError:
+            return ("absent", None)
+        except OSError:
+            logger.debug("net_audit: could not read %s", path)
+            return ("error", None)
+
+    def _read(self, path: str) -> str | None:
+        """Return file text, or None if unreadable (used for /net/dev)."""
+        try:
+            with open(path) as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def snapshot(self) -> Snapshot:
+        states = {p: self._read_proto(self._net_path(p)) for p in _PROTOS}
+        # Complete-or-skip (review P1): a PARTIAL read must NOT be diffed — the missing
+        # proto's live connections would all look closed (then re-open when it recovers).
+        # `tcp` is the availability canary (present on every Linux netns); if it is absent
+        # or unreadable, the whole host netns is unavailable this tick. We NEVER fall back
+        # to the container's own netns via psutil (review P1).
+        if states["tcp"][0] != "ok":
+            return Snapshot([], ok=False, reason=f"tcp table {states['tcp'][0]}")
+        # Any OTHER proto that EXISTS but failed to read ("error") is a partial failure
+        # -> skip the whole tick. A genuinely-absent optional proto ("absent", e.g.
+        # tcp6/udp6 on an IPv6-disabled host) contributes nothing and is tolerated.
+        for proto in ("tcp6", "udp", "udp6"):
+            if states[proto][0] == "error":
+                return Snapshot([], ok=False, reason=f"{proto} table unreadable")
+        rows: list[dict] = []
+        for proto in _PROTOS:
+            state, text = states[proto]
+            if state == "ok":
+                rows.extend(parse_proc_net(text, proto))
+        wanted = {r["inode"] for r in rows if r.get("inode")}
+        missing = wanted - self._inode_cache.keys()
+        if missing:
+            self._inode_cache.update(build_inode_pid_map(self._proc, wanted=missing))
+        # Drop entries whose sockets are gone so the cache can't grow unbounded.
+        self._inode_cache = {i: v for i, v in self._inode_cache.items() if i in wanted}
+        for r in rows:
+            pid, pname = self._inode_cache.get(r["inode"], (None, ""))
+            r["pid"] = pid
+            r["pname"] = pname
+        return Snapshot(rows, ok=True)
+
+    def interface_counters(self) -> dict[str, dict]:
+        return parse_proc_net_dev(self._read(self._net_path("dev")) or "")
