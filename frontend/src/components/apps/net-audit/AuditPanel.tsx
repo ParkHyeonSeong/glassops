@@ -11,6 +11,7 @@ import { useMetricsStore } from "../../../stores/metricsStore";
 import { fetchWithAuth } from "../../../utils/api";
 
 interface NetAuditEvent {
+  id: number;
   ts: number;
   event: "open" | "close";
   proto: string;
@@ -82,9 +83,14 @@ export default function AuditPanel() {
   const [portFilter, setPortFilter] = useState("");
   const [pidFilter, setPidFilter] = useState("");
 
-  const buildEventsUrl = useCallback((before?: number) => {
+  const buildEventsUrl = useCallback((beforeTs?: number, beforeId?: number) => {
     const params = new URLSearchParams({ limit: String(EVENTS_PAGE_SIZE) });
-    if (before !== undefined) params.set("before", String(before));
+    // Keyset cursor (ts, id): a ts-only cursor could skip same-ts rows past the page
+    // boundary (all events of one collect tick share a ts) — see backend (review P2).
+    if (beforeTs !== undefined && beforeId !== undefined) {
+      params.set("before_ts", String(beforeTs));
+      params.set("before_id", String(beforeId));
+    }
     if (raddrFilter.trim()) params.set("raddr", raddrFilter.trim());
     if (portFilter.trim()) params.set("port", portFilter.trim());
     if (pidFilter.trim()) params.set("pid", pidFilter.trim());
@@ -137,8 +143,8 @@ export default function AuditPanel() {
     if (!agentId || events.length === 0) return;
     setLoadingMore(true);
     try {
-      const oldestTs = events[events.length - 1].ts;
-      const res = await fetchWithAuth(buildEventsUrl(oldestTs));
+      const oldest = events[events.length - 1];
+      const res = await fetchWithAuth(buildEventsUrl(oldest.ts, oldest.id));
       if (res.status === 403) {
         setNotice(ADMIN_REQUIRED_NOTICE);
         setHasMore(false);
@@ -288,8 +294,8 @@ export default function AuditPanel() {
                 </tr>
               </thead>
               <tbody>
-                {events.map((e, i) => (
-                  <tr key={`${e.ts}-${e.event}-${e.laddr}-${e.lport}-${e.raddr}-${e.rport}-${e.pid}-${i}`}>
+                {events.map((e) => (
+                  <tr key={e.id}>
                     <td className="net-conn-addr">{new Date(e.ts * 1000).toLocaleString()}</td>
                     <td>
                       <span className={`net-conn-status ${e.event === "open" ? "net-conn-est" : "net-conn-other"}`}>

@@ -16,15 +16,17 @@ _DURATIONS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 259200
 
 
 @router.get("/{agent_id}/events")
-async def events(agent_id: str = _AGENT_ID, before: float | None = None,
-                 limit: int = Query(200, ge=1, le=1000),
+async def events(agent_id: str = _AGENT_ID, before_ts: float | None = None,
+                 before_id: int | None = None, limit: int = Query(200, ge=1, le=1000),
                  proto: str | None = None, raddr: str | None = None,
                  port: int | None = None, pid: int | None = None,
                  actor: str = Depends(require_admin)):
     # limit is bounded by Query (ge=1, le=1000); get_net_conn_events also clamps as
     # defence-in-depth so a negative value can never become an unbounded LIMIT (P2).
-    rows = await get_net_conn_events(agent_id, before=before, limit=limit,
-                                     proto=proto, raddr=raddr, port=port, pid=pid)
+    # (before_ts, before_id) is a keyset cursor: same-ts rows can exceed one page, so a
+    # ts-only cursor would drop them — the compound cursor pages losslessly (review P2).
+    rows = await get_net_conn_events(agent_id, before_ts=before_ts, before_id=before_id,
+                                     limit=limit, proto=proto, raddr=raddr, port=port, pid=pid)
     await audit(actor, "net_audit.read_events", agent_id,
                 {"count": len(rows), "raddr": raddr, "port": port, "pid": pid})
     return {"agent_id": agent_id, "events": rows}

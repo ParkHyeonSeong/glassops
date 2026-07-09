@@ -41,6 +41,25 @@ async def test_negative_limit_is_clamped(fresh_db):
     assert len(rows) == 1   # clamped to max(1, ...), NOT all 3 (which would be unbounded)
 
 
+async def test_keyset_pagination_no_skip_on_same_ts(fresh_db):
+    # Review P2: all 5 events share one server ts (one collect tick). A ts-only cursor
+    # would drop the same-ts rows beyond the page; the (ts, id) keyset pages losslessly.
+    await db.store_net_audit("a1", 1000.0,
+                             [_ev(raddr=f"10.0.0.{i}", ts=1000.0) for i in range(5)], [])
+    seen = []
+    cursor_ts, cursor_id = None, None
+    for _ in range(3):  # 5 rows, page size 2 -> 3 pages
+        page = await db.get_net_conn_events("a1", before_ts=cursor_ts,
+                                            before_id=cursor_id, limit=2)
+        if not page:
+            break
+        seen.extend(page)
+        cursor_ts, cursor_id = page[-1]["ts"], page[-1]["id"]
+    assert len(seen) == 5                                   # nothing skipped
+    assert len({r["id"] for r in seen}) == 5                # nothing duplicated
+    assert {r["raddr"] for r in seen} == {f"10.0.0.{i}" for i in range(5)}
+
+
 async def test_rollup_upsert(fresh_db):
     roll = {"ts": 60.0, "interfaces": [{"name": "eth0", "bytes_in": 1, "bytes_out": 2}],
             "top_talkers": [{"raddr": "10.0.0.5", "conns": 3}]}

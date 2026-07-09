@@ -569,14 +569,22 @@ async def cleanup_net_audit(event_days: int = 7, rollup_days: int = 30) -> int:
     return deleted
 
 
-async def get_net_conn_events(agent_id: str, before: float | None = None, limit: int = 200,
+async def get_net_conn_events(agent_id: str, before_ts: float | None = None,
+                              before_id: int | None = None, limit: int = 200,
                               proto: str | None = None, raddr: str | None = None,
                               port: int | None = None, pid: int | None = None) -> list:
     db = await get_db()
     clauses = ["agent_id = ?"]
     params: list = [agent_id]
-    if before is not None:
-        clauses.append("ts < ?"); params.append(before)
+    # Keyset pagination on (ts, id): every event from one collect tick shares the same
+    # server ts, and a tick can hold more rows than one page — a ts-only cursor would
+    # skip the same-ts rows past the page boundary. (ts, id) is a stable total order so
+    # no row is skipped or duplicated across pages (review P2).
+    if before_ts is not None and before_id is not None:
+        clauses.append("(ts < ? OR (ts = ? AND id < ?))")
+        params.extend([before_ts, before_ts, before_id])
+    elif before_ts is not None:
+        clauses.append("ts < ?"); params.append(before_ts)
     if proto:
         clauses.append("proto = ?"); params.append(proto)
     if raddr:
@@ -587,8 +595,8 @@ async def get_net_conn_events(agent_id: str, before: float | None = None, limit:
         clauses.append("pid = ?"); params.append(pid)
     params.append(max(1, min(limit, 1000)))  # clamp lower bound too: SQLite LIMIT -1 is unbounded (review P2)
     cur = await db.execute(
-        f"SELECT ts, event, proto, laddr, lport, raddr, rport, status, pid, pname, duration "
-        f"FROM net_conn_events WHERE {' AND '.join(clauses)} ORDER BY ts DESC LIMIT ?",
+        f"SELECT id, ts, event, proto, laddr, lport, raddr, rport, status, pid, pname, duration "
+        f"FROM net_conn_events WHERE {' AND '.join(clauses)} ORDER BY ts DESC, id DESC LIMIT ?",
         params,
     )
     return [dict(r) for r in await cur.fetchall()]
