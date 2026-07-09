@@ -58,6 +58,19 @@ def test_snapshot_ok_false_on_partial_read(tmp_path):
     assert snap.ok is False
 
 
+def test_snapshot_ok_false_when_udp_missing(tmp_path):
+    # Review P3: udp is a REQUIRED proto (present on every Linux netns), so its absence
+    # is a partial read -> ok=False, not a tolerated optional like tcp6/udp6.
+    net = tmp_path / "1" / "net"
+    net.mkdir(parents=True)
+    for n in ("tcp", "tcp6", "udp6"):
+        (net / n).write_text("header\n")
+    (net / "dev").write_text("h\nh\n  eth0: 1 1 0 0 0 0 0 0 2 2 0 0 0 0 0 0\n")
+    # NOTE: no udp file written.
+    snap = HostNetnsProcSource(host_proc=str(tmp_path)).snapshot()
+    assert snap.ok is False
+
+
 def test_snapshot_ok_when_ipv6_protos_absent(tmp_path):
     # IPv6 disabled: tcp6/udp6 files simply don't exist. tcp present -> ok=True, and
     # the absent optional protos are tolerated (not treated as a read failure).

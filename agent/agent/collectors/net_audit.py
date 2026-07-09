@@ -198,15 +198,16 @@ class HostNetnsProcSource(ConnectionSource):
         states = {p: self._read_proto(self._net_path(p)) for p in _PROTOS}
         # Complete-or-skip (review P1): a PARTIAL read must NOT be diffed — the missing
         # proto's live connections would all look closed (then re-open when it recovers).
-        # `tcp` is the availability canary (present on every Linux netns); if it is absent
-        # or unreadable, the whole host netns is unavailable this tick. We NEVER fall back
-        # to the container's own netns via psutil (review P1).
-        if states["tcp"][0] != "ok":
-            return Snapshot([], ok=False, reason=f"tcp table {states['tcp'][0]}")
-        # Any OTHER proto that EXISTS but failed to read ("error") is a partial failure
-        # -> skip the whole tick. A genuinely-absent optional proto ("absent", e.g.
-        # tcp6/udp6 on an IPv6-disabled host) contributes nothing and is tolerated.
-        for proto in ("tcp6", "udp", "udp6"):
+        # `tcp` and `udp` are present on every Linux netns, so they are REQUIRED: if either
+        # is absent or unreadable, the host netns view is partial and we skip this tick
+        # (review P1/P3). We NEVER fall back to the container's own netns via psutil.
+        for proto in ("tcp", "udp"):
+            if states[proto][0] != "ok":
+                return Snapshot([], ok=False, reason=f"{proto} table {states[proto][0]}")
+        # tcp6/udp6 are OPTIONAL (IPv6 may be disabled, so the file is genuinely absent):
+        # only a present-but-unreadable ("error") table is a partial failure. A truly-
+        # absent ("absent") IPv6 table contributes nothing and is tolerated (review P3).
+        for proto in ("tcp6", "udp6"):
             if states[proto][0] == "error":
                 return Snapshot([], ok=False, reason=f"{proto} table unreadable")
         rows: list[dict] = []
