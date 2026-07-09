@@ -75,6 +75,7 @@ export default function AuditPanel() {
 
   // ── Connection events ──
   const [events, setEvents] = useState<NetAuditEvent[]>([]);
+  const [eventsLoaded, setEventsLoaded] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [raddrFilter, setRaddrFilter] = useState("");
@@ -118,6 +119,9 @@ export default function AuditPanel() {
         if (!live) return;
         setEvents([]);
         setHasMore(false);
+      })
+      .finally(() => {
+        if (live) setEventsLoaded(true);
       });
     return () => { live = false; };
   }, [agentId, buildEventsUrl]);
@@ -156,6 +160,7 @@ export default function AuditPanel() {
 
   // ── Bandwidth rollup ──
   const [rollups, setRollups] = useState<NetAuditRollup[]>([]);
+  const [rollupLoaded, setRollupLoaded] = useState(false);
   const [duration, setDuration] = useState<RollupDuration>("24h");
 
   useEffect(() => {
@@ -180,6 +185,9 @@ export default function AuditPanel() {
       .catch(() => {
         if (!live) return;
         setRollups([]);
+      })
+      .finally(() => {
+        if (live) setRollupLoaded(true);
       });
     return () => { live = false; };
   }, [agentId, duration]);
@@ -218,7 +226,7 @@ export default function AuditPanel() {
       <div className="sysmon-chart-card" style={{ minHeight: 260 }}>
         <div className="gpu-controls" style={{ justifyContent: "space-between" }}>
           <span className="sysmon-chart-title">Connection Events</span>
-          <div className="gpu-controls">
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div className="log-search" style={{ minWidth: 140 }}>
               <input
                 className="log-search-input"
@@ -251,7 +259,9 @@ export default function AuditPanel() {
           </div>
         </div>
 
-        {events.length === 0 ? (
+        {!eventsLoaded ? (
+          <EmptyNotice text="Loading…" />
+        ) : events.length === 0 ? (
           <EmptyNotice text={DISABLED_NOTICE} />
         ) : (
           <div className="net-connections">
@@ -316,7 +326,9 @@ export default function AuditPanel() {
           </div>
         </div>
 
-        {chartData.length === 0 ? (
+        {!rollupLoaded ? (
+          <EmptyNotice text="Loading…" />
+        ) : chartData.length === 0 ? (
           <EmptyNotice text={DISABLED_NOTICE} />
         ) : (
           <>
