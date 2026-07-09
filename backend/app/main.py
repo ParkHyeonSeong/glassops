@@ -21,6 +21,7 @@ from app.routers.alerts import router as alerts_router
 from app.routers.settings import router as settings_router
 from app.routers.users import router as users_router
 from app.routers.audit import router as audit_router
+from app.routers.net_audit import router as net_audit_router
 from app.websocket.terminal_ws import handle_terminal_ws
 from app.websocket.docker_logs_ws import handle_docker_logs_ws
 
@@ -109,6 +110,7 @@ app.include_router(alerts_router)
 app.include_router(settings_router)
 app.include_router(users_router)
 app.include_router(audit_router)
+app.include_router(net_audit_router)
 
 
 # ── REST endpoints ──────────────────────────────────────
