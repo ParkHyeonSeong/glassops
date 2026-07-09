@@ -9,6 +9,8 @@ import {
 } from "recharts";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { useMetricsStore } from "../../stores/metricsStore";
+import { useAuthStore } from "../../stores/authStore";
+import AuditPanel from "./net-audit/AuditPanel";
 
 function formatRate(bytesPerSec: number): string {
   if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
@@ -27,7 +29,8 @@ export default function NetworkAnalyzer() {
   const current = useMetricsStore((s) => s.current);
   const history = useMetricsStore((s) => s.history);
   const connected = useMetricsStore((s) => s.connected);
-  const [tab, setTab] = useState<"traffic" | "connections">("traffic");
+  const [tab, setTab] = useState<"traffic" | "connections" | "audit">("traffic");
+  const isAdmin = useAuthStore((s) => s.role) === "admin";
 
   const net = current?.network;
 
@@ -102,10 +105,18 @@ export default function NetworkAnalyzer() {
         >
           Connections ({net.connection_count})
         </button>
+        {isAdmin && (
+          <button
+            className={`net-tab ${tab === "audit" ? "net-tab-active" : ""}`}
+            onClick={() => setTab("audit")}
+          >
+            Audit
+          </button>
+        )}
       </div>
 
       {/* Content */}
-      {tab === "traffic" ? (
+      {tab === "traffic" && (
         <div className="net-chart">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
@@ -154,7 +165,8 @@ export default function NetworkAnalyzer() {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      ) : (
+      )}
+      {tab === "connections" && (
         <div className="net-connections">
           <table className="net-conn-table">
             <thead>
@@ -184,6 +196,7 @@ export default function NetworkAnalyzer() {
           </table>
         </div>
       )}
+      {tab === "audit" && isAdmin && <AuditPanel />}
     </div>
   );
 }
