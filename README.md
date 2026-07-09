@@ -93,6 +93,11 @@ cp .env.example .env
 | `GLASSOPS_TERMINAL_USER` | *(login prompt)* | Host user for web terminal |
 | `GLASSOPS_ALLOWED_IPS` | *(all)* | Comma-separated CIDR whitelist. Matches the **real** client IP — behind an upstream proxy, set `GLASSOPS_TRUSTED_PROXIES` so the whitelist sees through it |
 | `GLASSOPS_TRUSTED_PROXIES` | `127.0.0.1,::1` | CIDRs of upstream proxies whose forwarded headers are believed. Drives backend IP/scheme trust **and** nginx `real_ip`, keeping the whitelist + per-IP rate limits correct behind an LB/TLS proxy |
+| `GLASSOPS_ENABLE_NET_AUDIT` | `false` | Record network connection events + traffic rollups per host (metadata only; admin-only, audit-logged). Off by default |
+| `GLASSOPS_NET_AUDIT_MAX_EVENTS` | `200` | Max connection events the agent emits per collect tick (excess dropped, counted) |
+| `GLASSOPS_NET_AUDIT_TOP_TALKERS` | `20` | Number of top remote peers kept in each per-minute rollup |
+| `GLASSOPS_NET_AUDIT_EVENT_DAYS` | `7` | Retention (days) for raw connection events |
+| `GLASSOPS_NET_AUDIT_ROLLUP_DAYS` | `30` | Retention (days) for per-minute traffic rollups |
 
 > Most settings can also be changed at runtime via **Settings > Server** in the web UI without editing `.env`.
 

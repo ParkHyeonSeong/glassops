@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket, Path
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist, cleanup_audit_log
+from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist, cleanup_audit_log, cleanup_net_audit
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -31,6 +31,12 @@ logger = logging.getLogger("glassops")
 # agent/container identifiers at the routing layer before they reach the DB).
 _AGENT_ID = Path(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
 _CONTAINER_NAME = Path(pattern=r"^[a-zA-Z0-9_.-]{1,128}$")
+
+
+def _net_audit_retention() -> tuple[int, int]:
+    ev = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_EVENT_DAYS", "7")))
+    roll = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_ROLLUP_DAYS", "30")))
+    return ev, roll
 
 
 @asynccontextmanager
@@ -67,6 +73,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                     pruned = await cleanup_audit_log()
                     if pruned:
                         logger.debug("Pruned %d audit rows", pruned)
+
+                    ev_days, roll_days = _net_audit_retention()
+                    await cleanup_net_audit(event_days=ev_days, rollup_days=roll_days)
             except asyncio.CancelledError:
                 raise
             except Exception:
