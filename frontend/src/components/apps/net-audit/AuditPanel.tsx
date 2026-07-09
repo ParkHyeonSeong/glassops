@@ -95,6 +95,13 @@ export default function AuditPanel() {
   useEffect(() => {
     if (!agentId) return;
     let live = true;
+    // Clear the previous host's rows up front so a host switch never shows host A's
+    // connections misattributed to host B while the refetch is in flight
+    // (mirrors LogViewer's eager setLines([]) on source switch).
+    setEvents([]);
+    setHasMore(false);
+    setNotice(null);
+    setEventsLoaded(false);
     fetchWithAuth(buildEventsUrl())
       .then(async (res) => {
         if (!live) return;
@@ -166,6 +173,9 @@ export default function AuditPanel() {
   useEffect(() => {
     if (!agentId) return;
     let live = true;
+    // Clear the previous host's chart/top-talkers up front (see events effect above).
+    setRollups([]);
+    setRollupLoaded(false);
     fetchWithAuth(`/api/net-audit/${agentId}/rollup?duration=${duration}`)
       .then(async (res) => {
         if (!live) return;
