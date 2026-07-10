@@ -9,6 +9,28 @@ import ContainerDetailDrawer from "./ContainerDetailDrawer";
 
 type DockerTab = "containers" | "images" | "volumes" | "networks";
 
+interface DockerImageSummary {
+  id: string;
+  tags: string[];
+  size: number;
+  created: string;
+}
+
+interface DockerVolumeSummary {
+  name: string;
+  driver: string;
+  mountpoint: string;
+}
+
+interface DockerNetworkSummary {
+  id: string;
+  name: string;
+  driver: string;
+  scope: string;
+}
+
+const EMPTY_CONTAINERS: ContainerInfo[] = [];
+
 export default function DockerManager() {
   const [tab, setTab] = useState<DockerTab>("containers");
 
@@ -35,17 +57,12 @@ function ContainersTab() {
   const current = useMetricsStore((s) => s.current);
   const agentId = useMetricsStore((s) => s.agentId);
   const openWindow = useWindowStore((s) => s.openWindow);
-  const containers: ContainerInfo[] = current?.containers ?? [];
+  const containers = current?.containers ?? EMPTY_CONTAINERS;
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = containers.find((c) => c.id === selectedId) || null;
-  // Drop the drawer if the selected container disappears from the live list.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (selectedId && !containers.some((c) => c.id === selectedId)) setSelectedId(null);
-  }, [containers, selectedId]);
 
   const doAction = useCallback(async (containerId: string, action: ContainerAction) => {
     setActionLoading(containerId);
@@ -139,7 +156,7 @@ function ContainersTab() {
 
 /* ── Images ── */
 function ImagesTab() {
-  const [images, setImages] = useState<any[]>([]);
+  const [images, setImages] = useState<DockerImageSummary[]>([]);
   useEffect(() => {
     fetchWithAuth("/api/docker/images").then((r) => r.json()).then((d) => setImages(d.images || [])).catch(() => {});
   }, []);
@@ -161,7 +178,7 @@ function ImagesTab() {
 
 /* ── Volumes ── */
 function VolumesTab() {
-  const [volumes, setVolumes] = useState<any[]>([]);
+  const [volumes, setVolumes] = useState<DockerVolumeSummary[]>([]);
   useEffect(() => {
     fetchWithAuth("/api/docker/volumes").then((r) => r.json()).then((d) => setVolumes(d.volumes || [])).catch(() => {});
   }, []);
@@ -183,7 +200,7 @@ function VolumesTab() {
 
 /* ── Networks ── */
 function NetworksTab() {
-  const [networks, setNetworks] = useState<any[]>([]);
+  const [networks, setNetworks] = useState<DockerNetworkSummary[]>([]);
   useEffect(() => {
     fetchWithAuth("/api/docker/networks").then((r) => r.json()).then((d) => setNetworks(d.networks || [])).catch(() => {});
   }, []);

@@ -13,7 +13,7 @@ const SNAP_EDGE = 8;
 
 type SnapZone = "left" | "right" | null;
 
-function detectSnapZone(x: number, _y: number): SnapZone {
+function detectSnapZone(x: number): SnapZone {
   const screenW = globalThis.innerWidth;
   if (x <= SNAP_EDGE) return "left";
   if (x >= screenW - SNAP_EDGE) return "right";
@@ -71,10 +71,10 @@ export default function Window({ window: win, children }: WindowProps) {
         style={{ zIndex: win.zIndex }}
         onDragStart={() => focusWindow(win.id)}
         onDrag={(_e, d) => {
-          setSnapPreview(detectSnapZone(d.x, d.y));
+          setSnapPreview(detectSnapZone(d.x));
         }}
         onDragStop={(_e, d) => {
-          const zone = detectSnapZone(d.x, d.y);
+          const zone = detectSnapZone(d.x);
           setSnapPreview(null);
           if (zone === "left" || zone === "right") {
             snapWindow(win.id, zone);

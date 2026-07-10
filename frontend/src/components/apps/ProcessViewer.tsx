@@ -1,9 +1,11 @@
 import { useState, useMemo, useCallback } from "react";
 import { Search, X } from "lucide-react";
-import { useMetricsStore } from "../../stores/metricsStore";
+import { useMetricsStore, type ProcessInfo } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 
 type SortKey = "cpu" | "mem" | "pid" | "name";
+
+const EMPTY_PROCESSES: ProcessInfo[] = [];
 
 export default function ProcessViewer() {
   const current = useMetricsStore((s) => s.current);
@@ -30,7 +32,7 @@ export default function ProcessViewer() {
     setKillTarget(null);
   }, []);
 
-  const processes = current?.processes ?? [];
+  const processes = current?.processes ?? EMPTY_PROCESSES;
 
   const sorted = useMemo(() => {
     let list = [...processes];

@@ -263,13 +263,46 @@ function ServerTab() {
   );
 }
 
+interface EmailConfig {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  from_email: string;
+  to_email: string;
+  use_tls: boolean;
+  start_tls: boolean;
+}
+
+type EmailFieldKey = "host" | "port" | "username" | "password" | "from_email" | "to_email";
+
+interface EmailField {
+  key: EmailFieldKey;
+  label: string;
+  type?: "text" | "number" | "password";
+}
+
 function EmailTab() {
-  const [config, setConfig] = useState({
-    host: "", port: 587, username: "", password: "", from_email: "", to_email: "",
-    use_tls: false, start_tls: true,
+  const [config, setConfig] = useState<EmailConfig>({
+    host: "",
+    port: 587,
+    username: "",
+    password: "",
+    from_email: "",
+    to_email: "",
+    use_tls: false,
+    start_tls: true,
   });
   const [msg, setMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
+
+  const updateEmailField = (key: EmailFieldKey, rawValue: string) => {
+    setConfig((previous) => (
+      key === "port"
+        ? { ...previous, port: Number(rawValue) }
+        : { ...previous, [key]: rawValue }
+    ));
+  };
 
   useEffect(() => {
     fetchWithAuth("/api/alerts/config").then((r) => r.json()).then((d) => {
@@ -298,7 +331,7 @@ function EmailTab() {
 
   if (!loaded) return <p className="settings-hint">Loading...</p>;
 
-  const fields: { key: string; label: string; type?: string }[] = [
+  const fields: EmailField[] = [
     { key: "host", label: "SMTP Host" },
     { key: "port", label: "Port", type: "number" },
     { key: "username", label: "Username" },
@@ -315,8 +348,8 @@ function EmailTab() {
           <label className="settings-label">{f.label}</label>
           <input
             type={f.type || "text"}
-            value={(config as any)[f.key]}
-            onChange={(e) => setConfig((prev) => ({ ...prev, [f.key]: f.type === "number" ? Number(e.target.value) : e.target.value }))}
+            value={config[f.key]}
+            onChange={(event) => updateEmailField(f.key, event.target.value)}
             className="settings-input"
           />
         </div>
