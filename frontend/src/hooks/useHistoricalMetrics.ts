@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { MetricSnapshot } from "../stores/metricsStore";
 import { fetchWithAuth } from "../utils/api";
 
-interface HistoricalResult {
+interface HistoricalActivation {
   key: string | null;
+}
+
+interface HistoricalResult {
+  activation: HistoricalActivation | null;
   metrics: MetricSnapshot[];
 }
 
@@ -12,7 +16,8 @@ export function useHistoricalMetrics(
   range: string,
 ): MetricSnapshot[] {
   const key = agentId && range !== "live" ? `${agentId}\u0000${range}` : null;
-  const [result, setResult] = useState<HistoricalResult>({ key: null, metrics: [] });
+  const activation = useMemo<HistoricalActivation>(() => ({ key }), [key]);
+  const [result, setResult] = useState<HistoricalResult>({ activation: null, metrics: [] });
 
   useEffect(() => {
     if (!key || !agentId) return;
@@ -26,19 +31,19 @@ export function useHistoricalMetrics(
       .then((payload) => {
         if (!cancelled) {
           setResult({
-            key,
+            activation,
             metrics: Array.isArray(payload.metrics) ? payload.metrics : [],
           });
         }
       })
       .catch(() => {
-        if (!cancelled) setResult({ key, metrics: [] });
+        if (!cancelled) setResult({ activation, metrics: [] });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [agentId, key, range]);
+  }, [activation, agentId, key, range]);
 
-  return result.key === key ? result.metrics : [];
+  return result.activation === activation ? result.metrics : [];
 }
