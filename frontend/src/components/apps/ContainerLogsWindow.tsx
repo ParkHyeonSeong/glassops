@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import type { SetStateAction } from "react";
 import { Search, ChevronUp, ChevronDown, X, Calendar } from "lucide-react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
@@ -8,6 +9,41 @@ import { useContainerAction, type ContainerWindowProps } from "./dockerSharedUti
 
 const TAIL_INITIAL = 300;
 const TAIL_MAX = 2000;
+
+interface ContainerLogBuffer {
+  containerId: string | null;
+  logs: string | null;
+}
+
+function useContainerLogBuffer(containerId: string | null) {
+  const activeContainerIdRef = useRef(containerId);
+  useEffect(() => {
+    activeContainerIdRef.current = containerId;
+  }, [containerId]);
+  const [buffer, setBuffer] = useState<ContainerLogBuffer>({
+    containerId,
+    logs: null,
+  });
+
+  const logs = buffer.containerId === containerId ? buffer.logs : null;
+  const updateLogs = useCallback((next: SetStateAction<string | null>) => {
+    const sourceContainerId = containerId;
+    if (sourceContainerId !== activeContainerIdRef.current) return;
+
+    setBuffer((previousBuffer) => {
+      if (sourceContainerId !== activeContainerIdRef.current) return previousBuffer;
+      const previousLogs = previousBuffer.containerId === sourceContainerId
+        ? previousBuffer.logs
+        : null;
+      const nextLogs = typeof next === "function"
+        ? next(previousLogs)
+        : next;
+      return { containerId: sourceContainerId, logs: nextLogs };
+    });
+  }, [containerId]);
+
+  return [logs, updateLogs] as const;
+}
 
 export default function ContainerLogsWindow({ agentId, containerName }: ContainerWindowProps) {
   // Resolve the live container against THIS window's agent — not the currently
@@ -19,7 +55,7 @@ export default function ContainerLogsWindow({ agentId, containerName }: Containe
   const containerId = container?.id ?? null;
   const removed = !container;
 
-  const [logs, setLogs] = useState<string | null>(null);
+  const [logs, setLogs] = useContainerLogBuffer(containerId);
   const [logsLoading, setLogsLoading] = useState(false);
   const action = useContainerAction(agentId, containerId);
   const [keyword, setKeyword] = useState("");
@@ -40,14 +76,7 @@ export default function ContainerLogsWindow({ agentId, containerName }: Containe
 
   const handleLogChunk = useCallback((chunk: string) => {
     setLogs((prev) => (prev ?? "") + chunk);
-  }, []);
-
-  // Container recreated (same name, new id) → drop the previous instance's log
-  // buffer so the user doesn't see two lifecycles concatenated.
-  useEffect(() => {
-    setLogs(null);
-    matchElsRef.current = [];
-  }, [containerId]);
+  }, [setLogs]);
 
   const streamEnabled = !!containerId && !rangeActive && !removed;
   const stream = useLogStream({
@@ -91,7 +120,7 @@ export default function ContainerLogsWindow({ agentId, containerName }: Containe
     }
     if (reqId !== logsRequestIdRef.current) return;
     setLogsLoading(false);
-  }, []);
+  }, [setLogs]);
 
   const applyRange = useCallback(() => {
     if (!containerId) return;
@@ -122,7 +151,7 @@ export default function ContainerLogsWindow({ agentId, containerName }: Containe
     setRangeError(null);
     setLogs("");
     followRef.current = true;
-  }, [containerId]);
+  }, [containerId, setLogs]);
 
   useEffect(() => {
     if (logs === null || !logsRef.current) return;

@@ -66,6 +66,8 @@ export function useLogStream({ containerId, agentId, tail = 300, enabled, onLine
       };
 
       ws.onmessage = (ev) => {
+        if (unmounted) return;
+
         try {
           const msg = JSON.parse(ev.data);
           if (typeof msg.line === "string") {
