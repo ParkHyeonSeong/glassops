@@ -24,8 +24,13 @@ function loadSetting<T>(key: string, fallback: T): T {
   } catch { return fallback; }
 }
 
-function saveSetting(key: string, value: unknown) {
-  try { localStorage.setItem(`glassops_${key}`, JSON.stringify(value)); } catch {}
+export function persistSetting(key: string, value: unknown): boolean {
+  try {
+    localStorage.setItem(`glassops_${key}`, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const defaultThresholds = { cpuWarn: 70, cpuCrit: 90, memWarn: 80, memCrit: 90, diskCrit: 95 };
@@ -36,7 +41,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
 
   setWallpaper: (id) => {
     set({ wallpaper: id });
-    saveSetting("wallpaper", id);
+    persistSetting("wallpaper", id);
   },
 
   setThreshold: (key, value) => {
@@ -49,7 +54,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
       if (key === "cpuCrit" && next.cpuCrit < next.cpuWarn) next.cpuWarn = next.cpuCrit;
       if (key === "memWarn" && next.memWarn > next.memCrit) next.memCrit = next.memWarn;
       if (key === "memCrit" && next.memCrit < next.memWarn) next.memWarn = next.memCrit;
-      saveSetting("thresholds", next);
+      persistSetting("thresholds", next);
       return { alertThresholds: next };
     });
   },
