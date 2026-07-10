@@ -4,18 +4,21 @@ import { useMetricsStore } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 import { StatusBadge, ContainerActionButtons, ContainerRemovedBanner } from "./dockerShared";
 import { useContainerAction, formatBytes, type ContainerWindowProps } from "./dockerSharedUtils";
+import {
+  containerMetricsKey,
+  mergeSamplesByTimestamp,
+  type ContainerSample,
+  type TimeRange,
+} from "./containerMetricsModel";
 
-type TimeRange = "live" | "5m" | "1h" | "6h" | "24h" | "7d";
-type ContainerSample = {
-  t: number;
-  cpu: number;
-  mem: number;
-  mem_limit: number;
-  vram: number;
-  gpu_util: number;
-  gpu_present: boolean;
-};
 type ChartPoint = { t: number; value: number; bytes?: number };
+
+interface ContainerSeriesState {
+  key: string;
+  samples: ContainerSample[];
+  loading: boolean;
+  error: string | null;
+}
 
 const TOOLTIP_STYLE = {
   background: "rgba(20,20,40,0.9)",
@@ -58,48 +61,69 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const removed = !container;
 
   const [range, setRange] = useState<TimeRange>("1h");
-  const [samples, setSamples] = useState<ContainerSample[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const requestKey = containerMetricsKey(agentId, containerName, range);
+  const [series, setSeries] = useState<ContainerSeriesState>({
+    key: requestKey,
+    samples: [],
+    loading: range !== "live",
+    error: null,
+  });
+  const seriesIsCurrent = series.key === requestKey;
+  const samples = seriesIsCurrent ? series.samples : [];
+  const loading = range !== "live" && (!seriesIsCurrent || series.loading);
+  const error = seriesIsCurrent ? series.error : null;
   const action = useContainerAction(agentId, containerId);
 
   // History fetch on range change (skipped for "live" — it builds from pushes only).
   // Pushes that land during the fetch are preserved by merging on resolve.
   useEffect(() => {
-    setSamples([]);
-    setError(null);
     if (range === "live" || !agentId || !containerName) return;
     let cancelled = false;
-    setLoading(true);
-    fetchWithAuth(`/api/metrics/${agentId}/containers/${encodeURIComponent(containerName)}/range?duration=${range}`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
+    fetchWithAuth(
+      `/api/metrics/${agentId}/containers/${encodeURIComponent(containerName)}/range?duration=${range}`,
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
       })
-      .then((d) => {
+      .then((payload) => {
         if (cancelled) return;
-        const fetched: ContainerSample[] = (d.metrics || []).map((p: ContainerSample & { mem_limit?: number }) => ({
-          t: p.t,
-          cpu: p.cpu ?? 0,
-          mem: p.mem ?? 0,
-          mem_limit: p.mem_limit ?? 0,
-          vram: p.vram ?? 0,
-          gpu_util: p.gpu_util ?? 0,
-          gpu_present: p.gpu_present ?? false,
+        const fetched: ContainerSample[] = (payload.metrics || []).map(
+          (point: ContainerSample & { mem_limit?: number }) => ({
+            t: point.t,
+            cpu: point.cpu ?? 0,
+            mem: point.mem ?? 0,
+            mem_limit: point.mem_limit ?? 0,
+            vram: point.vram ?? 0,
+            gpu_util: point.gpu_util ?? 0,
+            gpu_present: point.gpu_present ?? false,
+          }),
+        );
+        setSeries((previous) => ({
+          key: requestKey,
+          samples: mergeSamplesByTimestamp(
+            fetched,
+            previous.key === requestKey ? previous.samples : [],
+          ),
+          loading: false,
+          error: null,
         }));
-        setSamples((prev) => {
-          // Merge with any live samples that arrived before the fetch resolved,
-          // keeping a single ascending-by-timestamp series.
-          const seen = new Set(fetched.map((s) => s.t));
-          const tail = prev.filter((s) => !seen.has(s.t));
-          if (!tail.length) return fetched;
-          return [...fetched, ...tail].sort((a, b) => a.t - b.t);
-        });
       })
-      .catch(() => { if (!cancelled) setError("Failed to load history"); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [agentId, containerName, range]);
+      .catch(() => {
+        if (!cancelled) {
+          setSeries((previous) => ({
+            key: requestKey,
+            samples: previous.key === requestKey ? previous.samples : [],
+            loading: false,
+            error: "Failed to load history",
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, containerName, range, requestKey]);
 
   // Live tail — applies to every range. Manual identity check on the per-agent
   // snapshot so the listener body only runs when this window's data changes,
@@ -116,9 +140,11 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
       const c = (snap.containers ?? []).find((x) => x.name === containerName);
       if (!c) return;
       const t = snap.timestamp ?? Date.now() / 1000;
-      setSamples((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.t === t) return prev;
+      setSeries((previous) => {
+        const previousSamples = previous.key === requestKey ? previous.samples : [];
+        const last = previousSamples[previousSamples.length - 1];
+        if (last && last.t === t) return previous;
+
         const sample: ContainerSample = {
           t,
           cpu: c.cpu_percent,
@@ -126,21 +152,33 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           mem_limit: c.mem_limit,
           vram: c.gpu?.vram_bytes ?? 0,
           gpu_util: c.gpu?.gpu_util ?? 0,
-          gpu_present: !!c.gpu,
+          gpu_present: Boolean(c.gpu),
         };
-        const next: ContainerSample[] = [...prev, sample];
+        const appended = [...previousSamples, sample];
+        let nextSamples: ContainerSample[];
+
         if (range === "live") {
-          return next.length > LIVE_MAX_SAMPLES ? next.slice(-LIVE_MAX_SAMPLES) : next;
+          nextSamples = appended.length > LIVE_MAX_SAMPLES
+            ? appended.slice(-LIVE_MAX_SAMPLES)
+            : appended;
+        } else {
+          const cutoff = Math.max(t, Date.now() / 1000) - RANGE_WINDOW_SEC[range];
+          const windowed = appended.filter((entry) => entry.t >= cutoff);
+          nextSamples = windowed.length > RANGED_MAX_SAMPLES
+            ? windowed.slice(-RANGED_MAX_SAMPLES)
+            : windowed;
         }
-        // Anchor the cutoff to wall clock so a brief push gap doesn't drop
-        // a chunk of valid samples when the next push lands far in the future.
-        const cutoff = Math.max(t, Date.now() / 1000) - RANGE_WINDOW_SEC[range];
-        const windowed = next.filter((s) => s.t >= cutoff);
-        return windowed.length > RANGED_MAX_SAMPLES ? windowed.slice(-RANGED_MAX_SAMPLES) : windowed;
+
+        return {
+          key: requestKey,
+          samples: nextSamples,
+          loading: previous.key === requestKey ? previous.loading : range !== "live",
+          error: null,
+        };
       });
     });
     return unsubscribe;
-  }, [range, containerName, agentId]);
+  }, [range, containerName, agentId, requestKey]);
 
   const data = samples;
 
