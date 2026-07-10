@@ -362,6 +362,11 @@ denied. This hardens the Docker API path only — the web terminal still enters 
 host namespaces, so dashboard admin remains host-root-equivalent. Recommended for
 public/multi-tenant deployments; for a trusted single-operator LAN it is optional.
 
+## Contributing
+
+GlassOps uses local and pull-request quality gates for Python, frontend, and
+Compose changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and commands.
+
 ## Tech Stack
 
 | Layer | Tech |
