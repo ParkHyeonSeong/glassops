@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Search, RefreshCw, ArrowDown } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 
@@ -9,61 +9,86 @@ interface LogSource {
   container_id?: string;
 }
 
+interface LogResult {
+  queryKey: string;
+  queryVersion: number;
+  refreshVersion: number;
+  lines: string[];
+}
+
 export default function LogViewer() {
   const [sources, setSources] = useState<LogSource[]>([]);
   const [selectedSource, setSelectedSource] = useState<LogSource | null>(null);
-  const [lines, setLines] = useState<string[]>([]);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<LogResult>({
+    queryKey: "",
+    queryVersion: -1,
+    refreshVersion: -1,
+    lines: [],
+  });
+  const [queryVersion, setQueryVersion] = useState(0);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
   const logRef = useRef<HTMLPreElement>(null);
+  const queryKey = selectedSource
+    ? `${selectedSource.type}\u0000${selectedSource.container_id ?? selectedSource.name}\u0000${search}`
+    : "";
+  const resultIsCurrent = result.queryKey === queryKey
+    && result.queryVersion === queryVersion;
+  const lines = useMemo(
+    () => (resultIsCurrent ? result.lines : []),
+    [result.lines, resultIsCurrent],
+  );
+  const loading = Boolean(selectedSource) && (
+    !resultIsCurrent || result.refreshVersion !== refreshVersion
+  );
 
   // Fetch sources
   useEffect(() => {
     fetchWithAuth("/api/logs/sources")
       .then((r) => r.json())
-      .then((d) => {
-        setSources(d.sources || []);
-        if (d.sources?.length > 0 && !selectedSource) {
-          setSelectedSource(d.sources[0]);
-        }
+      .then((payload) => {
+        const nextSources: LogSource[] = Array.isArray(payload.sources) ? payload.sources : [];
+        setSources(nextSources);
+        setSelectedSource((previous) => previous ?? nextSources[0] ?? null);
       })
       .catch(() => {});
   }, []);
 
-  const fetchLogs = useCallback(async () => {
-    if (!selectedSource) return;
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        source_type: selectedSource.type,
-        name: selectedSource.type === "docker"
-          ? (selectedSource.container_id || selectedSource.name)
-          : selectedSource.name,
-        tail: "500",
-        search,
-      });
-      const res = await fetchWithAuth(`/api/logs/read?${params}`);
-      if (res.ok) {
-        const data = await res.json();
-        setLines(data.lines?.length ? data.lines : ["No logs available"]);
-      } else if (res.status === 403) {
-        setLines(["Permission denied — log file is not readable"]);
-      } else if (res.status === 404) {
-        setLines(["Log source not found"]);
-      } else {
-        setLines([`Error: ${res.status}`]);
-      }
-    } catch {
-      setLines(["Failed to load logs"]);
-    }
-    setLoading(false);
-  }, [selectedSource, search]);
-
-  // Fetch on source/search change
   useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+    if (!selectedSource || !queryKey) return;
+    let cancelled = false;
+
+    const params = new URLSearchParams({
+      source_type: selectedSource.type,
+      name: selectedSource.type === "docker"
+        ? (selectedSource.container_id || selectedSource.name)
+        : selectedSource.name,
+      tail: "500",
+      search,
+    });
+
+    fetchWithAuth(`/api/logs/read?${params}`)
+      .then(async (response) => {
+        if (response.ok) {
+          const payload = await response.json();
+          return payload.lines?.length ? payload.lines : ["No logs available"];
+        }
+        if (response.status === 403) return ["Permission denied — log file is not readable"];
+        if (response.status === 404) return ["Log source not found"];
+        return [`Error: ${response.status}`];
+      })
+      .catch(() => ["Failed to load logs"])
+      .then((nextLines: string[]) => {
+        if (!cancelled) {
+          setResult({ queryKey, queryVersion, refreshVersion, lines: nextLines });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [queryKey, queryVersion, refreshVersion, search, selectedSource]);
 
   // Auto-scroll
   useEffect(() => {
@@ -74,9 +99,11 @@ export default function LogViewer() {
 
   // Auto-refresh every 5s
   useEffect(() => {
-    const timer = setInterval(fetchLogs, 5000);
+    const timer = setInterval(() => {
+      setRefreshVersion((version) => version + 1);
+    }, 5000);
     return () => clearInterval(timer);
-  }, [fetchLogs]);
+  }, [queryKey, queryVersion]);
 
   const highlightLine = (line: string) => {
     if (/error|fatal|panic/i.test(line)) return "log-line-error";
@@ -97,8 +124,8 @@ export default function LogViewer() {
               (s) => `${s.type}:${s.name}` === e.target.value
             );
             if (src) {
-              setLines([]);
               setSelectedSource(src);
+              setQueryVersion((version) => version + 1);
             }
           }}
         >
@@ -115,12 +142,19 @@ export default function LogViewer() {
             type="text"
             placeholder="Search..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setQueryVersion((version) => version + 1);
+            }}
             className="log-search-input"
           />
         </div>
 
-        <button className="log-toolbar-btn" onClick={fetchLogs} title="Refresh">
+        <button
+          className="log-toolbar-btn"
+          onClick={() => setRefreshVersion((version) => version + 1)}
+          title="Refresh"
+        >
           <RefreshCw size={13} className={loading ? "log-spin" : ""} />
         </button>
         <button
