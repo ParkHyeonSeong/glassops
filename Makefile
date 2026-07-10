@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs refresh-digests
+.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs refresh-digests quality-python quality-frontend quality-compose quality
 
 # Default port
 PORT ?= 7440
@@ -97,3 +97,16 @@ refresh-digests: ## Re-pin base image digests to current upstream (run on a dev 
 	  done; \
 	done
 	@echo "  Done — review 'git diff' and commit."
+
+quality-python: ## Run Python dependency, compile, and test gates
+	python3 -m pip check
+	python3 -m compileall -q backend/app agent/agent tests
+	python3 -m pytest -q
+
+quality-frontend: ## Run strict frontend lint, tests, and production build
+	npm --prefix frontend run quality
+
+quality-compose: ## Validate every supported Compose combination and entrypoint syntax
+	./scripts/validate-compose.sh
+
+quality: quality-python quality-frontend quality-compose ## Run all local CI-equivalent gates
