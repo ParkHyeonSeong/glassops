@@ -2,9 +2,10 @@ import { useId, useMemo, useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { useMetricsStore, type GpuMetrics } from "../../stores/metricsStore";
-import { fetchWithAuth } from "../../utils/api";
-import { useEffect } from "react";
+import {
+  useMetricsStore, type GpuMetrics, type MetricSnapshot,
+} from "../../stores/metricsStore";
+import { useHistoricalMetrics } from "../../hooks/useHistoricalMetrics";
 
 type Tab = "overview" | "detail" | "processes";
 type TimeRange = "live" | "5m" | "1h" | "6h" | "24h" | "7d";
@@ -50,18 +51,6 @@ function GpuCard({ gpu, selected, onClick }: { gpu: GpuMetrics; selected: boolea
   );
 }
 
-function useHistoricalGpu(agentId: string | null, range: TimeRange) {
-  const [data, setData] = useState<any[]>([]);
-  useEffect(() => {
-    if (!agentId || range === "live") { setData([]); return; }
-    fetchWithAuth(`/api/metrics/${agentId}/range?duration=${range}`)
-      .then((r) => r.json())
-      .then((d) => setData(d.metrics || []))
-      .catch(() => setData([]));
-  }, [agentId, range]);
-  return data;
-}
-
 export default function GpuMonitor() {
   const current = useMetricsStore((s) => s.current);
   const history = useMetricsStore((s) => s.history);
@@ -71,7 +60,7 @@ export default function GpuMonitor() {
   const [timeRange, setTimeRange] = useState<TimeRange>("live");
   const [selectedGpu, setSelectedGpu] = useState(0);
 
-  const historicalData = useHistoricalGpu(agentId, timeRange);
+  const historicalData = useHistoricalMetrics(agentId, timeRange);
   const activeHistory = timeRange === "live" ? history : historicalData;
 
   const gpus = current?.gpu ?? [];
@@ -134,15 +123,15 @@ export default function GpuMonitor() {
 }
 
 function GpuDetailCharts({ history, gpuIndex, timeRange, gpuCount, onSelectGpu }: {
-  history: any[]; gpuIndex: number; timeRange: TimeRange; gpuCount: number; onSelectGpu: (i: number) => void;
+  history: MetricSnapshot[]; gpuIndex: number; timeRange: TimeRange; gpuCount: number; onSelectGpu: (i: number) => void;
 }) {
   const gradId = useId();
 
   const data = useMemo(() =>
-    history.map((m: any) => {
-      const gpu = (m.gpu ?? [])[gpuIndex];
+    history.map((metric) => {
+      const gpu = (metric.gpu ?? [])[gpuIndex];
       return {
-        t: m.timestamp ?? 0,
+        t: metric.timestamp ?? 0,
         util: gpu?.gpu_util ?? 0,
         mem: gpu?.mem_util ?? 0,
         temp: gpu?.temperature ?? 0,
