@@ -15,12 +15,12 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
-if [ ! -e .env ]; then
+if [ ! -e .env ] && [ ! -L .env ]; then
   cp .env.example .env
   created_env=1
 fi
 
-if [ ! -e agent.env ]; then
+if [ ! -e agent.env ] && [ ! -L agent.env ]; then
   cp agent.env.example agent.env
   created_agent_env=1
 fi
