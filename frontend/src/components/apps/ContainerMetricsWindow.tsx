@@ -5,6 +5,7 @@ import { fetchWithAuth } from "../../utils/api";
 import { StatusBadge, ContainerActionButtons, ContainerRemovedBanner } from "./dockerShared";
 import { useContainerAction, formatBytes, type ContainerWindowProps } from "./dockerSharedUtils";
 import {
+  constrainContainerSamples,
   containerMetricsKey,
   mergeSamplesByTimestamp,
   type ContainerSample,
@@ -13,8 +14,12 @@ import {
 
 type ChartPoint = { t: number; value: number; bytes?: number };
 
-interface ContainerSeriesState {
+interface ContainerSeriesActivation {
   key: string;
+}
+
+interface ContainerSeriesState {
+  activation: ContainerSeriesActivation;
   samples: ContainerSample[];
   loading: boolean;
   error: string | null;
@@ -27,19 +32,6 @@ const TOOLTIP_STYLE = {
   fontSize: 11,
   color: "#e0e0e0",
 };
-
-// Live mode keeps last N samples; ranged modes slide a time window of these widths.
-const RANGE_WINDOW_SEC: Record<Exclude<TimeRange, "live">, number> = {
-  "5m": 300,
-  "1h": 3600,
-  "6h": 21600,
-  "24h": 86400,
-  "7d": 604800,
-};
-const LIVE_MAX_SAMPLES = 120;
-// Soft cap on ranged-mode buffer. ~600 points renders cleanly at any window
-// size; longer ranges already arrive downsampled so we don't need more.
-const RANGED_MAX_SAMPLES = 600;
 
 function formatChartTime(ts: number, range: TimeRange): string {
   const d = new Date(ts * 1000);
@@ -62,13 +54,14 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
 
   const [range, setRange] = useState<TimeRange>("1h");
   const requestKey = containerMetricsKey(agentId, containerName, range);
+  const activation = useMemo<ContainerSeriesActivation>(() => ({ key: requestKey }), [requestKey]);
   const [series, setSeries] = useState<ContainerSeriesState>({
-    key: requestKey,
+    activation,
     samples: [],
     loading: range !== "live",
     error: null,
   });
-  const seriesIsCurrent = series.key === requestKey;
+  const seriesIsCurrent = series.activation === activation;
   const samples = seriesIsCurrent ? series.samples : [];
   const loading = range !== "live" && (!seriesIsCurrent || series.loading);
   const error = seriesIsCurrent ? series.error : null;
@@ -99,21 +92,25 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
             gpu_present: point.gpu_present ?? false,
           }),
         );
-        setSeries((previous) => ({
-          key: requestKey,
-          samples: mergeSamplesByTimestamp(
-            fetched,
-            previous.key === requestKey ? previous.samples : [],
-          ),
-          loading: false,
-          error: null,
-        }));
+        setSeries((previous) => {
+          const currentSamples = previous.activation === activation ? previous.samples : [];
+          return {
+            activation,
+            samples: constrainContainerSamples(
+              mergeSamplesByTimestamp(fetched, currentSamples),
+              range,
+              Date.now() / 1000,
+            ),
+            loading: false,
+            error: null,
+          };
+        });
       })
       .catch(() => {
         if (!cancelled) {
           setSeries((previous) => ({
-            key: requestKey,
-            samples: previous.key === requestKey ? previous.samples : [],
+            activation,
+            samples: previous.activation === activation ? previous.samples : [],
             loading: false,
             error: "Failed to load history",
           }));
@@ -123,7 +120,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     return () => {
       cancelled = true;
     };
-  }, [agentId, containerName, range, requestKey]);
+  }, [activation, agentId, containerName, range]);
 
   // Live tail — applies to every range. Manual identity check on the per-agent
   // snapshot so the listener body only runs when this window's data changes,
@@ -141,7 +138,8 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
       if (!c) return;
       const t = snap.timestamp ?? Date.now() / 1000;
       setSeries((previous) => {
-        const previousSamples = previous.key === requestKey ? previous.samples : [];
+        const previousIsCurrent = previous.activation === activation;
+        const previousSamples = previousIsCurrent ? previous.samples : [];
         const last = previousSamples[previousSamples.length - 1];
         if (last && last.t === t) return previous;
 
@@ -154,31 +152,21 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           gpu_util: c.gpu?.gpu_util ?? 0,
           gpu_present: Boolean(c.gpu),
         };
-        const appended = [...previousSamples, sample];
-        let nextSamples: ContainerSample[];
-
-        if (range === "live") {
-          nextSamples = appended.length > LIVE_MAX_SAMPLES
-            ? appended.slice(-LIVE_MAX_SAMPLES)
-            : appended;
-        } else {
-          const cutoff = Math.max(t, Date.now() / 1000) - RANGE_WINDOW_SEC[range];
-          const windowed = appended.filter((entry) => entry.t >= cutoff);
-          nextSamples = windowed.length > RANGED_MAX_SAMPLES
-            ? windowed.slice(-RANGED_MAX_SAMPLES)
-            : windowed;
-        }
 
         return {
-          key: requestKey,
-          samples: nextSamples,
-          loading: previous.key === requestKey ? previous.loading : range !== "live",
+          activation,
+          samples: constrainContainerSamples(
+            [...previousSamples, sample],
+            range,
+            Date.now() / 1000,
+          ),
+          loading: previousIsCurrent ? previous.loading : range !== "live",
           error: null,
         };
       });
     });
     return unsubscribe;
-  }, [range, containerName, agentId, requestKey]);
+  }, [activation, range, containerName, agentId]);
 
   const data = samples;
 
