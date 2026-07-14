@@ -210,7 +210,7 @@ describe("ContainerMetricsWindow", () => {
     await act(async () => {
       firstOneHour.resolve(jsonResponse({
         metrics: [{
-          t: 1_000,
+          t: 4_000,
           cpu: 10,
           mem: 256,
           mem_limit: 1024,
