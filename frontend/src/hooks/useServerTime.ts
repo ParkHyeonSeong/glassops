@@ -1,53 +1,24 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
-const SYNC_INTERVAL = 60_000; // re-sync every 60s
+import { useState, useEffect, useCallback } from "react";
+import { ensureServerClockSync, getServerOffsetMs } from "../utils/serverClock";
 
 /**
  * Returns a Date that tracks server time.
- * Fetches server UTC timestamp, computes offset from local clock (RTT-compensated).
+ * Offset sync (RTT-compensated, 60s re-sync) is delegated to the shared
+ * serverClock module so metric windows and clock displays agree.
  * Ticks every minute (at the minute boundary) since display is HH:MM.
  * Falls back to local time if the server is unreachable.
  */
 export function useServerTime() {
-  const [time, setTime] = useState(new Date());
-  const offsetRef = useRef(0);
+  const [time, setTime] = useState(() => new Date(Date.now() + getServerOffsetMs()));
 
   const getServerTime = useCallback(
-    () => new Date(Date.now() + offsetRef.current),
+    () => new Date(Date.now() + getServerOffsetMs()),
     []
   );
 
   useEffect(() => {
+    ensureServerClockSync();
     let cancelled = false;
-
-    const sync = async () => {
-      try {
-        const before = Date.now();
-        const res = await fetch(`${BACKEND_URL}/api/time`);
-        if (!res.ok) return;
-        const data: unknown = await res.json();
-        if (
-          typeof data !== "object" ||
-          data === null ||
-          !("timestamp" in data) ||
-          typeof (data as { timestamp: unknown }).timestamp !== "number"
-        ) {
-          return;
-        }
-        const after = Date.now();
-        const rtt = after - before;
-        const serverMs = (data as { timestamp: number }).timestamp * 1000 + rtt / 2;
-        if (!cancelled) {
-          offsetRef.current = serverMs - after;
-        }
-      } catch {
-        // keep current offset (0 = local time if never synced)
-      }
-    };
-
-    sync();
-    const syncTimer = setInterval(sync, SYNC_INTERVAL);
 
     // Tick at next minute boundary, then every 60s
     const now = getServerTime();
@@ -66,7 +37,6 @@ export function useServerTime() {
 
     return () => {
       cancelled = true;
-      clearInterval(syncTimer);
       clearTimeout(alignTimeout);
       if (minuteInterval) clearInterval(minuteInterval);
     };
