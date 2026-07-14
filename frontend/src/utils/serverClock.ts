@@ -5,6 +5,7 @@ type ClockListener = () => void;
 
 let offsetMs = 0;
 let syncGeneration = 0;
+let syncInFlight = false;
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<ClockListener>();
 
@@ -16,6 +17,8 @@ const listeners = new Set<ClockListener>();
  */
 export async function syncServerClock(): Promise<void> {
   const generation = ++syncGeneration;
+  syncInFlight = true;
+  let updated = false;
   try {
     const before = Date.now();
     const res = await fetch(`${BACKEND_URL}/api/time`);
@@ -25,7 +28,7 @@ export async function syncServerClock(): Promise<void> {
       typeof data !== "object" ||
       data === null ||
       !("timestamp" in data) ||
-      typeof (data as { timestamp: unknown }).timestamp !== "number"
+      !Number.isFinite((data as { timestamp: unknown }).timestamp)
     ) {
       return;
     }
@@ -35,9 +38,19 @@ export async function syncServerClock(): Promise<void> {
     const after = Date.now();
     const rtt = after - before;
     offsetMs = (data as { timestamp: number }).timestamp * 1000 + rtt / 2 - after;
-    for (const listener of listeners) listener();
+    updated = true;
   } catch {
     // keep last known offset; 0 means local-clock fallback
+  } finally {
+    if (generation === syncGeneration) syncInFlight = false;
+  }
+  if (!updated) return;
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch {
+      // one broken subscriber must not starve the others
+    }
   }
 }
 
@@ -45,7 +58,7 @@ export function ensureServerClockSync(): void {
   if (syncTimer !== null) return;
   void syncServerClock();
   syncTimer = setInterval(() => {
-    void syncServerClock();
+    if (!syncInFlight) void syncServerClock();
   }, SYNC_INTERVAL_MS);
 }
 
@@ -67,6 +80,7 @@ export function serverNowSeconds(): number {
 export function _resetServerClockForTest(): void {
   offsetMs = 0;
   syncGeneration += 1;
+  syncInFlight = false;
   if (syncTimer !== null) {
     clearInterval(syncTimer);
     syncTimer = null;
