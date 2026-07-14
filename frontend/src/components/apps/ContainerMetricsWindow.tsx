@@ -4,7 +4,10 @@ import { useMetricsStore } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
 import { StatusBadge, ContainerActionButtons, ContainerRemovedBanner } from "./dockerShared";
 import { useContainerAction, formatBytes, type ContainerWindowProps } from "./dockerSharedUtils";
+import { serverNowSeconds } from "../../utils/serverClock";
+import { useServerNow } from "../../hooks/useServerNow";
 import {
+  boundContainerSamples,
   constrainContainerSamples,
   containerMetricsKey,
   mergeSamplesByTimestamp,
@@ -53,6 +56,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const removed = !container;
 
   const [range, setRange] = useState<TimeRange>("1h");
+  const serverNow = useServerNow();
   const requestKey = containerMetricsKey(agentId, containerName, range);
   const activation = useMemo<ContainerSeriesActivation>(() => ({ key: requestKey }), [requestKey]);
   const [series, setSeries] = useState<ContainerSeriesState>({
@@ -62,7 +66,10 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     error: null,
   });
   const seriesIsCurrent = series.activation === activation;
-  const samples = seriesIsCurrent ? series.samples : [];
+  const samples = useMemo(
+    () => (seriesIsCurrent ? series.samples : []),
+    [seriesIsCurrent, series.samples],
+  );
   const loading = range !== "live" && (!seriesIsCurrent || series.loading);
   const error = seriesIsCurrent ? series.error : null;
   const action = useContainerAction(agentId, containerId);
@@ -96,10 +103,9 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           const currentSamples = previous.activation === activation ? previous.samples : [];
           return {
             activation,
-            samples: constrainContainerSamples(
+            samples: boundContainerSamples(
               mergeSamplesByTimestamp(fetched, currentSamples),
               range,
-              Date.now() / 1000,
             ),
             loading: false,
             error: null,
@@ -136,7 +142,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
       if (!snap) return;
       const c = (snap.containers ?? []).find((x) => x.name === containerName);
       if (!c) return;
-      const t = snap.timestamp ?? Date.now() / 1000;
+      const t = snap.timestamp ?? serverNowSeconds();
       setSeries((previous) => {
         const previousIsCurrent = previous.activation === activation;
         const previousSamples = previousIsCurrent ? previous.samples : [];
@@ -155,11 +161,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
 
         return {
           activation,
-          samples: constrainContainerSamples(
-            [...previousSamples, sample],
-            range,
-            Date.now() / 1000,
-          ),
+          samples: boundContainerSamples([...previousSamples, sample], range),
           loading: previousIsCurrent ? previous.loading : range !== "live",
           error: null,
         };
@@ -168,7 +170,10 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     return unsubscribe;
   }, [activation, range, containerName, agentId]);
 
-  const data = samples;
+  const data = useMemo(
+    () => constrainContainerSamples(samples, range, serverNow),
+    [samples, range, serverNow],
+  );
 
   const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
   const memPctData = useMemo<ChartPoint[]>(
