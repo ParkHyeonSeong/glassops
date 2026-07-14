@@ -138,4 +138,27 @@ describe("serverClock", () => {
 
     expect(serverNowSeconds()).toBe(1_000);
   });
+
+  it("rejects a timestamp whose millisecond conversion overflows", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    // 1e308은 Number.isFinite를 통과하지만 *1000에서 Infinity로 오버플로한다.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"timestamp":1e308}')));
+
+    await syncServerClock();
+
+    expect(serverNowSeconds()).toBe(1_000);
+  });
+
+  it("rejects non-positive timestamps and sends a timeout signal", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response('{"timestamp":-5}'));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await syncServerClock();
+
+    expect(serverNowSeconds()).toBe(1_000);
+    // 영원히 settle되지 않는 요청이 single-flight 슬롯을 세션 내내 잡아두지
+    // 않도록 모든 sync 요청은 timeout signal을 가져야 한다.
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  });
 });
