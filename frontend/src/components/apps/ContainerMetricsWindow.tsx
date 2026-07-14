@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { fetchWithAuth } from "../../utils/api";
@@ -8,9 +8,12 @@ import { serverNowSeconds } from "../../utils/serverClock";
 import { useServerNow } from "../../hooks/useServerNow";
 import {
   boundContainerSamples,
+  collapseByEffectiveTime,
   constrainContainerSamples,
   containerMetricsKey,
+  effectiveSampleTime,
   mergeSamplesByTimestamp,
+  RANGE_WINDOW_SEC,
   type ContainerSample,
   type TimeRange,
 } from "./containerMetricsModel";
@@ -176,25 +179,38 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   );
 
   const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
+  const chartData = useMemo(
+    () => (range === "live" ? data : collapseByEffectiveTime(data, serverNow)),
+    [data, range, serverNow],
+  );
+  const chartTime = useCallback(
+    (t: number): number =>
+      range === "live" ? t : effectiveSampleTime(t, serverNow),
+    [range, serverNow],
+  );
   const memPctData = useMemo<ChartPoint[]>(
-    () => data.map((d) => ({
-      t: d.t,
+    () => chartData.map((d) => ({
+      t: chartTime(d.t),
       value: d.mem_limit > 0 ? (d.mem / d.mem_limit) * 100 : 0,
       bytes: d.mem,
     })),
-    [data],
+    [chartData, chartTime],
   );
   const cpuData = useMemo<ChartPoint[]>(
-    () => data.map((d) => ({ t: d.t, value: d.cpu })),
-    [data],
+    () => chartData.map((d) => ({ t: chartTime(d.t), value: d.cpu })),
+    [chartData, chartTime],
   );
   const vramData = useMemo<ChartPoint[]>(
-    () => data.map((d) => ({ t: d.t, value: d.vram, bytes: d.vram })),
-    [data],
+    () => chartData.map((d) => ({
+      t: chartTime(d.t),
+      value: d.vram,
+      bytes: d.vram,
+    })),
+    [chartData, chartTime],
   );
   const gpuUtilData = useMemo<ChartPoint[]>(
-    () => data.map((d) => ({ t: d.t, value: d.gpu_util })),
-    [data],
+    () => chartData.map((d) => ({ t: chartTime(d.t), value: d.gpu_util })),
+    [chartData, chartTime],
   );
   // Show GPU charts when reservation/usage was ever observed in the window or on
   // the live container — covers idle reservations and post-allocation periods.
@@ -212,6 +228,9 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     ? 100
     : Math.max(10, memPctData.reduce((m, d) => Math.max(m, d.value), 0) * 1.3);
   const vramYMax = Math.max(1, peakVram * 1.3);
+
+  const xDomain: [number, number] | null =
+    range === "live" ? null : [serverNow - RANGE_WINDOW_SEC[range], serverNow];
 
   return (
     <div className="docker-metrics-view">
@@ -261,7 +280,8 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
             </span>
           </div>
           <ContainerChart data={cpuData} color="var(--color-accent)" range={range}
-            valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakCpu * 1.3)} />
+            valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakCpu * 1.3)}
+            xDomain={xDomain} />
         </div>
 
         <div className="sysmon-chart-card">
@@ -278,6 +298,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
             range={range}
             valueFormatter={(v, p) => `${formatBytes(p?.bytes ?? 0)} (${v.toFixed(1)}%)`}
             yMax={memYMax}
+            xDomain={xDomain}
           />
         </div>
 
@@ -291,7 +312,8 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
                 </span>
               </div>
               <ContainerChart data={gpuUtilData} color="var(--color-gpu-util, #ff6ad5)" range={range}
-                valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakGpuUtil * 1.3)} />
+                valueFormatter={(v) => `${v.toFixed(1)}%`} yMax={Math.max(10, peakGpuUtil * 1.3)}
+                xDomain={xDomain} />
             </div>
 
             <div className="sysmon-chart-card">
@@ -302,7 +324,8 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
                 </span>
               </div>
               <ContainerChart data={vramData} color="var(--color-gpu, #b388ff)" range={range}
-                valueFormatter={(v) => formatBytes(v)} yMax={vramYMax} />
+                valueFormatter={(v) => formatBytes(v)} yMax={vramYMax}
+                xDomain={xDomain} />
             </div>
           </>
         )}
@@ -312,13 +335,14 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
 }
 
 function ContainerChart({
-  data, color, range, valueFormatter, yMax,
+  data, color, range, valueFormatter, yMax, xDomain,
 }: {
   data: ChartPoint[];
   color: string;
   range: TimeRange;
   valueFormatter: (v: number, payload?: ChartPoint) => string;
   yMax: number;
+  xDomain: [number, number] | null;
 }) {
   const gradId = useId();
   return (
@@ -332,6 +356,8 @@ function ContainerChart({
         </defs>
         <XAxis
           dataKey="t"
+          type="number"
+          domain={xDomain ?? ["dataMin", "dataMax"]}
           tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
           tickLine={false}
           axisLine={false}

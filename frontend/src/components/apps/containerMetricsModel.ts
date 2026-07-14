@@ -87,3 +87,24 @@ export function constrainContainerSamples(
     .filter((sample) => effectiveSampleTime(sample.t, serverNow) >= cutoff)
     .slice(-RANGED_MAX_SAMPLES);
 }
+
+/**
+ * Chart-only view: samples whose effective time collapses to the same X
+ * position (future samples clamped to serverNow) are represented by the
+ * one with the largest raw t — the newest reading. Recharts' axis tooltip
+ * picks the first payload matching a label, so leaving the overlap in
+ * place would show the OLDEST overlapped value at the right edge.
+ * Statistics must keep using the full window data, not this view.
+ */
+export function collapseByEffectiveTime(
+  samples: ContainerSample[],
+  serverNow: number,
+): ContainerSample[] {
+  const byEffectiveTime = new Map<number, ContainerSample>();
+  for (const sample of samples) {
+    const key = effectiveSampleTime(sample.t, serverNow);
+    const current = byEffectiveTime.get(key);
+    if (!current || sample.t >= current.t) byEffectiveTime.set(key, sample);
+  }
+  return [...byEffectiveTime.values()].sort((left, right) => left.t - right.t);
+}

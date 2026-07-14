@@ -15,11 +15,17 @@ import ContainerMetricsWindow from "../ContainerMetricsWindow";
 vi.mock("../../../utils/api", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("recharts", () => {
   const Pass = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  const AreaChart = ({ children, data }: { children?: ReactNode; data?: unknown }) => (
+    <div data-testid="area-chart" data-points={JSON.stringify(data)}>{children}</div>
+  );
+  const XAxis = ({ type, domain }: { type?: string; domain?: unknown }) => (
+    <div data-testid="x-axis" data-type={type} data-domain={JSON.stringify(domain)} />
+  );
   return {
-    AreaChart: Pass,
+    AreaChart,
     ResponsiveContainer: Pass,
     Area: () => null,
-    XAxis: () => null,
+    XAxis,
     YAxis: () => null,
     Tooltip: () => null,
   };
@@ -485,5 +491,114 @@ describe("ContainerMetricsWindow", () => {
     });
     // sync 후: cutoff 9_700 → 만료 샘플이 빠지고 정확한 5m 창으로 수렴.
     expect(await screen.findByText(/avg 20\.0% · peak 30\.0%/)).toBeInTheDocument();
+  });
+
+  it("plots ranged charts on a numeric server-clock axis", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 9_760, cpu: 10, mem: 256, mem_limit: 1024, vram: 100, gpu_util: 5, gpu_present: true },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+    // 지속적으로 빠른 agent: 미래 샘플 3개가 모두 serverNow(10_000)로 클램프된다.
+    for (const [timestamp, cpu] of [[10_100, 40], [10_200, 60], [10_299, 80]] as const) {
+      act(() => {
+        useMetricsStore.getState().pushMetrics(
+          "agent-a",
+          makeMetricSnapshot({
+            timestamp,
+            containers: [makeContainer({
+              name: "worker",
+              cpu_percent: cpu,
+              gpu: { vram_bytes: 200, gpu_util: 7 },
+            })],
+          }),
+        );
+      });
+    }
+
+    const axes = screen.getAllByTestId("x-axis");
+    expect(axes).toHaveLength(4); // CPU, Memory, GPU Util, GPU VRAM
+    for (const axis of axes) {
+      expect(axis.dataset.type).toBe("number");
+      expect(JSON.parse(axis.dataset.domain ?? "null")).toEqual([9_700, 10_000]);
+    }
+
+    const charts = screen.getAllByTestId("area-chart");
+    expect(charts).toHaveLength(4);
+    for (const chart of charts) {
+      const points = JSON.parse(chart.dataset.points ?? "[]") as { t: number }[];
+      // raw t 9_760은 그대로, 겹친 미래 샘플 3개는 하나의 클램프 점(10_000)으로
+      // 대표된다. 정확한 배열 단언이라 미래 샘플이 누락([9_760])되거나 겹친
+      // 점이 남으면([9_760, 10_000, 10_000, 10_000]) 실패한다.
+      expect(points.map(({ t }) => t)).toEqual([9_760, 10_000]);
+    }
+
+    // 같은 X로 겹친 샘플의 차트 대표값은 raw t가 가장 큰 최신 샘플(cpu 80)이다.
+    // Recharts axis Tooltip이 동일 label의 첫 payload를 선택하므로, 대표값이
+    // 최신이 아니면 Tooltip이 오래된 값을 보여 avg/peak와 어긋난다.
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([
+      { t: 9_760, value: 10 },
+      { t: 10_000, value: 80 },
+    ]);
+
+    // 통계는 collapse 전의 전체 창 데이터로 계산된다: (10+40+60+80)/4 = 47.5.
+    expect(screen.getByText(/avg 47\.5% · peak 80\.0%/)).toBeInTheDocument();
+  });
+
+  it("keeps future-skewed live samples distinct in live mode", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation(() => oneHour.promise);
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+
+    for (const [timestamp, cpu] of [[10_100, 40], [10_200, 60], [10_299, 80]] as const) {
+      act(() => {
+        useMetricsStore.getState().pushMetrics(
+          "agent-a",
+          makeMetricSnapshot({
+            timestamp,
+            containers: [makeContainer({ name: "worker", cpu_percent: cpu })],
+          }),
+        );
+      });
+    }
+
+    // Live 축은 numeric + dataMin~dataMax — ranged domain이 잘못 적용되면
+    // raw 미래 점 3개가 domain 밖으로 밀려 그래프에서 숨겨질 수 있다.
+    const axes = screen.getAllByTestId("x-axis");
+    expect(axes).toHaveLength(2); // CPU + Memory (GPU 없음)
+    for (const axis of axes) {
+      expect(axis.dataset.type).toBe("number");
+      expect(JSON.parse(axis.dataset.domain ?? "null")).toEqual(["dataMin", "dataMax"]);
+    }
+
+    // Live 차트는 클램프·collapse 없이 raw t 세 점을 모두 유지해야 한다 —
+    // 시계 빠른 agent에서 Live 그래프가 한 점으로 붕괴하면 안 된다.
+    const charts = screen.getAllByTestId("area-chart");
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([
+      { t: 10_100, value: 40 },
+      { t: 10_200, value: 60 },
+      { t: 10_299, value: 80 },
+    ]);
+    expect(screen.getByText(/avg 60\.0% · peak 80\.0%/)).toBeInTheDocument();
   });
 });

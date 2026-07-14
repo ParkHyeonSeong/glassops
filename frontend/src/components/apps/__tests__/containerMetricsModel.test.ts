@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundContainerSamples,
+  collapseByEffectiveTime,
   constrainContainerSamples,
   containerMetricsKey,
   effectiveSampleTime,
@@ -115,5 +116,18 @@ describe("container metrics model", () => {
     expect(live).toHaveLength(120);
     expect(live[0]?.t).toBe(486);
     expect(live.at(-1)?.t).toBe(605);
+  });
+
+  it("collapses clamped chart samples to the newest reading", () => {
+    const samples = [
+      sample(9_760, 10), sample(10_100, 40), sample(10_200, 60), sample(10_299, 80),
+    ];
+    const expected = [[9_760, 10], [10_299, 80]];
+
+    expect(collapseByEffectiveTime(samples, 10_000).map(({ t, cpu }) => [t, cpu]))
+      .toEqual(expected);
+    // 계약은 "raw t 최대 샘플 유지"이지 입력 정렬 의존이 아니다 — 역순도 동일.
+    expect(collapseByEffectiveTime([...samples].reverse(), 10_000)
+      .map(({ t, cpu }) => [t, cpu])).toEqual(expected);
   });
 });
