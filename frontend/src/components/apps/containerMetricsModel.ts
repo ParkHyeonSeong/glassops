@@ -10,7 +10,7 @@ export interface ContainerSample {
   gpu_present: boolean;
 }
 
-const RANGE_WINDOW_SEC: Record<Exclude<TimeRange, "live">, number> = {
+export const RANGE_WINDOW_SEC: Record<Exclude<TimeRange, "live">, number> = {
   "5m": 300,
   "1h": 3600,
   "6h": 21600,
@@ -39,17 +39,51 @@ export function mergeSamplesByTimestamp(
   ].sort((left, right) => left.t - right.t);
 }
 
+export function effectiveSampleTime(t: number, serverNow: number): number {
+  return Math.min(t, serverNow);
+}
+
+/**
+ * Storage bound: first-wins dedup on raw t + sort + count cap. Never trims
+ * by time — the server clock may not be synced yet when data arrives, and
+ * a wrong-clock trim would be irreversible. First-wins preserves both
+ * existing precedence rules: the fetch path merges with fetched samples
+ * first, and the live path appends the new sample after the existing ones.
+ * Time-window membership is a render-time concern (constrainContainerSamples).
+ */
+export function boundContainerSamples(
+  samples: ContainerSample[],
+  range: TimeRange,
+): ContainerSample[] {
+  const seen = new Set<number>();
+  const deduped: ContainerSample[] = [];
+  for (const sample of samples) {
+    if (seen.has(sample.t)) continue;
+    seen.add(sample.t);
+    deduped.push(sample);
+  }
+  deduped.sort((left, right) => left.t - right.t);
+  const cap = range === "live" ? LIVE_MAX_SAMPLES : RANGED_MAX_SAMPLES;
+  return deduped.slice(-cap);
+}
+
+/**
+ * Display window: membership and chart position use effective time
+ * (min(t, serverNow)); the raw canonical t stays untouched — it is the
+ * history/live merge identity. Ingest allows up to +300s of future skew
+ * as canonical data, so the window is defined in canonical time and may
+ * hold up to W+300s of reception-basis data (spec r5, explicit choice).
+ */
 export function constrainContainerSamples(
   samples: ContainerSample[],
   range: TimeRange,
-  now: number,
+  serverNow: number,
 ): ContainerSample[] {
   const sorted = [...samples].sort((left, right) => left.t - right.t);
   if (range === "live") return sorted.slice(-LIVE_MAX_SAMPLES);
 
-  const newestTimestamp = sorted[sorted.length - 1]?.t ?? now;
-  const cutoff = Math.max(newestTimestamp, now) - RANGE_WINDOW_SEC[range];
+  const cutoff = serverNow - RANGE_WINDOW_SEC[range];
   return sorted
-    .filter((sample) => sample.t >= cutoff)
+    .filter((sample) => effectiveSampleTime(sample.t, serverNow) >= cutoff)
     .slice(-RANGED_MAX_SAMPLES);
 }

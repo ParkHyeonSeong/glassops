@@ -251,4 +251,105 @@ describe("ContainerMetricsWindow", () => {
     expect(await screen.findByText(/avg 50\.0% · peak 50\.0%/)).toBeInTheDocument();
     expect(screen.queryByText(/avg 30\.0%/)).not.toBeInTheDocument();
   });
+
+  it("keeps history when a future-skewed live sample arrives", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 9_760, cpu: 10, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0, gpu_present: false },
+          { t: 9_880, cpu: 20, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0, gpu_present: false },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+    expect(await screen.findByText(/avg 15\.0% · peak 20\.0%/)).toBeInTheDocument();
+
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 10_299,
+          containers: [makeContainer({ name: "worker", cpu_percent: 40 })],
+        }),
+      );
+    });
+
+    expect(screen.getByText(/avg 23\.3% · peak 40\.0%/)).toBeInTheDocument();
+  });
+
+  it("merges history with a live sample that leads the clock", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 10_299,
+          containers: [makeContainer({ name: "worker", cpu_percent: 40 })],
+        }),
+      );
+    });
+
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 9_760, cpu: 10, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0, gpu_present: false },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+
+    expect(await screen.findByText(/avg 25\.0% · peak 40\.0%/)).toBeInTheDocument();
+  });
+
+  it("appends a normal sample after a future-skewed one", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 10_299,
+          containers: [makeContainer({ name: "worker", cpu_percent: 40 })],
+        }),
+      );
+    });
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 10_010,
+          containers: [makeContainer({ name: "worker", cpu_percent: 20 })],
+        }),
+      );
+    });
+
+    expect(screen.getByText(/avg 30\.0% · peak 40\.0%/)).toBeInTheDocument();
+  });
 });
