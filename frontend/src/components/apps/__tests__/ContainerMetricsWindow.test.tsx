@@ -554,7 +554,9 @@ describe("ContainerMetricsWindow", () => {
       expect(points.map(({ t }) => t)).toEqual([9_760, 10_000]);
     }
 
-    // 같은 X로 겹친 샘플의 차트 대표값은 raw t가 가장 큰 최신 샘플(cpu 80)이다.
+    // 같은 X로 겹친 샘플의 차트 대표값은 최신 '도착' 샘플이다 — 이 단조 입력
+    // 에서는 마지막 도착이 raw t 최대(cpu 80)와 일치한다. rollback 반례(도착이
+    // t 역순)는 appends 테스트가 고정한다.
     // Recharts axis Tooltip이 동일 label의 첫 payload를 선택하므로, 대표값이
     // 최신이 아니면 Tooltip이 오래된 값을 보여 avg/peak와 어긋난다.
     const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as

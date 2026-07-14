@@ -50,9 +50,10 @@ describe("container metrics model", () => {
     expect(constrainedRange).toHaveLength(600);
     expect(constrainedRange[0]?.t).toBe(1_402);
     expect(constrainedRange.at(-1)?.t).toBe(2_001);
-    expect(constrainedRange.map(({ t }) => t)).toEqual(
-      [...constrainedRange.map(({ t }) => t)].sort((left, right) => left - right),
-    );
+    // constrain은 정렬하지 않는다 — 비단조 '도착' 순서가 그대로 보존된다.
+    const outOfOrder = [sample(1_500, 1), sample(1_450, 2), sample(1_600, 3)];
+    expect(constrainContainerSamples(outOfOrder, "1h", 5_000).map(({ t }) => t))
+      .toEqual([1_500, 1_450, 1_600]);
 
     const live = Array.from({ length: 130 }, (_, index) => sample(index + 1, index));
     const constrainedLive = constrainContainerSamples(live, "live", 5_000);
