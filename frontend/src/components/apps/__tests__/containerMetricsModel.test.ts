@@ -39,10 +39,12 @@ describe("container metrics model", () => {
       5_000,
     ).map(({ t }) => t)).toEqual([1_400]);
 
+    // 도착 순서(시간 오름차순) 입력 — constrainContainerSamples는 이제 내부적으로
+    // 정렬하지 않으므로, 이 테스트는 입력을 도착 순서 그대로 구성한다.
     const ranged = Array.from(
       { length: 603 },
       (_, index) => sample(1_399 + index, index),
-    ).reverse();
+    );
 
     const constrainedRange = constrainContainerSamples(ranged, "1h", 5_000);
     expect(constrainedRange).toHaveLength(600);
@@ -52,7 +54,7 @@ describe("container metrics model", () => {
       [...constrainedRange.map(({ t }) => t)].sort((left, right) => left - right),
     );
 
-    const live = Array.from({ length: 130 }, (_, index) => sample(index + 1, index)).reverse();
+    const live = Array.from({ length: 130 }, (_, index) => sample(index + 1, index));
     const constrainedLive = constrainContainerSamples(live, "live", 5_000);
     expect(constrainedLive).toHaveLength(120);
     expect(constrainedLive[0]?.t).toBe(11);
@@ -85,7 +87,7 @@ describe("container metrics model", () => {
       [sample(10_300, 60), sample(10_299, 50), sample(10_100, 40)],
       "5m",
       10_000,
-    ).map(({ t }) => t)).toEqual([10_100, 10_299, 10_300]);
+    ).map(({ t }) => t)).toEqual([10_300, 10_299, 10_100]);
 
     expect(constrainContainerSamples([], "5m", 10_000)).toEqual([]);
     expect(constrainContainerSamples([], "live", 10_000)).toEqual([]);
@@ -96,38 +98,56 @@ describe("container metrics model", () => {
     expect(effectiveSampleTime(9_900, 10_000)).toBe(9_900);
   });
 
-  it("bounds stored samples by dedup and count only, never by time", () => {
+  it("bounds stored samples by dedup and arrival-order cap only", () => {
+    // 시간 절단 없음 + 정렬 없음: 배열 순서(도착 순서) 보존.
     const stale = [sample(10_299, 50), sample(1_000, 10)];
     expect(boundContainerSamples(stale, "5m").map(({ t }) => t))
-      .toEqual([1_000, 10_299]);
+      .toEqual([10_299, 1_000]);
 
-    // first-wins on raw t: the re-received 10_010 (cpu 70) must be dropped.
+    // first-wins on raw t: 재수신된 10_010(cpu 70)은 버려진다.
     const duplicated = [sample(10_010, 20), sample(10_299, 40), sample(10_010, 70)];
     expect(boundContainerSamples(duplicated, "5m").map(({ t, cpu }) => [t, cpu]))
       .toEqual([[10_010, 20], [10_299, 40]]);
 
+    // cap은 가장 오래된 '도착'을 축출한다 — t가 아니라.
     const overflow = Array.from({ length: 605 }, (_, i) => sample(i + 1, i)).reverse();
     const ranged = boundContainerSamples(overflow, "1h");
     expect(ranged).toHaveLength(600);
-    expect(ranged[0]?.t).toBe(6);
-    expect(ranged.at(-1)?.t).toBe(605);
+    expect(ranged[0]?.t).toBe(600);
+    expect(ranged.at(-1)?.t).toBe(1);
 
     const live = boundContainerSamples(overflow, "live");
     expect(live).toHaveLength(120);
-    expect(live[0]?.t).toBe(486);
-    expect(live.at(-1)?.t).toBe(605);
+    expect(live[0]?.t).toBe(120);
+    expect(live.at(-1)?.t).toBe(1);
   });
 
-  it("collapses clamped chart samples to the newest reading", () => {
-    const samples = [
-      sample(9_760, 10), sample(10_100, 40), sample(10_200, 60), sample(10_299, 80),
-    ];
-    const expected = [[9_760, 10], [10_299, 80]];
+  it("keeps corrected-clock samples when a saturated buffer holds future ones", () => {
+    // agent +299s로 live 버퍼 120개가 미래 t로 포화된 뒤 시계가 보정되어
+    // t=10_001이 도착 — timestamp 정렬 cap이라면 방금 온 샘플이 최솟값이라
+    // 즉시 축출된다. arrival cap은 가장 오래된 도착(10_180)을 대신 축출한다.
+    const future = Array.from({ length: 120 }, (_, i) => sample(10_180 + i, i));
+    const corrected = sample(10_001, 90);
 
-    expect(collapseByEffectiveTime(samples, 10_000).map(({ t, cpu }) => [t, cpu]))
-      .toEqual(expected);
-    // 계약은 "raw t 최대 샘플 유지"이지 입력 정렬 의존이 아니다 — 역순도 동일.
-    expect(collapseByEffectiveTime([...samples].reverse(), 10_000)
-      .map(({ t, cpu }) => [t, cpu])).toEqual(expected);
+    const bounded = boundContainerSamples([...future, corrected], "live");
+    expect(bounded).toHaveLength(120);
+    expect(bounded.at(-1)).toEqual(corrected);
+    expect(bounded[0]?.t).toBe(10_181);
+  });
+
+  it("collapses clamped chart samples to the latest-arrived reading", () => {
+    // 단조 시계: 마지막 도착 = 최대 t — 종전과 동일한 결과.
+    expect(collapseByEffectiveTime(
+      [sample(9_760, 10), sample(10_100, 40), sample(10_200, 60), sample(10_299, 80)],
+      10_000,
+    ).map(({ t, cpu }) => [t, cpu])).toEqual([[9_760, 10], [10_299, 80]]);
+
+    // clock rollback: 먼저 도착한 future(t 10_299, cpu 40) 뒤에 보정된
+    // t 10_010(cpu 90)이 도착 — 대표값은 최신 '도착'(cpu 90)이어야 한다.
+    // raw t 최대(10_299)를 고르면 차트·Tooltip이 과거 값을 보여준다.
+    expect(collapseByEffectiveTime(
+      [sample(10_299, 40), sample(10_010, 90)],
+      10_000,
+    ).map(({ t, cpu }) => [t, cpu])).toEqual([[10_010, 90]]);
   });
 });

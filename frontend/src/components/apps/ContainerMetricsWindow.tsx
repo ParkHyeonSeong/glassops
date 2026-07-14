@@ -180,7 +180,9 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
 
   const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
   const chartData = useMemo(
-    () => (range === "live" ? data : collapseByEffectiveTime(data, serverNow)),
+    () => (range === "live"
+      ? [...data].sort((left, right) => left.t - right.t)
+      : collapseByEffectiveTime(data, serverNow)),
     [data, range, serverNow],
   );
   const chartTime = useCallback(

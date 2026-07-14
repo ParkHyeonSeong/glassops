@@ -376,6 +376,14 @@ describe("ContainerMetricsWindow", () => {
     });
     // 저장 dedup(first-wins)이 재수신된 t=10_010(cpu 70)을 버려야 avg가 불변.
     expect(screen.getByText(/avg 30\.0% · peak 40\.0%/)).toBeInTheDocument();
+
+    // 두 샘플(t 10_299 선착, t 10_010 후착) 모두 effective X=10_000으로
+    // collapse — 대표값은 최신 도착(cpu 20)이어야 한다. raw t 최대를 고르면
+    // 차트·Tooltip(cpu 40)과 통계(avg 30.0%)가 어긋난다.
+    const charts = screen.getAllByTestId("area-chart");
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([{ t: 10_000, value: 20 }]);
   });
 
   it("ages out samples when metrics stop arriving", async () => {
@@ -600,5 +608,38 @@ describe("ContainerMetricsWindow", () => {
       { t: 10_299, value: 80 },
     ]);
     expect(screen.getByText(/avg 60\.0% · peak 80\.0%/)).toBeInTheDocument();
+  });
+
+  it("draws corrected-clock live samples in time order after future ones", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation(() => oneHour.promise);
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+
+    for (const [timestamp, cpu] of [[10_297, 40], [10_298, 60], [10_299, 80], [10_001, 90]] as const) {
+      act(() => {
+        useMetricsStore.getState().pushMetrics(
+          "agent-a",
+          makeMetricSnapshot({
+            timestamp,
+            containers: [makeContainer({ name: "worker", cpu_percent: cpu })],
+          }),
+        );
+      });
+    }
+
+    // 보정된 t=10_001은 버려지지 않고, live 차트는 raw t 오름차순으로 그린다.
+    const charts = screen.getAllByTestId("area-chart");
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([
+      { t: 10_001, value: 90 },
+      { t: 10_297, value: 40 },
+      { t: 10_298, value: 60 },
+      { t: 10_299, value: 80 },
+    ]);
+    expect(screen.getByText(/avg 67\.5% · peak 90\.0%/)).toBeInTheDocument();
   });
 });
