@@ -30,9 +30,14 @@ export function containerMetricsKey(
 
 /**
  * Dedup merge keyed on canonical t: fetched history wins over a live sample
- * with the same timestamp. Output preserves ARRIVAL order (fetched block
- * first, then surviving live samples in reception order) — storage order is
- * the arrival record and is never timestamp-sorted (see boundContainerSamples).
+ * with the same timestamp. Output approximates ARRIVAL order — fetched block
+ * first, then surviving live samples in reception order. This is an
+ * approximation: the fetch resolves after any live pushes received while it
+ * was in flight, so those survivors sit after the fetched block even though
+ * they arrived first. Fetched-first is load-bearing for the arrival cap
+ * (boundContainerSamples must evict fetched-history head, not fresh live
+ * survivors); exact per-sample arrival metadata is a known follow-up.
+ * Storage order is never timestamp-sorted (see boundContainerSamples).
  */
 export function mergeSamplesByTimestamp(
   fetched: ContainerSample[],
