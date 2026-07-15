@@ -1,6 +1,6 @@
 # Digest-pinned (run `make refresh-digests` to update). Highest-value pin: this image
 # runs as root with nsenter --target 1 on every monitored host.
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97
 
 WORKDIR /app
 
