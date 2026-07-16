@@ -337,16 +337,26 @@ async def get_max_metric_id() -> int:
 
 
 async def get_recent_metrics(agent_id: str, limit: int = 60) -> list[dict]:
+    """Latest N rows by ingest order (id), returned oldest-arrival-first.
+    Selection and ordering use id, not timestamp: a clock-skewed row must not
+    displace genuinely newer arrivals from the "recent" window."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT timestamp, data FROM metrics WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?",
-        (agent_id, limit),
+        "SELECT id, timestamp, data FROM metrics WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
+        # Floor as well as cap: SQLite treats LIMIT -1 as unbounded.
+        (agent_id, max(1, min(limit, 300))),
     )
     rows = await cursor.fetchall()
     result = []
     for row in rows:
         entry = json.loads(row["data"])
+        # Rows stored before the ingest strip landed may carry agent-forged
+        # reserved keys (incl. "persisted", which no column overwrites).
+        for key in RESERVED_SAMPLE_KEYS:
+            entry.pop(key, None)
         entry["timestamp"] = row["timestamp"]
+        entry["sample_id"] = f"raw:{row['id']}"
+        entry["arrival_seq"] = row["id"]
         result.append(entry)
     return list(reversed(result))
 
@@ -354,14 +364,20 @@ async def get_recent_metrics(agent_id: str, limit: int = 60) -> list[dict]:
 async def get_metrics_range(
     agent_id: str, start: float, end: float, max_points: int = 500
 ) -> list[dict]:
-    """Get metrics between start and end timestamps. Auto-selects resolution."""
+    """Get metrics between start and end timestamps. Auto-selects resolution.
+    Every branch keeps the TIME-ordered response contract (category-axis
+    consumers draw the array verbatim); raw rows (<=1h) additionally carry
+    their durable identity (sample_id/arrival_seq) with ", id" breaking
+    equal-timestamp ties deterministically by arrival. Identity-aware
+    consumers sort by arrival_seq themselves."""
     db = await get_db()
     duration = end - start
 
+    is_raw = duration <= 3600
     # < 1 hour: raw data
-    if duration <= 3600:
+    if is_raw:
         cursor = await db.execute(
-            "SELECT timestamp, data FROM metrics WHERE agent_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            "SELECT id, timestamp, data FROM metrics WHERE agent_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp, id",
             (agent_id, start, end),
         )
     # 1h - 24h: 1min downsampled
@@ -384,7 +400,14 @@ async def get_metrics_range(
     for i, row in enumerate(rows):
         if i % step == 0:
             entry = json.loads(row["data"])
+            # Strip reserved keys: rows stored before the ingest strip (or
+            # downsampled copies of them) may carry agent-forged identity.
+            for key in RESERVED_SAMPLE_KEYS:
+                entry.pop(key, None)
             entry["timestamp"] = row["timestamp"]
+            if is_raw:
+                entry["sample_id"] = f"raw:{row['id']}"
+                entry["arrival_seq"] = row["id"]
             result.append(entry)
     return result
 
@@ -394,7 +417,8 @@ async def get_container_history(
 ) -> list[dict]:
     """Time-series for a single container by name. Walks the same auto-resolution
     tables as get_metrics_range, but extracts only the named container's cpu/mem
-    so the response stays small."""
+    so the response stays small.
+    Raw-window points carry the row's sample_id/arrival_seq (absent for downsampled windows)."""
     snapshots = await get_metrics_range(agent_id, start, end, max_points=max_points * 4)
     result = []
     for snap in snapshots:
@@ -411,6 +435,9 @@ async def get_container_history(
                     "gpu_util": float(gpu.get("gpu_util", 0) or 0) if gpu else 0.0,
                     "gpu_present": bool(gpu) or bool(c.get("gpu_reserved")),
                 }
+                if "sample_id" in snap:
+                    point["sample_id"] = snap["sample_id"]
+                    point["arrival_seq"] = snap["arrival_seq"]
                 result.append(point)
                 break
     # Thin out if the underlying fetch was generous

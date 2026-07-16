@@ -256,3 +256,148 @@ async def test_store_metric_discards_connection_when_rollback_fails(fresh_db):
     cursor = await check.execute("SELECT data FROM metrics WHERE agent_id = 'a1'")
     rows = [json.loads(r["data"]) for r in await cursor.fetchall()]
     assert rows == [_metric(60)]  # only the survivor — the ephemeral row is gone
+
+
+def _container_metric(cpu=10.0, name="worker"):
+    return {
+        "timestamp": 0.0,
+        "cpu": {"percent_total": cpu},
+        "containers": [{
+            "name": name, "cpu_percent": cpu,
+            "mem_usage": 256.0, "mem_limit": 1024.0,
+        }],
+    }
+
+
+async def test_recent_metrics_selects_and_orders_by_id(fresh_db):
+    # Selection AND ordering by id: the future-skewed t=200 row must not
+    # displace the genuinely newer arrival (t=50, NTP-corrected) from the
+    # "recent 2" window, and output is oldest-arrival-first.
+    await db.store_metric("a1", 100.0, _metric(1))   # id 1
+    await db.store_metric("a1", 200.0, _metric(2))   # id 2 (future-skewed)
+    await db.store_metric("a1", 50.0, _metric(3))    # id 3 (NTP-corrected)
+
+    recent = await db.get_recent_metrics("a1", limit=2)
+
+    assert [e["timestamp"] for e in recent] == [200.0, 50.0]
+    assert [e["sample_id"] for e in recent] == ["raw:2", "raw:3"]
+    assert [e["arrival_seq"] for e in recent] == [2, 3]
+
+
+async def test_recent_metrics_clamps_nonpositive_limit(fresh_db):
+    # main.py passes min(limit, 300): a negative query param would reach
+    # SQLite as LIMIT -1 (unbounded). The DB layer must floor it.
+    for i in range(3):
+        await db.store_metric("a1", 100.0 + i, _metric(i))
+
+    assert len(await db.get_recent_metrics("a1", limit=-1)) == 1
+    assert len(await db.get_recent_metrics("a1", limit=0)) == 1
+
+
+async def test_metrics_range_keeps_time_order_and_carries_identity(fresh_db):
+    # Response order stays TIME-based (SystemMonitor/GpuMonitor draw it on a
+    # category axis verbatim); the arrival order travels as arrival_seq and
+    # the container frontend sorts by it.
+    await db.store_metric("a1", 100.0, _metric(1))   # id 1
+    await db.store_metric("a1", 200.0, _metric(2))   # id 2 (future-skewed)
+    await db.store_metric("a1", 150.0, _metric(3))   # id 3 (NTP rollback, arrives last)
+
+    rows = await db.get_metrics_range("a1", 0.0, 3600.0)
+
+    assert [r["timestamp"] for r in rows] == [100.0, 150.0, 200.0]
+    assert [r["arrival_seq"] for r in rows] == [1, 3, 2]
+    assert [r["sample_id"] for r in rows] == ["raw:1", "raw:3", "raw:2"]
+
+
+async def test_metrics_range_same_timestamp_rows_are_distinct_ordered(fresh_db):
+    # The ", id" tie-break makes equal-t rows deterministic: arrival order.
+    await db.store_metric("a1", 100.0, _metric(20))
+    await db.store_metric("a1", 100.0, _metric(70))
+
+    rows = await db.get_metrics_range("a1", 0.0, 3600.0)
+
+    assert len(rows) == 2
+    assert rows[0]["arrival_seq"] < rows[1]["arrival_seq"]
+    assert rows[0]["sample_id"] != rows[1]["sample_id"]
+    assert [r["cpu"]["percent_total"] for r in rows] == [20, 70]
+
+
+async def test_metrics_range_strips_forged_reserved_keys_from_raw_rows(fresh_db):
+    # A row stored before the ingest strip landed can carry ALL four forged
+    # reserved keys in its data JSON; the read path must never serve them.
+    forged = _metric(10)
+    forged.update({"sample_id": "raw:424242", "arrival_seq": 424242,
+                   "persisted": False, "after_seq": 424241})
+    await db.store_metric("a1", 100.0, forged)
+
+    rows = await db.get_metrics_range("a1", 0.0, 3600.0)
+
+    assert rows[0]["sample_id"] == "raw:1"
+    assert rows[0]["arrival_seq"] == 1
+    assert "persisted" not in rows[0]
+    assert "after_seq" not in rows[0]
+
+
+async def test_metrics_range_downsampled_rows_carry_no_raw_identity(fresh_db):
+    conn = await db.get_db()
+    poisoned = json.dumps({"cpu": {"percent_total": 5},
+                           "sample_id": "raw:31337", "arrival_seq": 31337,
+                           "persisted": False, "after_seq": 31336})
+    await conn.execute(
+        "INSERT INTO metrics_downsampled (agent_id, timestamp, resolution, data) "
+        "VALUES ('a1', 600.0, '1m', ?)", (poisoned,),
+    )
+    await conn.commit()
+
+    rows = await db.get_metrics_range("a1", 0.0, 4000.0)  # >1h -> 1m table
+
+    assert len(rows) == 1
+    assert "sample_id" not in rows[0]
+    assert "arrival_seq" not in rows[0]
+    assert "persisted" not in rows[0]
+    assert "after_seq" not in rows[0]
+
+
+async def test_container_history_points_carry_identity(fresh_db):
+    await db.store_metric("a1", 100.0, _container_metric(20))
+    await db.store_metric("a1", 100.0, _container_metric(70))
+
+    points = await db.get_container_history("a1", "worker", 0.0, 3600.0)
+
+    assert len(points) == 2
+    assert [p["arrival_seq"] for p in points] == [1, 2]
+    assert points[0]["sample_id"] == "raw:1"
+    assert points[1]["sample_id"] == "raw:2"
+    assert [p["cpu"] for p in points] == [20.0, 70.0]
+
+
+async def test_preexisting_rows_gain_identity_on_read(fresh_db):
+    # Legacy rows (stored by the pre-identity code) gain identity purely at
+    # read time from the id column — no migration, init_db untouched.
+    conn = await db.get_db()
+    legacy = json.dumps({"cpu": {"percent_total": 5}, "persisted": False})
+    await conn.execute(
+        "INSERT INTO metrics (agent_id, timestamp, data) VALUES ('a1', 100.0, ?)",
+        (legacy,),
+    )
+    await conn.commit()
+
+    recent = await db.get_recent_metrics("a1", limit=10)
+
+    assert recent[0]["sample_id"] == "raw:1"
+    assert recent[0]["arrival_seq"] == 1
+    assert "persisted" not in recent[0]
+
+
+async def test_get_max_metric_id_uses_last_issued_not_max(fresh_db):
+    # r3.2 #1: cleanup deletes the highest row but sqlite_sequence keeps the
+    # last ISSUED id, so the anchor is 3 (last issued), not MAX(id)=2.
+    for i in range(3):
+        await db.store_metric("a1", 100.0 + i, _metric(i))
+    conn = await db.get_db()
+    await conn.execute("DELETE FROM metrics WHERE id = 3")
+    await conn.commit()
+
+    cursor = await conn.execute("SELECT MAX(id) FROM metrics")
+    assert (await cursor.fetchone())[0] == 2       # MAX(id) under-counts
+    assert await db.get_max_metric_id() == 3       # sqlite_sequence is correct
