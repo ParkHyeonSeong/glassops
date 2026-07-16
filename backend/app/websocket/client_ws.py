@@ -55,27 +55,31 @@ async def handle_client_ws(ws: WebSocket) -> None:
         logger.info("Client disconnected (total: %d)", len(_clients))
 
 
+CLIENT_SEND_TIMEOUT = 5  # seconds — a stalled tab must not stall metric ingest
+
+
 async def broadcast_to_clients(agent_id: str, data: dict) -> None:
     """Send metrics to all connected frontend clients concurrently."""
-    if not _clients:
+    clients = list(_clients)  # single snapshot: results map 1:1 to it
+    if not clients:
         return
 
     payload = json.dumps({"agent_id": agent_id, "metrics": data})
 
     async def safe_send(client: WebSocket) -> bool:
         try:
-            await client.send_text(payload)
+            # Per-client bound: a stalled socket must not hold the ingest path
+            # open, and must still be evicted below — an outer timeout on the
+            # whole gather would cancel that eviction and strand it here.
+            await asyncio.wait_for(client.send_text(payload), timeout=CLIENT_SEND_TIMEOUT)
             return True
         except Exception:
             return False
 
-    results = await asyncio.gather(
-        *[safe_send(c) for c in list(_clients)],
-        return_exceptions=True,
-    )
+    results = await asyncio.gather(*[safe_send(c) for c in clients], return_exceptions=True)
 
-    # Remove failed clients
-    clients_list = list(_clients)
-    for i, ok in enumerate(results):
+    # Drop every client that timed out or errored, indexed against the SAME
+    # snapshot the sends were built from.
+    for client, ok in zip(clients, results):
         if ok is not True:
-            _clients.discard(clients_list[i])
+            _clients.discard(client)

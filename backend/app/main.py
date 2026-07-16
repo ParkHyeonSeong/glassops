@@ -43,48 +43,63 @@ def _net_audit_retention() -> tuple[int, int]:
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown lifecycle."""
     app_instance.state.settings = settings
-    await init_db()
-    logger.info("Database initialized: %s", settings.db_path)
+    cleanup_task: asyncio.Task | None = None
+    try:
+        await init_db()
+        logger.info("Database initialized: %s", settings.db_path)
+        # Seed the ephemeral arrival anchor before accepting agents (no seed
+        # race). A read failure here propagates and fails startup — fail-closed,
+        # never a false anchor.
+        from app.websocket.agent_ws import prime_last_assigned_id
+        await prime_last_assigned_id()
 
-    async def periodic_maintenance() -> None:
-        cycle = 0
-        while True:
+        async def periodic_maintenance() -> None:
+            cycle = 0
+            while True:
+                try:
+                    await asyncio.sleep(60)
+                    cycle += 1
+
+                    # Every 60s: downsample 1-minute averages
+                    ds1 = await downsample_metrics(60, "1m")
+                    if ds1:
+                        logger.debug("Downsampled %d 1m buckets", ds1)
+
+                    # Every 5min: downsample 5-minute averages + cleanup
+                    if cycle % 5 == 0:
+                        ds5 = await downsample_metrics(300, "5m")
+                        if ds5:
+                            logger.debug("Downsampled %d 5m buckets", ds5)
+
+                        deleted = await cleanup_old_metrics(max_age_hours=1)
+                        if deleted:
+                            logger.debug("Cleaned up %d raw metrics", deleted)
+
+                        await cleanup_blacklist()
+
+                        pruned = await cleanup_audit_log()
+                        if pruned:
+                            logger.debug("Pruned %d audit rows", pruned)
+
+                        ev_days, roll_days = _net_audit_retention()
+                        await cleanup_net_audit(event_days=ev_days, rollup_days=roll_days)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Error in periodic maintenance")
+
+        cleanup_task = asyncio.create_task(periodic_maintenance())
+        yield
+    finally:
+        # Always runs — including when startup fails before yield — so the DB
+        # connections opened by init_db/prime are never leaked.
+        if cleanup_task is not None:
+            cleanup_task.cancel()
             try:
-                await asyncio.sleep(60)
-                cycle += 1
-
-                # Every 60s: downsample 1-minute averages
-                ds1 = await downsample_metrics(60, "1m")
-                if ds1:
-                    logger.debug("Downsampled %d 1m buckets", ds1)
-
-                # Every 5min: downsample 5-minute averages + cleanup
-                if cycle % 5 == 0:
-                    ds5 = await downsample_metrics(300, "5m")
-                    if ds5:
-                        logger.debug("Downsampled %d 5m buckets", ds5)
-
-                    deleted = await cleanup_old_metrics(max_age_hours=1)
-                    if deleted:
-                        logger.debug("Cleaned up %d raw metrics", deleted)
-
-                    await cleanup_blacklist()
-
-                    pruned = await cleanup_audit_log()
-                    if pruned:
-                        logger.debug("Pruned %d audit rows", pruned)
-
-                    ev_days, roll_days = _net_audit_retention()
-                    await cleanup_net_audit(event_days=ev_days, rollup_days=roll_days)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Error in periodic maintenance")
-
-    cleanup_task = asyncio.create_task(periodic_maintenance())
-    yield
-    cleanup_task.cancel()
-    await close_db()
+                await cleanup_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await close_db()
 
 
 app = FastAPI(title="GlassOps", version="0.1.0", lifespan=lifespan)

@@ -248,6 +248,12 @@ async def init_db() -> None:
 
 # ── Metrics ──────────────────────────────────────────
 
+# Keys an agent must never control: assigned by the server at ingest for the
+# broadcast copy (identity + the ephemeral arrival anchor after_seq), and
+# recomputed from the id column by the REST read paths. Stripped from inbound
+# payloads and from stored data JSON on every read.
+RESERVED_SAMPLE_KEYS = ("sample_id", "arrival_seq", "persisted", "after_seq")
+
 _metric_conn: aiosqlite.Connection | None = None
 _metric_write_lock = asyncio.Lock()
 
@@ -257,7 +263,10 @@ async def _get_metric_db() -> aiosqlite.Connection:
     operations, NOT transactions — on the shared connection another writer's
     commit/rollback interleaved between our INSERT and commit would adopt or
     discard the pending row. Isolation plus the write lock makes
-    INSERT+commit atomic, so "store succeeded <-> identity exists" holds.
+    INSERT+commit atomic, so "store succeeded -> identity exists" holds; the
+    converse can fail once a COMMIT is submitted to the aiosqlite worker,
+    since cancelling the caller then can't stop it — see the commit-wins
+    drain in agent_ws.ingest_metric for that case.
 
     Lazy init is check-then-act: callers that can race (store_metric) MUST
     hold _metric_write_lock, or concurrent first calls each open — and all
@@ -311,6 +320,20 @@ async def store_metric(agent_id: str, timestamp: float, data: dict) -> int:
                     pass
             raise
     return cursor.lastrowid
+
+
+async def get_max_metric_id() -> int:
+    """Last metrics.id ever assigned — sqlite_sequence, NOT MAX(id).
+    AUTOINCREMENT never reissues, and cleanup deletes the highest rows while
+    sqlite_sequence keeps the last issued number, so MAX(id) would
+    under-count after a prune. Seeds the ephemeral after_seq anchor so a
+    store failure right after a restart still orders the sample after
+    existing history. 0 before the first insert (sqlite_sequence exists from
+    CREATE TABLE ... AUTOINCREMENT but holds no metrics row until then)."""
+    db = await get_db()
+    cursor = await db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'metrics'")
+    row = await cursor.fetchone()
+    return row[0] if row else 0
 
 
 async def get_recent_metrics(agent_id: str, limit: int = 60) -> list[dict]:
