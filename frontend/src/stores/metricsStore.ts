@@ -120,6 +120,17 @@ export interface MetricSnapshot {
   network?: NetworkMetrics;
   processes?: ProcessInfo[];
   timestamp: number;
+  /** Server-assigned identity: "raw:<id>" (persisted) or "ephemeral:<uuid>"
+      (store failed, session-local). Absent from legacy backends. Opaque. */
+  sample_id?: string;
+  /** Backend ingest order (metrics.id). Present only when persisted. */
+  arrival_seq?: number;
+  /** false when the backend could not store this sample. */
+  persisted?: boolean;
+  /** Ephemeral only: the last row id the backend had assigned when this
+      sample failed to store — a server-issued anchor that orders it
+      between durable arrivals. */
+  after_seq?: number;
 }
 
 interface AgentData {

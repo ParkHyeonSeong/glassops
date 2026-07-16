@@ -12,7 +12,7 @@ import {
   constrainContainerSamples,
   containerMetricsKey,
   effectiveSampleTime,
-  mergeSamplesByTimestamp,
+  mergeSamplesByIdentity,
   RANGE_WINDOW_SEC,
   type ContainerSample,
   type TimeRange,
@@ -107,7 +107,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           return {
             activation,
             samples: boundContainerSamples(
-              mergeSamplesByTimestamp(fetched, currentSamples),
+              mergeSamplesByIdentity(fetched, currentSamples),
               range,
             ),
             loading: false,
