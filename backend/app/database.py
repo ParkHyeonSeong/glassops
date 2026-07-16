@@ -1,5 +1,6 @@
 """SQLite database — metrics + users."""
 
+import asyncio
 import json
 import logging
 import os
@@ -40,14 +41,25 @@ async def get_db() -> aiosqlite.Connection:
         _conn = await aiosqlite.connect(_db_path)
         _conn.row_factory = aiosqlite.Row
         await _conn.execute("PRAGMA journal_mode=WAL")
+        await _conn.execute("PRAGMA busy_timeout=5000")
     return _conn
 
 
 async def close_db() -> None:
-    global _conn
-    if _conn is not None:
-        await _conn.close()
-        _conn = None
+    global _conn, _metric_conn
+    conn, _conn = _conn, None          # detach first: even a CancelledError
+    metric, _metric_conn = _metric_conn, None  # below can't leave a stale global
+    try:
+        if conn is not None:
+            await conn.close()
+    except Exception:
+        logger.warning("Failed to close shared DB connection", exc_info=True)
+    finally:
+        if metric is not None:
+            try:
+                await metric.close()
+            except Exception:
+                logger.warning("Failed to close metric DB connection", exc_info=True)
 
 
 async def init_db() -> None:
@@ -236,14 +248,69 @@ async def init_db() -> None:
 
 # ── Metrics ──────────────────────────────────────────
 
+_metric_conn: aiosqlite.Connection | None = None
+_metric_write_lock = asyncio.Lock()
 
-async def store_metric(agent_id: str, timestamp: float, data: dict) -> None:
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO metrics (agent_id, timestamp, data) VALUES (?, ?, ?)",
-        (agent_id, timestamp, json.dumps(data)),
-    )
-    await db.commit()
+
+async def _get_metric_db() -> aiosqlite.Connection:
+    """Dedicated connection for metric INSERTs. aiosqlite serializes queued
+    operations, NOT transactions — on the shared connection another writer's
+    commit/rollback interleaved between our INSERT and commit would adopt or
+    discard the pending row. Isolation plus the write lock makes
+    INSERT+commit atomic, so "store succeeded <-> identity exists" holds.
+
+    Lazy init is check-then-act: callers that can race (store_metric) MUST
+    hold _metric_write_lock, or concurrent first calls each open — and all
+    but one leak — a connection whose non-daemon worker thread then blocks
+    interpreter exit. Single-task callers (tests) may call it directly."""
+    global _metric_conn
+    if _metric_conn is None:
+        # Build fully, then publish: assigning the half-configured connection
+        # to the global before the PRAGMAs would expose a connection missing
+        # WAL/busy_timeout if init were interrupted.
+        conn = await aiosqlite.connect(_db_path)
+        try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
+        except BaseException:
+            await conn.close()
+            raise
+        _metric_conn = conn
+    return _metric_conn
+
+
+async def store_metric(agent_id: str, timestamp: float, data: dict) -> int:
+    global _metric_conn
+    # The lock covers connection init too — see _get_metric_db's docstring.
+    async with _metric_write_lock:
+        db = await _get_metric_db()
+        try:
+            cursor = await db.execute(
+                "INSERT INTO metrics (agent_id, timestamp, data) VALUES (?, ?, ?)",
+                (agent_id, timestamp, json.dumps(data)),
+            )
+            await db.commit()
+        except BaseException:
+            # BaseException on purpose: a CancelledError between execute and
+            # commit must also roll back, or the pending INSERT would ride
+            # along with the next commit on this connection.
+            try:
+                await db.rollback()
+            except BaseException:
+                # Rollback failed too — the INSERT may still be pending.
+                # Discard the connection so the orphan can't ride a later
+                # commit (which would resurrect a row already broadcast as
+                # unpersisted, breaking store-succeeded ↔ identity-exists);
+                # the next store rebuilds a fresh connection.
+                if _metric_conn is db:
+                    _metric_conn = None
+                try:
+                    await db.close()
+                except Exception:
+                    pass
+            raise
+    return cursor.lastrowid
 
 
 async def get_recent_metrics(agent_id: str, limit: int = 60) -> list[dict]:
