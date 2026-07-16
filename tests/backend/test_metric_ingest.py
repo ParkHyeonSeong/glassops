@@ -372,9 +372,13 @@ async def test_ingest_drains_durable_path_when_worker_is_executing_commit(seeded
 
 async def test_ingest_propagates_child_cancellation_without_spinning(fanout, monkeypatch):
     # r3.6 #1 regression: when the durable task is cancelled itself, the drain
-    # loop must propagate at once. The old loop re-shielded the already-
-    # cancelled future synchronously forever — a tight spin that never yields,
-    # so an outer wait_for could never fire (its timeout callback never runs).
+    # loop must propagate at once. This pins the COMBINATION of the
+    # `while not core.done()` loop condition and the `core.cancelled()` guard:
+    # either one alone already stops the spin, so this only catches the
+    # historical regression shape where BOTH are gone (`while True:`, no
+    # done()-check, no guard) — that shape re-shields the already-cancelled
+    # future synchronously forever, a tight spin that never yields, so an
+    # outer wait_for could never fire (its timeout callback never runs).
     # Count shield calls instead: the fixed loop shields exactly once, and a
     # regression trips the assert on the second call — fast RED, no hang.
     async def self_cancelling(agent_id, timestamp, data):

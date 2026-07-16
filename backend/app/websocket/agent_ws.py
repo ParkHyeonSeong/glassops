@@ -213,10 +213,13 @@ async def ingest_metric(agent_id: str, data: dict) -> None:
         try:
             await asyncio.shield(core)
         except asyncio.CancelledError as exc:
-            # Distinguish OUR cancellation from the child's own (r3.6 #1): if
-            # core itself was cancelled, re-shielding it would raise forever
-            # (tight CPU spin that never lets the process exit), so propagate
-            # at once. Otherwise keep draining the still-running core.
+            # Distinguish OUR cancellation from the child's own (r3.6 #1).
+            # The `while not core.done()` condition above is what actually
+            # stops the loop once core finishes either way — a done core
+            # can't be re-shielded into a spin. This guard is belt-and-
+            # braces: if core itself was the one cancelled, propagate that
+            # immediately instead of falling through to core.result() below.
+            # Otherwise keep draining the still-running core.
             if core.cancelled():
                 raise
             cancelled = exc
