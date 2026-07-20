@@ -117,7 +117,7 @@ async def test_close_hangs_falls_back_to_cancelling_the_handler(monkeypatch):
 async def test_broadcast_evicts_many_stalled_clients_concurrently(monkeypatch):
     # N stalled clients must cost one CLIENT_CLOSE_TIMEOUT, not N — eviction
     # must run concurrently (asyncio.gather), not sequentially.
-    monkeypatch.setattr(client_ws, "CLIENT_CLOSE_TIMEOUT", 0.2)
+    monkeypatch.setattr(client_ws, "CLIENT_CLOSE_TIMEOUT", 1.0)
     monkeypatch.setattr(client_ws, "CLIENT_SEND_TIMEOUT", 0.05)
     sockets = [FakeSocket(close_hangs=True) for _ in range(5)]
     tasks = [asyncio.create_task(fake_handler(ws)) for ws in sockets]
@@ -125,10 +125,14 @@ async def test_broadcast_evicts_many_stalled_clients_concurrently(monkeypatch):
 
     start = asyncio.get_event_loop().time()
     await asyncio.wait_for(
-        client_ws.broadcast_to_clients("a1", {"cpu": {"percent_total": 1}}), timeout=2
+        client_ws.broadcast_to_clients("a1", {"cpu": {"percent_total": 1}}), timeout=5
     )
     elapsed = asyncio.get_event_loop().time() - start
-    assert elapsed < 0.6  # well under 5 * CLIENT_CLOSE_TIMEOUT (1.0s) if serialized
+    # ~1.05s expected (concurrent). Bound has wide margin on both sides: well
+    # above expected (absorbs CI scheduling jitter without flaking) and well
+    # below 5 * CLIENT_CLOSE_TIMEOUT (5.0s), which is what a serialization
+    # regression would cost — so this still catches that regression.
+    assert elapsed < 2.0
 
     for ws in sockets:
         assert ws not in client_ws._clients
@@ -136,3 +140,38 @@ async def test_broadcast_evicts_many_stalled_clients_concurrently(monkeypatch):
     await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1)
     for ws in sockets:
         assert ws not in client_ws._client_tasks
+
+
+async def test_cancelling_evict_client_still_cancels_the_handler(monkeypatch):
+    # _evict_client itself can be cancelled mid-eviction (e.g. its caller's
+    # caller was cancelled) while awaiting one of the internal wait_for
+    # calls. asyncio.CancelledError is a BaseException, not an Exception, so
+    # a bare `except Exception: pass` around those awaits does not catch it
+    # — if the task.cancel() fallback lived after that except block instead
+    # of in a finally, cancellation would skip it entirely. Since the client
+    # was already de-registered from both _clients and _client_tasks before
+    # the awaits even started, nothing else could ever find and cancel that
+    # handler again — it would stay parked in receive_text() forever.
+    monkeypatch.setattr(client_ws, "CLIENT_CLOSE_TIMEOUT", 5)
+    ws = FakeSocket(close_hangs=True)
+    handler_task = asyncio.create_task(fake_handler(ws))
+    await asyncio.sleep(0)  # let the handler register
+
+    evict_task = asyncio.create_task(client_ws._evict_client(ws))
+    await asyncio.sleep(0)  # let it de-register and start awaiting the hung close()
+    evict_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(evict_task, timeout=1)
+
+    assert ws not in client_ws._clients               # de-registered before the hang
+    assert ws not in client_ws._client_tasks
+
+    # The fallback must still cancel the handler despite _evict_client's own
+    # cancellation — bounded wait so a regression fails fast instead of
+    # hanging the suite.
+    results = await asyncio.wait_for(
+        asyncio.gather(handler_task, return_exceptions=True), timeout=1
+    )
+    assert handler_task.done()
+    assert isinstance(results[0], asyncio.CancelledError)

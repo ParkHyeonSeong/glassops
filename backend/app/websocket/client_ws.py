@@ -74,7 +74,15 @@ async def _evict_client(client: WebSocket) -> None:
     bounded grace period (shielded, so our own timeout can't cancel the
     handler mid-cleanup) before falling back to cancelling it directly —
     the fallback for when close() itself errors, hangs, or the handler
-    still doesn't finish."""
+    still doesn't finish.
+
+    The fallback lives in `finally`, not after the `try/except`, because
+    this coroutine can itself be cancelled while awaiting either
+    `wait_for` (e.g. its caller's caller was cancelled). asyncio.CancelledError
+    is a BaseException, not an Exception, so it would otherwise skip past
+    `except Exception` and this helper would return without ever reaching
+    the fallback — leaving the already-de-registered handler task parked
+    forever, the exact leak this helper exists to prevent."""
     _clients.discard(client)
     task = _client_tasks.pop(client, None)
     try:
@@ -83,8 +91,9 @@ async def _evict_client(client: WebSocket) -> None:
             await asyncio.wait_for(asyncio.shield(task), timeout=CLIENT_CLOSE_TIMEOUT)
     except Exception:
         pass
-    if task is not None and not task.done():
-        task.cancel()
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
 
 
 async def broadcast_to_clients(agent_id: str, data: dict) -> None:
