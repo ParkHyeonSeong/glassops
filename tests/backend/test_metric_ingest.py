@@ -450,8 +450,16 @@ async def test_ingest_clamps_future_timestamp(fanout):
     before = time.time()
     await ingest_metric("a1", {"timestamp": before + 400, "cpu": {"percent_total": 5}})
 
-    _, timestamp, _ = fanout["stored"][0]
+    _, timestamp, stored = fanout["stored"][0]
     assert before <= timestamp <= time.time()
+    # Pin the canonicalization write-back itself (agent_ws.py's
+    # `data["timestamp"] = timestamp`), not just the argument passed
+    # alongside it — the stored data JSON and the broadcast payload must
+    # both carry the clamped value, not the raw (forged/skewed) one.
+    assert before <= stored["timestamp"] <= time.time()
+
+    _, broadcast_data = fanout["broadcast"][0]
+    assert before <= broadcast_data["timestamp"] <= time.time()
 
 
 async def test_ingest_rejects_nonpositive_timestamp(fanout):
