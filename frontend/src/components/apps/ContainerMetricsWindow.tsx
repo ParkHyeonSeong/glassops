@@ -139,7 +139,12 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const prevSnapRef = useRef<unknown>(null);
   useEffect(() => {
     if (!containerName) return;
-    prevSnapRef.current = null;
+    // Seed with the CURRENT snapshot, not null: an unrelated store mutation
+    // (setConnected / selectAgent / loadHistory) fires this subscriber with
+    // the same, unchanged snapshot object. Seeding null would make that
+    // look like a brand-new snapshot and re-append an already-discarded
+    // sample (e.g. an ephemeral cleared by a range-activation swap).
+    prevSnapRef.current = useMetricsStore.getState().agents[agentId]?.current ?? null;
     const unsubscribe = useMetricsStore.subscribe((state) => {
       const snap = state.agents[agentId]?.current ?? null;
       if (snap === prevSnapRef.current) return;

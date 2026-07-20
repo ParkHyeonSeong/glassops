@@ -807,4 +807,53 @@ describe("ContainerMetricsWindow", () => {
     });
     expect(screen.getByText(/avg 33\.3% · peak 70\.0%/)).toBeInTheDocument();
   });
+
+  it("does not resurrect a discarded ephemeral on an unrelated store mutation after a range switch", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+
+    // 1h history resolves empty first, so only the ephemeral pushed below is on screen.
+    await act(async () => {
+      oneHour.resolve(jsonResponse({ metrics: [] }));
+      await oneHour.promise;
+    });
+
+    // Store-failed sample on the 1h activation (server never assigned a raw id).
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 9_990,
+          sample_id: `ephemeral:${UUID_A}`,
+          persisted: false,
+          after_seq: 0,
+          containers: [makeContainer({ name: "worker", cpu_percent: 90 })],
+        }),
+      );
+    });
+    expect(await screen.findByText(/avg 90\.0% · peak 90\.0%/)).toBeInTheDocument();
+
+    // Range switch to 5m: a NEW activation. The empty history response for it
+    // must discard the 1h-activation ephemeral (design contract: ephemerals
+    // survive a same-activation refetch, but die on an activation swap).
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({ metrics: [] }));
+      await fiveMinutes.promise;
+    });
+    expect(screen.queryByText(/avg 90\.0% · peak 90\.0%/)).not.toBeInTheDocument();
+
+    // An unrelated store mutation (e.g. a connection-status flip) must NOT
+    // resurrect the ephemeral that was just discarded.
+    act(() => {
+      useMetricsStore.getState().setConnected(false);
+    });
+    expect(screen.queryByText(/avg 90\.0% · peak 90\.0%/)).not.toBeInTheDocument();
+  });
 });
