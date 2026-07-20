@@ -28,6 +28,12 @@ class FakeSocket:
         self.close_hangs = close_hangs
         self.close_calls = 0
         self.send_calls = 0
+        self.accept_calls = 0
+
+    async def accept(self, subprotocol: str | None = None) -> None:
+        # Only exercised by tests that drive the real handle_client_ws, which
+        # awaits this during its auth handshake before registering the client.
+        self.accept_calls += 1
 
     async def send_text(self, payload: str) -> None:
         self.send_calls += 1
@@ -58,6 +64,36 @@ async def fake_handler(ws: FakeSocket) -> None:
     finally:
         client_ws._clients.discard(ws)
         client_ws._client_tasks.pop(ws, None)
+
+
+async def _fake_get_user(email: str) -> dict:
+    """Stand-in for app.database.get_user: an active user in good standing, so
+    handle_client_ws's is_active/must_change_password gates both pass."""
+    return {"is_active": True, "must_change_password": False}
+
+
+async def _fake_access_revoked(token: str, user: dict) -> bool:
+    """Stand-in for auth_service.access_revoked: token not revoked."""
+    return False
+
+
+async def _run_real_handler(monkeypatch, ws: "FakeSocket") -> asyncio.Task:
+    """Drives the REAL handle_client_ws (not fake_handler) up through its auth
+    handshake — origin check, token extraction, token verification, user lookup,
+    must-change-password gate, revocation gate, and ws.accept — by stubbing each
+    dependency it calls, then returns once it has registered and is parked in
+    receive_text(). This is what proves fake_handler's registration shape (used
+    by every other test in this file) actually matches production, instead of
+    just asserting against itself."""
+    monkeypatch.setattr(client_ws, "origin_ok", lambda ws: True)
+    monkeypatch.setattr(client_ws, "ws_token", lambda ws: "tok")
+    monkeypatch.setattr(client_ws, "verify_token", lambda tok: "user@example.com")
+    monkeypatch.setattr(client_ws, "get_user", _fake_get_user)
+    monkeypatch.setattr(client_ws, "access_revoked", _fake_access_revoked)
+    monkeypatch.setattr(client_ws, "accept_subprotocol", lambda ws: None)
+    task = asyncio.create_task(client_ws.handle_client_ws(ws))
+    await asyncio.sleep(0)  # let the handshake run to completion and the handler register
+    return task
 
 
 @pytest.fixture(autouse=True)
@@ -175,3 +211,47 @@ async def test_cancelling_evict_client_still_cancels_the_handler(monkeypatch):
     )
     assert handler_task.done()
     assert isinstance(results[0], asyncio.CancelledError)
+
+
+async def test_real_handler_registers_both_registries_and_cleans_up_on_disconnect(monkeypatch):
+    # Everything above drives fake_handler, which only mirrors handle_client_ws's
+    # registration shape — it does not prove production actually does this. This
+    # test runs the REAL handle_client_ws through a stubbed auth handshake instead.
+    ws = FakeSocket()
+    handler_task = await _run_real_handler(monkeypatch, ws)
+
+    assert ws.accept_calls == 1                          # handshake reached ws.accept()
+    assert ws in client_ws._clients                       # real handler registered itself...
+    assert client_ws._client_tasks[ws] is handler_task    # ...under its OWN running task
+
+    await ws.close()  # a normal client-initiated close -> receive_text raises WebSocketDisconnect
+    await asyncio.wait_for(handler_task, timeout=1)
+    assert handler_task.done()
+
+    # The real handler's `finally` must drain BOTH registries, same as fake_handler's.
+    assert ws not in client_ws._clients
+    assert ws not in client_ws._client_tasks
+
+
+async def test_real_handler_terminates_on_send_timeout_eviction(monkeypatch):
+    # Same as test_timed_out_client_is_closed_and_handler_finishes above, but
+    # against the REAL handle_client_ws instead of fake_handler.
+    monkeypatch.setattr(client_ws, "CLIENT_SEND_TIMEOUT", 0.05)
+    monkeypatch.setattr(client_ws, "CLIENT_CLOSE_TIMEOUT", 0.05)
+    ws = FakeSocket()
+    handler_task = await _run_real_handler(monkeypatch, ws)
+
+    assert ws in client_ws._clients
+    assert client_ws._client_tasks[ws] is handler_task
+
+    await asyncio.wait_for(
+        client_ws.broadcast_to_clients("a1", {"cpu": {"percent_total": 1}}), timeout=1
+    )
+
+    # send_text always stalls -> _evict_client closes ws -> receive_text raises
+    # WebSocketDisconnect -> the real handler task must actually terminate, not
+    # stay parked forever.
+    await asyncio.wait_for(handler_task, timeout=1)
+    assert handler_task.done()
+    assert ws not in client_ws._clients
+    assert ws not in client_ws._client_tasks
