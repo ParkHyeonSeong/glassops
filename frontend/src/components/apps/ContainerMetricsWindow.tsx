@@ -14,6 +14,7 @@ import {
   effectiveSampleTime,
   mergeSamplesByIdentity,
   RANGE_WINDOW_SEC,
+  sampleOrigin,
   type ContainerSample,
   type TimeRange,
 } from "./containerMetricsModel";
@@ -100,6 +101,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
             vram: point.vram ?? 0,
             gpu_util: point.gpu_util ?? 0,
             gpu_present: point.gpu_present ?? false,
+            ...sampleOrigin(point),
           }),
         );
         setSeries((previous) => {
@@ -149,9 +151,19 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
       setSeries((previous) => {
         const previousIsCurrent = previous.activation === activation;
         const previousSamples = previousIsCurrent ? previous.samples : [];
+        const origin = sampleOrigin(snap);
         const last = previousSamples[previousSamples.length - 1];
-        if (last && last.t === t) return previous;
+        // With identity, only a redelivery of the SAME row is a duplicate —
+        // a new reading at the same t must survive (approved policy P1).
+        // Without identity (legacy backend) keep the raw-t guard verbatim.
+        const duplicate = origin.sample_id !== undefined
+          ? previousSamples.some((s) => s.sample_id === origin.sample_id)
+          : last !== undefined && last.t === t;
+        if (duplicate) return previous;
 
+        // An ephemeral's arrival anchor (after_seq) is server-issued and
+        // arrives inside `origin` — never inferred from this buffer, which
+        // can be empty while a history fetch is in flight.
         const sample: ContainerSample = {
           t,
           cpu: c.cpu_percent,
@@ -160,6 +172,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
           vram: c.gpu?.vram_bytes ?? 0,
           gpu_util: c.gpu?.gpu_util ?? 0,
           gpu_present: Boolean(c.gpu),
+          ...origin,
         };
 
         return {
@@ -181,7 +194,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
   const memLimitBytes = data[data.length - 1]?.mem_limit ?? container?.mem_limit ?? 0;
   const chartData = useMemo(
     () => (range === "live"
-      ? [...data].sort((left, right) => left.t - right.t)
+      ? collapseByEffectiveTime(data, Number.POSITIVE_INFINITY)
       : collapseByEffectiveTime(data, serverNow)),
     [data, range, serverNow],
   );

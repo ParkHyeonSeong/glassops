@@ -12,6 +12,9 @@ import { fetchWithAuth } from "../../../utils/api";
 import { _resetServerClockForTest } from "../../../utils/serverClock";
 import ContainerMetricsWindow from "../ContainerMetricsWindow";
 
+const UUID_A = "00000000-0000-4000-8000-00000000000a";
+const UUID_B = "00000000-0000-4000-8000-00000000000b";
+
 vi.mock("../../../utils/api", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("recharts", () => {
   const Pass = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
@@ -643,5 +646,165 @@ describe("ContainerMetricsWindow", () => {
       { t: 10_299, value: 80 },
     ]);
     expect(screen.getByText(/avg 67\.5% · peak 90\.0%/)).toBeInTheDocument();
+  });
+
+  it("keeps same-timestamp readings with distinct identities", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation(() => oneHour.promise);
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+
+    for (const [cpu, seq] of [[20, 5], [70, 6]] as const) {
+      act(() => {
+        useMetricsStore.getState().pushMetrics(
+          "agent-a",
+          makeMetricSnapshot({
+            timestamp: 10_000,
+            sample_id: `raw:${seq}`,
+            arrival_seq: seq,
+            persisted: true,
+            containers: [makeContainer({ name: "worker", cpu_percent: cpu })],
+          }),
+        );
+      });
+    }
+
+    // P1(승인): 같은 t라도 identity가 다르면 모두 보존되어 통계에 반영되고...
+    expect(screen.getByText(/avg 45\.0% · peak 70\.0%/)).toBeInTheDocument();
+    // ...같은 raw t의 차트·Tooltip 대표값은 최신 arrival(seq 6) 하나다.
+    const charts = screen.getAllByTestId("area-chart");
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([{ t: 10_000, value: 70 }]);
+  });
+
+  it("dedups a row that arrives over both live and fetch", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 9_990,
+          sample_id: "raw:5",
+          arrival_seq: 5,
+          persisted: true,
+          containers: [makeContainer({ name: "worker", cpu_percent: 30 })],
+        }),
+      );
+    });
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 9_900, cpu: 10, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0,
+            gpu_present: false, sample_id: "raw:4", arrival_seq: 4 },
+          { t: 9_990, cpu: 30, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0,
+            gpu_present: false, sample_id: "raw:5", arrival_seq: 5 },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+
+    // 같은 물리 row(raw:5)의 이중 도착은 한 번만 남는다 (시나리오 3 pin).
+    // raw:4(cpu 10)를 함께 fetch해 결과를 분별력 있게 만든다: dedup이면
+    // avg (10+30)/2 = 20.0, 중복이 살아남으면 (10+30+30)/3 = 23.3.
+    expect(screen.getByText(/avg 20\.0% · peak 30\.0%/)).toBeInTheDocument();
+  });
+
+  it("represents same-X overlap by backend arrival order after late fetch", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    // live 선착 (backend seq 10)...
+    act(() => {
+      useMetricsStore.getState().pushMetrics(
+        "agent-a",
+        makeMetricSnapshot({
+          timestamp: 10_010,
+          sample_id: "raw:10",
+          arrival_seq: 10,
+          persisted: true,
+          containers: [makeContainer({ name: "worker", cpu_percent: 90 })],
+        }),
+      );
+    });
+    // ...fetch가 나중에 resolve — backend가 그 뒤에 받은 row(seq 12) 포함.
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 10_299, cpu: 40, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0,
+            gpu_present: false, sample_id: "raw:12", arrival_seq: 12 },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+
+    // 두 sample 모두 effective X=10_000으로 clamp — 대표값은 응답 완료 순서가
+    // 아니라 backend arrival(seq 12, cpu 40)이어야 한다 (시나리오 4·10).
+    const charts = screen.getAllByTestId("area-chart");
+    const cpuPoints = JSON.parse(charts[0]?.dataset.points ?? "[]") as
+      { t: number; value: number }[];
+    expect(cpuPoints).toEqual([{ t: 10_000, value: 40 }]);
+    expect(screen.getByText(/avg 65\.0% · peak 90\.0%/)).toBeInTheDocument();
+  });
+
+  it("keeps unpersisted samples session-local", async () => {
+    vi.mocked(Date.now).mockReturnValue(10_000_000);
+    const oneHour = deferred<Response>();
+    const fiveMinutes = deferred<Response>();
+    vi.mocked(fetchWithAuth).mockImplementation((path) => (
+      path.includes("duration=5m") ? fiveMinutes.promise : oneHour.promise
+    ));
+
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+
+    // F1(승인): 저장 실패한 같은 t의 ephemeral 두 개 — uuid가 달라 모두 보존.
+    // after_seq 3 = backend가 실패 전 마지막으로 저장한 row id (서버 발급).
+    for (const [cpu, uuid] of [[20, UUID_A], [70, UUID_B]] as const) {
+      act(() => {
+        useMetricsStore.getState().pushMetrics(
+          "agent-a",
+          makeMetricSnapshot({
+            timestamp: 9_990,
+            sample_id: `ephemeral:${uuid}`,
+            persisted: false,
+            after_seq: 3,
+            containers: [makeContainer({ name: "worker", cpu_percent: cpu })],
+          }),
+        );
+      });
+    }
+    expect(screen.getByText(/avg 45\.0% · peak 70\.0%/)).toBeInTheDocument();
+
+    // History에는 없던 sample이므로(저장 실패) fetch resolve 후에도 세션 내 생존
+    // — merge는 (3,0) raw:3 뒤에 (3,1) ephemeral들을 rank 순서로 배치한다.
+    await act(async () => {
+      fiveMinutes.resolve(jsonResponse({
+        metrics: [
+          { t: 9_900, cpu: 10, mem: 256, mem_limit: 1024, vram: 0, gpu_util: 0,
+            gpu_present: false, sample_id: "raw:3", arrival_seq: 3 },
+        ],
+      }));
+      await fiveMinutes.promise;
+    });
+    expect(screen.getByText(/avg 33\.3% · peak 70\.0%/)).toBeInTheDocument();
   });
 });
