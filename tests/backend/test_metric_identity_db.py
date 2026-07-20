@@ -401,3 +401,35 @@ async def test_get_max_metric_id_uses_last_issued_not_max(fresh_db):
     cursor = await conn.execute("SELECT MAX(id) FROM metrics")
     assert (await cursor.fetchone())[0] == 2       # MAX(id) under-counts
     assert await db.get_max_metric_id() == 3       # sqlite_sequence is correct
+
+
+async def test_memory_db_path_shares_schema_across_connections(monkeypatch, tmp_path):
+    # GLASSOPS_DB_PATH=":memory:" (env-configurable, GLASSOPS_ env_prefix)
+    # must not silently split the shared and metric connections into two
+    # PRIVATE in-memory databases. A bare ":memory:" gives EVERY
+    # aiosqlite.connect() call its own database, so init_db() (which uses
+    # get_db) creates the schema in one database while store_metric (which
+    # uses _get_metric_db) writes to a different, schema-less one — the
+    # server still starts, but every metric would silently become
+    # ephemeral and History would stay empty (OperationalError: no such
+    # table: metrics, swallowed by store_metric's except clause).
+    monkeypatch.setattr(db, "_db_path", ":memory:")
+    monkeypatch.setattr(db, "_conn", None)
+    monkeypatch.setattr(db, "_metric_conn", None, raising=False)
+    monkeypatch.setattr(db, "_metric_write_lock", asyncio.Lock(), raising=False)
+    # init_db bootstraps a default admin when no users exist, writing a
+    # one-time password file relative to os.path.dirname(_db_path) — empty
+    # for a bare ":memory:", i.e. cwd. Unrelated to this test's subject;
+    # chdir into tmp_path so that stray file doesn't land in the repo root.
+    monkeypatch.chdir(tmp_path)
+    try:
+        await db.init_db()  # schema created via get_db's connection
+
+        row_id = await db.store_metric("a1", 100.0, _metric(42))  # via _get_metric_db
+        assert isinstance(row_id, int)
+
+        recent = await db.get_recent_metrics("a1", limit=10)  # read via get_db
+        assert [e["sample_id"] for e in recent] == ["raw:1"]
+        assert recent[0]["cpu"]["percent_total"] == 42
+    finally:
+        await db.close_db()

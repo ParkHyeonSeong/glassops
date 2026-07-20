@@ -16,6 +16,25 @@ logger = logging.getLogger("glassops.db")
 _db_path = settings.db_path
 _conn: aiosqlite.Connection | None = None
 
+# A bare ":memory:" gives EACH aiosqlite connection its OWN private
+# database — with the dedicated metric connection added by this milestone,
+# init_db() (on the shared connection) would create the schema in one
+# database while store_metric (on the metric connection) writes to a
+# different, empty one ("OperationalError: no such table: metrics"; server
+# still starts, but every metric silently becomes ephemeral and History
+# stays empty). Route ":memory:" to a shared-cache URI instead, so every
+# connection attaches to the SAME in-memory database.
+_MEMORY_URI = "file::memory:?cache=shared"
+
+
+def _connect_args() -> tuple[str, bool]:
+    """(path, uri) for aiosqlite.connect(), read from _db_path at CALL time
+    (tests monkeypatch it). Ordinary file paths are unaffected; a `file:`
+    URI the operator configured directly is passed through as-is."""
+    if _db_path == ":memory:":
+        return _MEMORY_URI, True
+    return _db_path, _db_path.startswith("file:")
+
 
 def _initial_admin_pw_file() -> str:
     """Path of the one-time initial-admin password file (data dir, alongside the DB)."""
@@ -37,8 +56,10 @@ async def clear_initial_admin_password_file() -> None:
 async def get_db() -> aiosqlite.Connection:
     global _conn
     if _conn is None:
-        os.makedirs(os.path.dirname(_db_path) or ".", exist_ok=True)
-        _conn = await aiosqlite.connect(_db_path)
+        if _db_path != ":memory:":
+            os.makedirs(os.path.dirname(_db_path) or ".", exist_ok=True)
+        path, uri = _connect_args()
+        _conn = await aiosqlite.connect(path, uri=uri)
         _conn.row_factory = aiosqlite.Row
         await _conn.execute("PRAGMA journal_mode=WAL")
         await _conn.execute("PRAGMA busy_timeout=5000")
@@ -277,7 +298,8 @@ async def _get_metric_db() -> aiosqlite.Connection:
         # Build fully, then publish: assigning the half-configured connection
         # to the global before the PRAGMAs would expose a connection missing
         # WAL/busy_timeout if init were interrupted.
-        conn = await aiosqlite.connect(_db_path)
+        path, uri = _connect_args()
+        conn = await aiosqlite.connect(path, uri=uri)
         try:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
