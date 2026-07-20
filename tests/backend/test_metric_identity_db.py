@@ -234,6 +234,16 @@ async def test_store_metric_discards_connection_when_rollback_fails(fresh_db):
     # r3.4 #1: if commit fails AND rollback fails, the pending INSERT must not
     # ride the next commit. The connection is discarded on rollback failure,
     # so the next store rebuilds a fresh one and only the survivor persists.
+    #
+    # Hardening: this test only WORKS as a regression net for the production
+    # `await db.close()` in that discard path if a removal of that line makes
+    # something here observably fail. It doesn't — the assertions below still
+    # pass even without it — the only symptom is the poisoned connection's
+    # non-daemon aiosqlite worker thread staying alive, which can hang the
+    # whole suite at interpreter exit instead of failing this test. So: close
+    # the ORIGINAL connection object ourselves in a finally (independent of
+    # whatever production code did or didn't do), and bound store_metric with
+    # a timeout so a genuine hang fails fast instead of wedging the runner.
     conn = await db._get_metric_db()
 
     async def failing_commit():
@@ -244,18 +254,30 @@ async def test_store_metric_discards_connection_when_rollback_fails(fresh_db):
 
     conn.commit = failing_commit
     conn.rollback = failing_rollback
-    with pytest.raises(RuntimeError):
-        await db.store_metric("a1", 100.0, _metric(50))
+    try:
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(db.store_metric("a1", 100.0, _metric(50)), timeout=5)
 
-    # The poisoned connection was detached; the next store opens a new one.
-    assert db._metric_conn is None
-    survivor = await db.store_metric("a1", 101.0, _metric(60))
-    assert isinstance(survivor, int)
+        # The poisoned connection was detached; the next store opens a new one.
+        assert db._metric_conn is None
+        survivor = await asyncio.wait_for(
+            db.store_metric("a1", 101.0, _metric(60)), timeout=5
+        )
+        assert isinstance(survivor, int)
 
-    check = await db.get_db()  # read on the shared connection
-    cursor = await check.execute("SELECT data FROM metrics WHERE agent_id = 'a1'")
-    rows = [json.loads(r["data"]) for r in await cursor.fetchall()]
-    assert rows == [_metric(60)]  # only the survivor — the ephemeral row is gone
+        check = await db.get_db()  # read on the shared connection
+        cursor = await check.execute("SELECT data FROM metrics WHERE agent_id = 'a1'")
+        rows = [json.loads(r["data"]) for r in await cursor.fetchall()]
+        assert rows == [_metric(60)]  # only the survivor — the ephemeral row is gone
+    finally:
+        # Belt-and-suspenders: close the ORIGINAL (poisoned) connection
+        # object directly, regardless of whether production code's own
+        # discard-path close() ran — a double-close is harmless, but a
+        # missing close would otherwise leak a non-daemon worker thread.
+        try:
+            await conn.close()
+        except Exception:
+            pass
 
 
 def _container_metric(cpu=10.0, name="worker"):
