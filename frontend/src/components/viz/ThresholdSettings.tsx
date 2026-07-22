@@ -7,7 +7,7 @@ const ROWS: { key: MetricKey; label: string }[] = [
   { key: "cpu", label: "CPU" },
   { key: "mem", label: "Memory" },
   { key: "disk", label: "Disk" },
-  { key: "core", label: "Per-core" },
+  { key: "core", label: "Per-core display" },
 ];
 
 export default function ThresholdSettings() {
@@ -33,6 +33,9 @@ export default function ThresholdSettings() {
                 onChange={(warn, crit) => setThreshold(key, { warn, crit })} />
             ))}
           </div>
+          <p className="viz-thr-note">
+            Per-core display only tints the Cores tab — it never raises an alert.
+          </p>
           <button className="viz-thr-reset" onClick={reset}>Reset to defaults</button>
         </div>
       )}

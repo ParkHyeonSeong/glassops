@@ -1,5 +1,8 @@
 export type Severity = "ok" | "warn" | "crit";
 export type MetricKey = "cpu" | "mem" | "disk" | "core";
+// Metrics that may raise an alert. "core" is a DISPLAY threshold only — it tints
+// the Cores tab (CoreCell) and never produces a banner/feed/toast entry.
+export type AlertMetricKey = Exclude<MetricKey, "core">;
 
 export interface Threshold {
   warn: number; // percent
