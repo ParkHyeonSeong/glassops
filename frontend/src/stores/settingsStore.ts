@@ -8,13 +8,9 @@ export const WALLPAPERS = [
   { id: "midnight", label: "Midnight", css: "linear-gradient(135deg, #0c0c1d, #1a1a3a)" },
 ];
 
-type ThresholdKey = "cpuWarn" | "cpuCrit" | "memWarn" | "memCrit" | "diskCrit";
-
 interface SettingsStore {
   wallpaper: string;
-  alertThresholds: Record<ThresholdKey, number>;
   setWallpaper: (id: string) => void;
-  setThreshold: (key: ThresholdKey, value: number) => void;
 }
 
 function loadSetting<T>(key: string, fallback: T): T {
@@ -33,29 +29,14 @@ export function persistSetting(key: string, value: unknown): boolean {
   }
 }
 
-const defaultThresholds = { cpuWarn: 70, cpuCrit: 90, memWarn: 80, memCrit: 90, diskCrit: 95 };
-
+// Alert thresholds used to live here under `glassops_thresholds`, in parallel with
+// (and disagreeing with) useThresholdsStore. They now live only in useThresholdsStore;
+// see lib/thresholdMigration.ts for the one-shot migration off the old key.
 export const useSettingsStore = create<SettingsStore>((set) => ({
   wallpaper: loadSetting("wallpaper", "default"),
-  alertThresholds: loadSetting("thresholds", defaultThresholds),
 
   setWallpaper: (id) => {
     set({ wallpaper: id });
     persistSetting("wallpaper", id);
-  },
-
-  setThreshold: (key, value) => {
-    const VALID_KEYS: ThresholdKey[] = ["cpuWarn", "cpuCrit", "memWarn", "memCrit", "diskCrit"];
-    if (!VALID_KEYS.includes(key)) return;
-    set((state) => {
-      const next = { ...state.alertThresholds, [key]: Math.max(1, Math.min(100, value)) };
-      // Enforce warn <= crit
-      if (key === "cpuWarn" && next.cpuWarn > next.cpuCrit) next.cpuCrit = next.cpuWarn;
-      if (key === "cpuCrit" && next.cpuCrit < next.cpuWarn) next.cpuWarn = next.cpuCrit;
-      if (key === "memWarn" && next.memWarn > next.memCrit) next.memCrit = next.memWarn;
-      if (key === "memCrit" && next.memCrit < next.memWarn) next.memWarn = next.memCrit;
-      persistSetting("thresholds", next);
-      return { alertThresholds: next };
-    });
   },
 }));

@@ -48,3 +48,21 @@ export function deriveAlerts(
 
   return out.sort((a, b) => RANK[b.severity] - RANK[a.severity] || b.value - a.value);
 }
+
+/**
+ * Toast shape for a derived alert. Desktop toasts and the System Monitor banner
+ * are both fed from deriveAlerts(), so their thresholds cannot drift apart.
+ * The key carries the severity so a warn->crit escalation is not swallowed by
+ * useAlertStore's per-key 30s cooldown.
+ */
+export function toastForAlert(a: Alert): {
+  type: "warning" | "error";
+  message: string;
+  key: string;
+} {
+  return {
+    type: a.severity === "crit" ? "error" : "warning",
+    message: a.message,
+    key: `${a.id}-${a.severity}`,
+  };
+}

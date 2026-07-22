@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { type MetricKey, type Threshold, DEFAULT_THRESHOLDS, clampThreshold } from "../lib/thresholds";
+import { migrateLegacyThresholds } from "../lib/thresholdMigration";
 
 interface ThresholdsStore {
   thresholds: Record<MetricKey, Threshold>;
@@ -39,4 +40,11 @@ export const useThresholdsStore = create<ThresholdsStore>()(
       },
     },
   ),
+);
+
+// Retire the settingsStore-era `glassops_thresholds` key on first load. setState
+// here goes through zustand's persist middleware, so the migrated values are
+// written to `glassops-thresholds` immediately.
+migrateLegacyThresholds((patch) =>
+  useThresholdsStore.setState((s) => ({ thresholds: { ...s.thresholds, ...patch } })),
 );

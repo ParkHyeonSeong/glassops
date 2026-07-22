@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
+import { useThresholdsStore } from "../../stores/thresholdsStore";
+import { type AlertMetricKey } from "../../lib/thresholds";
 import { fetchWithAuth } from "../../utils/api";
 
 type Tab = "profile" | "agents" | "server" | "alerts" | "email" | "appearance";
@@ -99,30 +101,45 @@ function AgentsTab({ agentId, connected }: { agentId: string | null; connected: 
   );
 }
 
-function AlertsTab() {
-  const { alertThresholds, setThreshold } = useSettingsStore();
+const ALERT_ROWS: { key: AlertMetricKey; label: string }[] = [
+  { key: "cpu", label: "CPU" },
+  { key: "mem", label: "Memory" },
+  { key: "disk", label: "Disk" },
+];
 
-  const sliders = [
-    { key: "cpuWarn", label: "CPU Warning", unit: "%", max: 100 },
-    { key: "cpuCrit", label: "CPU Critical", unit: "%", max: 100 },
-    { key: "memWarn", label: "Memory Warning", unit: "%", max: 100 },
-    { key: "memCrit", label: "Memory Critical", unit: "%", max: 100 },
-    { key: "diskCrit", label: "Disk Critical", unit: "%", max: 100 },
-  ];
+const BOUNDS = [
+  { bound: "warn", suffix: "Warning" },
+  { bound: "crit", suffix: "Critical" },
+] as const;
+
+function AlertsTab() {
+  const thresholds = useThresholdsStore((s) => s.thresholds);
+  const setThreshold = useThresholdsStore((s) => s.setThreshold);
 
   return (
     <div className="settings-section">
       <h3 className="settings-title">Alert Thresholds</h3>
-      {sliders.map((s) => (
-        <div key={s.key} className="settings-slider-row">
-          <label className="settings-label">{s.label}</label>
-          <input type="range" min="10" max={s.max}
-            value={alertThresholds[s.key as keyof typeof alertThresholds]}
-            onChange={(e) => setThreshold(s.key as "cpuWarn" | "cpuCrit" | "memWarn" | "memCrit" | "diskCrit", Number(e.target.value))}
-            className="settings-range" />
-          <span className="settings-range-value">{alertThresholds[s.key as keyof typeof alertThresholds]}{s.unit}</span>
-        </div>
-      ))}
+      <p className="settings-hint">
+        Applies to in-browser alerts only — desktop toasts and the System Monitor
+        banner and feed. Email alerts use their own server-side thresholds, set
+        under Settings &gt; Email.
+      </p>
+      {ALERT_ROWS.flatMap(({ key, label }) =>
+        BOUNDS.map(({ bound, suffix }) => {
+          const id = `threshold-${key}-${bound}`;
+          return (
+            <div key={id} className="settings-slider-row">
+              <label className="settings-label" htmlFor={id}>{label} {suffix}</label>
+              <input id={id} type="range" min="0" max="100"
+                value={thresholds[key][bound]}
+                onChange={(e) =>
+                  setThreshold(key, { ...thresholds[key], [bound]: Number(e.target.value) })}
+                className="settings-range" />
+              <span className="settings-range-value">{thresholds[key][bound]}%</span>
+            </div>
+          );
+        }),
+      )}
     </div>
   );
 }

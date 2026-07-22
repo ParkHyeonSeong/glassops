@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeMetricSnapshot } from "../../test/fixtures";
 import { DEFAULT_THRESHOLDS } from "../thresholds";
-import { deriveAlerts } from "../alerts";
+import { deriveAlerts, toastForAlert } from "../alerts";
 
 // 32 pegged cores — the exact shape that used to produce 32 extra alerts.
 const PEGGED = Array.from({ length: 32 }, () => 100);
@@ -99,5 +99,35 @@ describe("deriveAlerts", () => {
     });
 
     expect(deriveAlerts(snap, DEFAULT_THRESHOLDS).map((a) => a.id)).toEqual(["disk", "cpu"]);
+  });
+});
+
+describe("toastForAlert", () => {
+  it("maps a critical alert to an error toast keyed by severity", () => {
+    const snap = makeMetricSnapshot({
+      cpu: { percent_total: 99, percent_per_core: [99], count_logical: 1,
+             count_physical: 1, freq_current: 1000, freq_max: 2000 },
+    });
+    const [alert] = deriveAlerts(snap, DEFAULT_THRESHOLDS);
+
+    expect(toastForAlert(alert)).toEqual({
+      type: "error",
+      message: alert.message,
+      key: "cpu-crit",
+    });
+  });
+
+  it("maps a warning alert to a warning toast keyed by severity", () => {
+    const snap = makeMetricSnapshot({
+      cpu: { percent_total: 85, percent_per_core: [85], count_logical: 1,
+             count_physical: 1, freq_current: 1000, freq_max: 2000 },
+    });
+    const [alert] = deriveAlerts(snap, DEFAULT_THRESHOLDS);
+
+    expect(toastForAlert(alert)).toEqual({
+      type: "warning",
+      message: alert.message,
+      key: "cpu-warn",
+    });
   });
 });

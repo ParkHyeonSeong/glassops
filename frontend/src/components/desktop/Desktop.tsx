@@ -5,6 +5,8 @@ import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useAlertStore } from "../../stores/alertStore";
 import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
+import { useThresholdsStore } from "../../stores/thresholdsStore";
+import { deriveAlerts, toastForAlert } from "../../lib/alerts";
 import type { ConnectionStatus } from "../../types";
 import MenuBar from "./MenuBar";
 import Dock from "./Dock";
@@ -31,19 +33,18 @@ export default function Desktop() {
   const current = useMetricsStore((s) => s.current);
   const push = useAlertStore((s) => s.push);
   const wallpaperId = useSettingsStore((s) => s.wallpaper);
-  const thresholds = useSettingsStore((s) => s.alertThresholds);
+  const thresholds = useThresholdsStore((s) => s.thresholds);
 
   const wallpaperCss = WALLPAPERS.find((w) => w.id === wallpaperId)?.css ?? WALLPAPERS[0].css;
 
-  // Monitor thresholds
+  // Toasts share deriveAlerts() and the thresholds store with the System Monitor
+  // banner/feed, so a threshold edited in one place applies everywhere.
   useEffect(() => {
     if (!current) return;
-    const { cpu, memory, disk } = current;
-    if (cpu.percent_total > thresholds.cpuCrit) push("error", `CPU critical: ${cpu.percent_total.toFixed(1)}%`, "cpu-high");
-    else if (cpu.percent_total > thresholds.cpuWarn) push("warning", `CPU high: ${cpu.percent_total.toFixed(1)}%`, "cpu-warn");
-    if (memory.percent > thresholds.memCrit) push("error", `Memory critical: ${memory.percent.toFixed(1)}%`, "mem-high");
-    else if (memory.percent > thresholds.memWarn) push("warning", `Memory high: ${memory.percent.toFixed(1)}%`, "mem-warn");
-    if (disk.percent > thresholds.diskCrit) push("error", `Disk critical: ${disk.percent.toFixed(1)}%`, "disk-high");
+    for (const alert of deriveAlerts(current, thresholds)) {
+      const toast = toastForAlert(alert);
+      push(toast.type, toast.message, toast.key);
+    }
   }, [current, push, thresholds]);
 
   const connectionStatus: ConnectionStatus = wsConnected ? "connected" : "connecting";
