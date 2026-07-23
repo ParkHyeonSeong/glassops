@@ -1,5 +1,6 @@
 """Server-side alert service — SMTP email notifications."""
 
+import asyncio
 import base64
 import copy
 import json
@@ -9,6 +10,7 @@ from email.mime.text import MIMEText
 
 import aiosmtplib
 from cryptography.fernet import Fernet, InvalidToken
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from app.config import smtp_fernet_key
 from app.database import get_db
@@ -18,6 +20,131 @@ logger = logging.getLogger("glassops.alerts")
 
 _last_sent: dict[str, float] = {}
 COOLDOWN_SECONDS = 300
+
+# A failed send must not suppress the next real alert for the full cooldown, but it
+# must still be throttled: check_and_alert() is awaited inline in the ingest loop and
+# agents collect once per second by default, so an unthrottled failure path means one
+# blocking SMTP attempt per second per agent. Operator-approved policy.
+FAILURE_BACKOFF_SECONDS = 60
+_last_attempt: dict[str, float] = {}
+
+# Hard ceiling on the SSRF/DNS check. validate_smtp_target calls socket.getaddrinfo,
+# which can hang indefinitely on a black-holed resolver. Off-loading it to a thread
+# frees the event loop, but the awaiting coroutine (an agent's ingest, or a config
+# POST) would still wait forever without this bound. Note the worker thread itself is
+# NOT cancellable — it runs to its own completion; only the caller is released.
+DNS_TIMEOUT = 5.0
+
+# What GET /api/alerts/config returns in place of the stored password, and what a
+# client may POST back to mean "keep the password you already have".
+MASKED_PASSWORD = "********"
+
+# Canonical transport security modes -> (use_tls, start_tls). aiosmtplib 3.0.2
+# raises ValueError("The start_tls and use_tls options are not compatible.") from
+# SMTP.__init__ when both are set, so exactly one may ever be true.
+SECURITY_FLAGS: dict[str, tuple[bool, bool]] = {
+    "starttls": (False, True),
+    "implicit_tls": (True, False),
+    "none": (False, False),
+}
+
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
+
+# Fixed, non-reflective messages. An SMTP exception's str() carries whatever the
+# server echoed — the envelope sender and recipients (SMTPSenderRefused /
+# SMTPRecipientsRefused put real addresses in .args) and, for a server that rejects
+# AUTH, our own base64 AUTH PLAIN blob. Scrubbing known substrings out of that text
+# is a denylist and cannot be complete, so nothing derived from the exception text is
+# ever returned or logged. Order matters: SMTPConnectTimeoutError subclasses BOTH
+# SMTPTimeoutError and SMTPConnectError, and both subclass OSError.
+_SAFE_SMTP_ERRORS: tuple[tuple[type[BaseException], str], ...] = (
+    (aiosmtplib.SMTPAuthenticationError, "SMTP authentication failed"),
+    (aiosmtplib.SMTPSenderRefused, "SMTP sender rejected"),
+    (aiosmtplib.SMTPRecipientsRefused, "SMTP recipient rejected"),
+    (aiosmtplib.SMTPTimeoutError, "SMTP connection timed out"),
+    (aiosmtplib.SMTPConnectError, "SMTP connection failed"),
+    (aiosmtplib.SMTPServerDisconnected, "SMTP server disconnected"),
+)
+
+
+def safe_smtp_error(exc: BaseException) -> str:
+    """Map an SMTP failure to a fixed message that can never carry credentials."""
+    for exc_type, message in _SAFE_SMTP_ERRORS:
+        if isinstance(exc, exc_type):
+            return message
+    return "SMTP send failed"
+
+
+def _reset_alert_state_for_test() -> None:
+    """Clear the module-level cooldown tables and config cache (tests only)."""
+    _last_sent.clear()
+    _last_attempt.clear()
+    _invalidate_config_cache()
+
+
+def _clean(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _is_email(value: str) -> bool:
+    try:
+        _EMAIL_ADAPTER.validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def security_mode(config: dict) -> str | None:
+    """Canonical mode, back-filling rows written before `security` existed.
+
+    Returns None when a legacy row is ambiguous — both flags true, which aiosmtplib
+    refuses outright. Guessing there would silently downgrade or upgrade an
+    operator's transport, so callers must treat None as "the operator has to
+    re-pick the mode" rather than substituting a default.
+    """
+    mode = config.get("security")
+    if mode in SECURITY_FLAGS:
+        return mode
+    use_tls = bool(config.get("use_tls"))
+    start_tls = bool(config.get("start_tls", True))
+    if use_tls and start_tls:
+        return None
+    if use_tls:
+        return "implicit_tls"
+    return "starttls" if start_tls else "none"
+
+
+def resolve_sender(config: dict) -> str | None:
+    """The From address: explicit from_email, else username when it is itself an
+    address. A username is an SMTP login identifier and need not be an email, so it
+    is only borrowed when it actually validates as one — otherwise we would emit
+    MAIL FROM:<relay-login> or, worse, the null reverse-path MAIL FROM:<>.
+
+    from_email is re-validated here rather than trusted: rows written before the API
+    validated it are still in the database, and this is the last gate before the
+    value reaches the wire.
+    """
+    from_email = _clean(config.get("from_email"))
+    if from_email:
+        return from_email if _is_email(from_email) else None
+    username = _clean(config.get("username"))
+    return username if _is_email(username) else None
+
+
+async def validate_smtp_target_async(host, port) -> None:
+    """Bounded, off-loop SSRF/DNS validation. Both the send path and the config POST
+    use this — never validate_smtp_target directly — so getaddrinfo can neither block
+    the event loop nor hang the caller. Raises ValueError on a disallowed target OR
+    on timeout; the message is fixed and carries no credential (the host is not a
+    secret). validate_smtp_target is looked up as a module global at call time, so a
+    test that patches it here is honoured through this wrapper.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(validate_smtp_target, host, port), timeout=DNS_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        raise ValueError("SMTP host validation timed out")
 
 # The SMTP config changes rarely but check_and_alert() runs on every metric message
 # from every agent — cache it so we don't hit the DB + Fernet-decrypt per message.
@@ -90,8 +217,13 @@ async def save_smtp_config(config: dict) -> None:
 
     store = {**config}
     password = store.pop("password", "")
+    clear_password = bool(store.pop("clear_password", False))
 
-    if password and password != "********":
+    if clear_password:
+        # Explicit removal — write no password_enc at all. This is the only way to
+        # reach a no-password-stored state; "" and the mask both mean "keep".
+        pass
+    elif password and password != MASKED_PASSWORD:
         # New password provided — encrypt it
         store["password_enc"] = _encrypt(password)
     elif existing_raw and existing_raw.get("password_enc"):
@@ -108,66 +240,114 @@ async def save_smtp_config(config: dict) -> None:
 
 
 async def send_alert_email(subject: str, body: str, key: str | None = None) -> dict:
-    """Send alert email via SMTP. Returns {"ok": bool, "error"?: str}."""
-    # Cooldown check
+    """Send an alert email via SMTP. Returns {"ok": bool, "error"?: str}.
+
+    ok=True means the SMTP server accepted the message for delivery — it is not
+    proof it reached the inbox.
+
+    The full cooldown is recorded only after that acceptance, so a failed attempt
+    never suppresses the next one for five minutes — it only backs off for
+    FAILURE_BACKOFF_SECONDS, which keeps a dead relay from being retried once per
+    collection tick. Both are keyed per agent (see check_and_alert), not per
+    resource. A keyless call — the admin's manual /api/alerts/test — bypasses both.
+    """
     if key:
         now = time.time()
         if _last_sent.get(key, 0) + COOLDOWN_SECONDS > now:
             return {"ok": False, "error": "Cooldown active"}
-        _last_sent[key] = now
+        if _last_attempt.get(key, 0) + FAILURE_BACKOFF_SECONDS > now:
+            return {"ok": False, "error": "Backing off after a failed send"}
 
     config = await get_smtp_config()
     if not config or not config.get("host"):
         return {"ok": False, "error": "SMTP not configured"}
+    if config.get("_decrypt_failed"):
+        return {"ok": False, "error": "Stored SMTP password could not be decrypted — re-enter it"}
+
+    mode = security_mode(config)
+    if mode is None:
+        return {"ok": False, "error": "SMTP security mode is ambiguous — re-select it"}
+
+    sender = resolve_sender(config)
+    if not sender:
+        return {"ok": False, "error": "No valid From Email is configured"}
+    recipient = _clean(config.get("to_email"))
+    if not _is_email(recipient):
+        return {"ok": False, "error": "No valid recipient is configured"}
+
+    # Record the attempt BEFORE the first thing that can block on the network. DNS
+    # resolution is a network call and can hang; recording after it would let a
+    # failing resolver be re-invoked once per collection tick. Everything above this
+    # line is a cheap in-memory check, so throttling those would only delay recovery
+    # once the operator fixes the configuration.
+    if key:
+        _last_attempt[key] = time.time()
 
     # Defense-in-depth: re-validate at send time so a config written before this
-    # check (or by another code path) can't be used as an SSRF primitive.
+    # check (or by another code path) can't be used as an SSRF primitive. Bounded
+    # and off-loop — see validate_smtp_target_async.
     try:
-        validate_smtp_target(config["host"], config.get("port", 587))
+        await validate_smtp_target_async(config["host"], config.get("port", 587))
     except ValueError as e:
-        logger.warning("Refusing to send via disallowed SMTP target: %s", e)
+        logger.warning("Refusing to send via disallowed/unresolvable SMTP target: %s", e)
         return {"ok": False, "error": "SMTP host not allowed"}
+
+    use_tls, start_tls = SECURITY_FLAGS[mode]
 
     try:
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = subject
-        msg["From"] = config.get("from_email", config.get("username", "glassops@localhost"))
-        msg["To"] = config["to_email"]
+        msg["From"] = sender
+        msg["To"] = recipient
 
         await aiosmtplib.send(
             msg,
-            hostname=config["host"],
+            hostname=_clean(config["host"]),
             port=int(config.get("port", 587)),
-            username=config.get("username"),
-            password=config.get("password"),
-            use_tls=config.get("use_tls", False),
-            start_tls=config.get("start_tls", True),
+            # aiosmtplib gates AUTH on `username is not None`, so an empty string
+            # would make it emit AUTH PLAIN with blank credentials.
+            username=_clean(config.get("username")) or None,
+            password=config.get("password") or None,
+            use_tls=use_tls,
+            start_tls=start_tls,
             timeout=10,
         )
-        logger.info("Alert email sent: %s", subject)
-        return {"ok": True}
     except Exception as e:
-        logger.error("Failed to send alert email: %s", e)
-        return {"ok": False, "error": str(e)}
+        # NEVER put str(e) in the response or the log — see _SAFE_SMTP_ERRORS.
+        # Only the exception TYPE informs the message; the class name is safe.
+        logger.error(
+            "Failed to send alert email (%s): %s", type(e).__name__, safe_smtp_error(e),
+        )
+        return {"ok": False, "error": safe_smtp_error(e)}
+
+    logger.info("SMTP server accepted alert email: %s", subject)
+    if key:
+        _last_sent[key] = time.time()
+    return {"ok": True}
 
 
 async def check_and_alert(agent_id: str, metrics: dict) -> None:
-    """Check metrics against thresholds and send email alerts."""
+    """Check aggregate metrics against the email thresholds and send one message.
+
+    Per-core CPU is deliberately not examined — only cpu.percent_total can raise an
+    email alert, matching deriveAlerts() in frontend/src/lib/alerts.ts. Comparison
+    is >= so the configured value itself fires, matching severityFor().
+    """
     config = await get_smtp_config()
     if not config or not config.get("host") or not config.get("to_email"):
         return
 
-    thresholds = config.get("thresholds", {})
+    thresholds = config.get("thresholds") or {}
     cpu = metrics.get("cpu", {}).get("percent_total", 0)
     mem = metrics.get("memory", {}).get("percent", 0)
     disk = metrics.get("disk", {}).get("percent", 0)
 
     alerts = []
-    if cpu > thresholds.get("cpu_crit", 90):
+    if cpu >= thresholds.get("cpu_crit", 90):
         alerts.append(f"CPU critical: {cpu:.1f}%")
-    if mem > thresholds.get("mem_crit", 90):
+    if mem >= thresholds.get("mem_crit", 90):
         alerts.append(f"Memory critical: {mem:.1f}%")
-    if disk > thresholds.get("disk_crit", 95):
+    if disk >= thresholds.get("disk_crit", 95):
         alerts.append(f"Disk critical: {disk:.1f}%")
 
     if alerts:
