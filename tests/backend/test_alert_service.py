@@ -778,3 +778,288 @@ async def test_alert_failure_does_not_roll_back_the_stored_metric(store, monkeyp
     rows = await db.get_recent_metrics("a1", limit=10)
     assert len(rows) == 1
     assert broadcast, "live broadcast must still have happened"
+
+
+# =========================================================================
+# State guards: boot window, unhashable modes, corrupt-marker preservation,
+# per-consumer monotonic clock, and the same-key send race.
+# =========================================================================
+
+@pytest.fixture
+def fixed_clock(monkeypatch):
+    """Drive svc._now() from the test.
+
+    Patching the helper (not time.monotonic) is deliberate: a duration policy that
+    reads a clock directly instead of going through _now() ignores this fixture, so
+    these tests also pin *which* clock each consumer uses.
+    """
+    class Clock:
+        def __init__(self, t=1000.0):
+            self.t = t
+
+        def set(self, t):
+            self.t = t
+
+        def advance(self, delta):
+            self.t += delta
+
+    clock = Clock()
+    monkeypatch.setattr(svc, "_now", lambda: clock.t)
+    return clock
+
+
+# --- 1. boot window ------------------------------------------------------
+
+async def test_first_alert_is_not_blocked_inside_the_boot_window(
+    store, allow_target, fake_send, fixed_clock,
+):
+    """time.monotonic() counts from host boot, not the epoch. With `.get(key, 0)`
+    the absent-key default of 0 is read as a real timestamp, so for the first
+    COOLDOWN_SECONDS after boot every first-ever alert is refused as 'Cooldown
+    active' — exactly when a host is most likely to be in trouble."""
+    await svc.save_smtp_config(base_config())
+    fixed_clock.set(10.0)          # 10 seconds after boot
+    assert not svc._last_sent and not svc._last_attempt
+
+    result = await svc.send_alert_email("s", "b", key="alert-a1")
+
+    assert result["ok"] is True
+    assert len(fake_send.calls) == 1
+
+
+async def test_first_alert_inside_the_boot_window_is_not_blocked_by_backoff(
+    store, allow_target, fake_send, fixed_clock,
+):
+    await svc.save_smtp_config(base_config())
+    fixed_clock.set(5.0)           # below FAILURE_BACKOFF_SECONDS too
+
+    assert (await svc.send_alert_email("s", "b", key="alert-fresh"))["ok"] is True
+    assert len(fake_send.calls) == 1
+
+
+# --- 2. unhashable / non-string security ---------------------------------
+
+@pytest.mark.parametrize("value", [[], {}, ["starttls"], {"starttls": True}, set()])
+def test_unhashable_security_value_is_refused_not_raised(value):
+    """`mode in SECURITY_FLAGS` raises TypeError for an unhashable value, which
+    would escape get_smtp_config's callers as a 500 rather than a refusal."""
+    assert svc.security_mode({"security": value, "use_tls": False, "start_tls": True}) is None
+
+
+async def test_unhashable_stored_security_blocks_sending(store, allow_target, fake_send):
+    raw = base_config(security=[], use_tls=False, start_tls=True)
+    raw.pop("password", None)
+    await _write_raw_config(raw)
+
+    result = await svc.send_alert_email("s", "b")
+
+    assert result["ok"] is False
+    assert "ambiguous" in result["error"].lower()
+    assert fake_send.calls == []
+
+
+# --- 3. corrupt password_enc survives a keep-save ------------------------
+
+@pytest.mark.parametrize("corrupt", ["", "not-a-fernet-token", FOREIGN_TOKEN])
+@pytest.mark.parametrize("keep_with", ["", svc_masked := "********"])
+async def test_keep_save_preserves_a_corrupt_password_marker(
+    store, allow_target, fake_send, corrupt, keep_with,
+):
+    """A keep-save ("" or the mask) must not quietly clear a decrypt failure.
+
+    save_smtp_config decided preservation on the truthiness of the existing
+    password_enc, so an empty/corrupt marker was dropped by any unrelated save —
+    the config then read as 'no password' and sending resumed anonymously, with the
+    operator never told to re-enter the credential."""
+    raw = base_config()
+    raw.pop("password", None)
+    raw["password_enc"] = corrupt
+    await _write_raw_config(raw)
+    assert (await svc.get_smtp_config()).get("_decrypt_failed") is True
+
+    # An unrelated edit that keeps the password.
+    await svc.save_smtp_config(base_config(password=keep_with, to_email="oncall@example.com"))
+
+    stored = await raw_stored_config()
+    assert "password_enc" in stored, "the corrupt marker was dropped by a keep-save"
+    assert stored["password_enc"] == corrupt
+    assert (await svc.get_smtp_config()).get("_decrypt_failed") is True
+    assert (await svc.send_alert_email("s", "b"))["ok"] is False
+    assert fake_send.calls == []
+
+
+@pytest.mark.parametrize("corrupt", ["", "not-a-fernet-token"])
+async def test_clear_password_resolves_a_corrupt_marker(store, allow_target, fake_send, corrupt):
+    raw = base_config()
+    raw.pop("password", None)
+    raw["password_enc"] = corrupt
+    await _write_raw_config(raw)
+
+    await svc.save_smtp_config(base_config(password="", clear_password=True))
+
+    assert "password_enc" not in await raw_stored_config()
+    config = await svc.get_smtp_config()
+    assert "_decrypt_failed" not in config
+    assert (await svc.send_alert_email("s", "b"))["ok"] is True
+
+
+@pytest.mark.parametrize("corrupt", ["", "not-a-fernet-token"])
+async def test_a_new_password_resolves_a_corrupt_marker(store, allow_target, fake_send, corrupt):
+    raw = base_config(username="relay-login")
+    raw.pop("password", None)
+    raw["password_enc"] = corrupt
+    await _write_raw_config(raw)
+
+    await svc.save_smtp_config(base_config(username="relay-login", password="pw-rotated"))
+
+    config = await svc.get_smtp_config()
+    assert "_decrypt_failed" not in config
+    assert config["password"] == "pw-rotated"
+    assert (await svc.send_alert_email("s", "b"))["ok"] is True
+
+
+# --- 4. each duration consumer reads the monotonic helper ----------------
+
+async def test_config_cache_ttl_is_measured_on_the_monotonic_clock(
+    store, monkeypatch, fixed_clock,
+):
+    """Pins the cache TTL to _now(). A wall-clock step must not expire or extend it,
+    and only monotonic progress past _CFG_TTL may."""
+    await svc.save_smtp_config(base_config(to_email="ops@example.com"))
+    svc._invalidate_config_cache()
+
+    fixed_clock.set(5_000.0)
+    assert (await svc.get_smtp_config())["to_email"] == "ops@example.com"
+
+    # Change the row underneath the cache, without invalidating it.
+    raw = await raw_stored_config()
+    raw["to_email"] = "oncall@example.com"
+    conn = await db.get_db()
+    await conn.execute(
+        "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)", (json.dumps(raw),))
+    await conn.commit()
+
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 86_400)
+    assert (await svc.get_smtp_config())["to_email"] == "ops@example.com", \
+        "a forward wall-clock jump expired the cache"
+    monkeypatch.setattr(time, "time", lambda: real() - 86_400)
+    assert (await svc.get_smtp_config())["to_email"] == "ops@example.com", \
+        "a backward wall-clock jump expired the cache"
+
+    fixed_clock.advance(svc._CFG_TTL + 1)
+    assert (await svc.get_smtp_config())["to_email"] == "oncall@example.com", \
+        "the cache did not expire after _CFG_TTL of monotonic time"
+
+
+async def test_cooldown_expiry_is_measured_on_the_monotonic_clock(
+    store, allow_target, fake_send, monkeypatch, fixed_clock,
+):
+    """Pins the _last_sent write to _now(). Recording a wall-clock timestamp here
+    would be compared against a monotonic 'now' and mis-expire by the difference."""
+    await svc.save_smtp_config(base_config())
+    fixed_clock.set(9_000.0)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is True
+
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 86_400)
+
+    fixed_clock.set(9_000.0 + svc.COOLDOWN_SECONDS - 1)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1")) == {
+        "ok": False, "error": "Cooldown active"}
+
+    fixed_clock.set(9_000.0 + svc.COOLDOWN_SECONDS + 1)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is True
+    assert len(fake_send.calls) == 2
+
+
+async def test_failure_backoff_expiry_is_measured_on_the_monotonic_clock(
+    store, allow_target, monkeypatch, fixed_clock,
+):
+    await svc.save_smtp_config(base_config())
+    monkeypatch.setattr(svc.aiosmtplib, "send", FakeSend(error=OSError("refused")))
+    fixed_clock.set(7_000.0)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is False
+
+    succeeding = FakeSend()
+    monkeypatch.setattr(svc.aiosmtplib, "send", succeeding)
+
+    fixed_clock.set(7_000.0 + svc.FAILURE_BACKOFF_SECONDS - 1)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1")) == {
+        "ok": False, "error": "Backing off after a failed send"}
+
+    fixed_clock.set(7_000.0 + svc.FAILURE_BACKOFF_SECONDS + 1)
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is True
+    assert len(succeeding.calls) == 1
+
+
+# --- 5. same-key concurrent send -----------------------------------------
+
+async def test_concurrent_sends_for_one_key_produce_a_single_message(
+    store, allow_target, fake_send, monkeypatch,
+):
+    """The entry cooldown check is separated from the _last_attempt write by awaits
+    (the config read). Two callers for the same key can clear the first check
+    together and both reach the relay, so the cooldown contract needs a re-check
+    immediately before the first network await."""
+    await svc.save_smtp_config(base_config())
+    svc._invalidate_config_cache()
+
+    gate = asyncio.Event()
+    real_get = svc.get_smtp_config
+
+    async def gated_get():
+        await gate.wait()          # hold both callers past the entry check
+        return await real_get()
+
+    monkeypatch.setattr(svc, "get_smtp_config", gated_get)
+
+    task_a = asyncio.create_task(svc.send_alert_email("s", "b", key="alert-a1"))
+    task_b = asyncio.create_task(svc.send_alert_email("s", "b", key="alert-a1"))
+    await asyncio.sleep(0)         # both reach the gate
+    gate.set()
+    results = await asyncio.gather(task_a, task_b)
+
+    assert len(fake_send.calls) == 1, "the same key sent twice"
+    assert sum(r["ok"] for r in results) == 1
+    suppressed = [r for r in results if not r["ok"]]
+    assert len(suppressed) == 1
+    assert suppressed[0]["error"] in (
+        "Cooldown active", "Backing off after a failed send")
+
+
+async def test_concurrent_sends_for_different_keys_both_deliver(
+    store, allow_target, fake_send, monkeypatch,
+):
+    await svc.save_smtp_config(base_config())
+    svc._invalidate_config_cache()
+
+    gate = asyncio.Event()
+    real_get = svc.get_smtp_config
+
+    async def gated_get():
+        await gate.wait()
+        return await real_get()
+
+    monkeypatch.setattr(svc, "get_smtp_config", gated_get)
+
+    tasks = [asyncio.create_task(svc.send_alert_email("s", "b", key=f"alert-{k}"))
+             for k in ("a1", "a2")]
+    await asyncio.sleep(0)
+    gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert all(r["ok"] for r in results)
+    assert len(fake_send.calls) == 2
+
+
+async def test_keyless_manual_test_is_never_suppressed(store, allow_target, fake_send):
+    """POST /api/alerts/test carries no key and must bypass both guards entirely,
+    including the new pre-network re-check."""
+    await svc.save_smtp_config(base_config())
+    svc._last_sent["alert-a1"] = svc._now()
+    svc._last_attempt["alert-a1"] = svc._now()
+
+    for _ in range(3):
+        assert (await svc.send_alert_email("manual", "b"))["ok"] is True
+    assert len(fake_send.calls) == 3

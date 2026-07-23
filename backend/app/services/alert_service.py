@@ -97,6 +97,28 @@ def _now() -> float:
     return time.monotonic()
 
 
+def _suppression_reason(key: str | None) -> str | None:
+    """Why a keyed send must be held back right now, or None to proceed.
+
+    An absent key means "never sent", not "sent at timestamp 0". _now() is
+    monotonic and counts from host boot, so reading a missing entry as 0 refuses
+    every first-ever alert for the first COOLDOWN_SECONDS after a reboot —
+    precisely when a host is most likely to be unwell.
+
+    A keyless call — the admin's manual /api/alerts/test — is never held back.
+    """
+    if not key:
+        return None
+    now = _now()
+    last_sent = _last_sent.get(key)
+    if last_sent is not None and last_sent + COOLDOWN_SECONDS > now:
+        return "Cooldown active"
+    last_attempt = _last_attempt.get(key)
+    if last_attempt is not None and last_attempt + FAILURE_BACKOFF_SECONDS > now:
+        return "Backing off after a failed send"
+    return None
+
+
 def _clean(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -126,7 +148,10 @@ def security_mode(config: dict) -> str | None:
     """
     if config.get("security") is not None:      # explicit; null/absent means legacy
         mode = config["security"]
-        return mode if mode in SECURITY_FLAGS else None
+        # isinstance first: `mode in SECURITY_FLAGS` raises TypeError for an
+        # unhashable value (a list or dict from a hand-edited row), which would
+        # leave get_smtp_config's callers with a 500 instead of a refusal.
+        return mode if isinstance(mode, str) and mode in SECURITY_FLAGS else None
 
     use_tls = config.get("use_tls", False)
     start_tls = config.get("start_tls", True)
@@ -267,8 +292,13 @@ async def save_smtp_config(config: dict) -> None:
     elif password and password != MASKED_PASSWORD:
         # New password provided — encrypt it
         store["password_enc"] = _encrypt(password)
-    elif existing_raw and existing_raw.get("password_enc"):
-        # No new password — preserve existing encrypted value
+    elif existing_raw is not None and "password_enc" in existing_raw:
+        # No new password — preserve the existing marker VERBATIM, whether or not it
+        # still decrypts. Deciding this on truthiness dropped an empty or corrupt
+        # marker on any unrelated save: the row then read as "no password", the
+        # decrypt-failure flag vanished, and sending silently resumed anonymously
+        # without the operator ever being told to re-enter the credential. Only an
+        # explicit clear_password or a real new password may resolve that state.
         store["password_enc"] = existing_raw["password_enc"]
     # else: no password at all
 
@@ -292,12 +322,9 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
     collection tick. Both are keyed per agent (see check_and_alert), not per
     resource. A keyless call — the admin's manual /api/alerts/test — bypasses both.
     """
-    if key:
-        now = _now()
-        if _last_sent.get(key, 0) + COOLDOWN_SECONDS > now:
-            return {"ok": False, "error": "Cooldown active"}
-        if _last_attempt.get(key, 0) + FAILURE_BACKOFF_SECONDS > now:
-            return {"ok": False, "error": "Backing off after a failed send"}
+    reason = _suppression_reason(key)
+    if reason:
+        return {"ok": False, "error": reason}
 
     config = await get_smtp_config()
     if not config or not config.get("host"):
@@ -328,11 +355,19 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
         return {"ok": False, "error":
                 "SMTP credentials are incomplete — set both a username and a password, or neither"}
 
-    # Record the attempt BEFORE the first thing that can block on the network. DNS
-    # resolution is a network call and can hang; recording after it would let a
-    # failing resolver be re-invoked once per collection tick. Everything above this
-    # line is a cheap in-memory check, so throttling those would only delay recovery
-    # once the operator fixes the configuration.
+    # Re-check, then record, with NO await in between. The entry check above is
+    # separated from this point by the config read, so two callers for the same key
+    # can clear it together and both reach the relay. This second check is what
+    # actually enforces the cooldown; because nothing suspends between it and the
+    # write, the loop cannot interleave another caller into the gap.
+    #
+    # Recording here — before the first thing that can block on the network — also
+    # means a hanging or failing resolver is not re-invoked once per collection
+    # tick. Everything above is a cheap in-memory check, so throttling on those
+    # would only delay recovery once the operator fixes the configuration.
+    reason = _suppression_reason(key)
+    if reason:
+        return {"ok": False, "error": reason}
     if key:
         _last_attempt[key] = _now()
 
