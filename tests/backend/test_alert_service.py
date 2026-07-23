@@ -8,6 +8,7 @@ from email.message import Message
 
 import aiosmtplib
 import pytest
+from cryptography.fernet import Fernet
 
 import app.database as db
 from app.services import alert_service as svc
@@ -183,21 +184,169 @@ async def test_save_invalidates_the_config_cache(store):
     assert (await svc.get_smtp_config())["to_email"] == "oncall@example.com"
 
 
+async def _write_raw_config(raw: dict) -> None:
+    """Write the stored row verbatim, bypassing save_smtp_config's encryption."""
+    conn = await db.get_db()
+    await conn.execute(
+        "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)", (json.dumps(raw),))
+    await conn.commit()
+    svc._invalidate_config_cache()
+
+
+# A token this process's key cannot open — exactly what a rotated
+# GLASSOPS_SECRET_KEY leaves behind on disk.
+FOREIGN_TOKEN = Fernet(base64.urlsafe_b64encode(b"\xAA" * 32)).encrypt(b"pw-under-test").decode()
+
+
+@pytest.mark.parametrize("password_enc", [
+    FOREIGN_TOKEN,        # right shape, wrong key (secret rotation)
+    "not-a-fernet-token",  # corrupted ciphertext
+    "",                    # empty
+    12345,                 # non-string — must fail closed, not raise
+])
 async def test_undecryptable_password_is_surfaced_and_blocks_sending(
-    store, allow_target, fake_send, monkeypatch,
+    store, allow_target, fake_send, password_enc,
 ):
-    await svc.save_smtp_config(base_config(password="pw-under-test"))
-    _reset_alert_state()
-    monkeypatch.setattr(svc, "_decrypt", lambda value: "")
+    """Exercises the REAL Fernet boundary. Monkeypatching _decrypt would let its
+    InvalidToken handling be deleted outright with every test still green."""
+    raw = base_config()
+    raw.pop("password", None)
+    raw["password_enc"] = password_enc
+    await _write_raw_config(raw)
 
     config = await svc.get_smtp_config()
-    assert config["_decrypt_failed"] is True
-    assert config["password"] == ""
+
+    assert config.get("_decrypt_failed") is True
+    assert config.get("password", "") == ""
+    # The internal ciphertext must never reach a caller (the API strips only keys
+    # starting with "_", so a surviving password_enc would be served to the client).
+    assert "password_enc" not in config
 
     result = await svc.send_alert_email("s", "b")
     assert result["ok"] is False
     assert "decrypt" in result["error"].lower()
     assert fake_send.calls == []
+
+
+# --- TLS mode safety -----------------------------------------------------
+
+@pytest.mark.parametrize("stored", [
+    {"security": "ssl", "use_tls": False, "start_tls": False},   # would become PLAINTEXT
+    {"security": "ssl", "use_tls": True, "start_tls": False},
+    {"security": "SSL", "use_tls": False, "start_tls": True},    # wrong case
+    {"security": "tls", "use_tls": False, "start_tls": True},
+    {"security": 123, "use_tls": False, "start_tls": False},
+])
+def test_unknown_security_mode_is_refused_not_downgraded(stored):
+    """An explicit but unsupported mode must NOT fall back to the legacy flags —
+    'ssl' with both flags false would silently resolve to plaintext SMTP."""
+    assert svc.security_mode(stored) is None
+
+
+@pytest.mark.parametrize("stored", [
+    {"use_tls": "false", "start_tls": "false"},   # bool("false") is True
+    {"use_tls": 1, "start_tls": 0},
+    {"use_tls": None, "start_tls": None},
+])
+def test_malformed_legacy_tls_flags_are_refused(stored):
+    assert svc.security_mode(stored) is None
+
+
+def test_absent_security_still_derives_from_legacy_flags():
+    assert svc.security_mode({"use_tls": True, "start_tls": False}) == "implicit_tls"
+    assert svc.security_mode({"use_tls": False, "start_tls": True}) == "starttls"
+    assert svc.security_mode({"use_tls": False, "start_tls": False}) == "none"
+    assert svc.security_mode({}) == "starttls"          # start_tls defaults true
+    assert svc.security_mode({"security": None, "use_tls": True, "start_tls": False}) \
+        == "implicit_tls"                                # explicit null == absent
+
+
+async def test_unknown_stored_security_mode_blocks_sending(store, allow_target, fake_send):
+    raw = base_config(security="ssl", use_tls=False, start_tls=False)
+    raw.pop("password", None)
+    await _write_raw_config(raw)
+
+    result = await svc.send_alert_email("s", "b")
+
+    assert result["ok"] is False
+    assert "ambiguous" in result["error"].lower()
+    assert fake_send.calls == []
+
+
+# --- credential completeness ---------------------------------------------
+
+async def test_username_without_password_is_refused(store, allow_target, fake_send):
+    """aiosmtplib authenticates whenever username is not None and turns a None
+    password into "", so a username left behind after clear_password would retry
+    AUTH PLAIN with a blank secret — repeated failures or an account lockout."""
+    await svc.save_smtp_config(base_config(username="relay-login", password=""))
+
+    result = await svc.send_alert_email("s", "b")
+
+    assert result["ok"] is False
+    assert "credential" in result["error"].lower()
+    assert fake_send.calls == []
+
+
+async def test_password_without_username_is_refused(store, allow_target, fake_send):
+    # The reverse is silently ignored by aiosmtplib — the operator thinks the relay
+    # is authenticated when it is not.
+    await svc.save_smtp_config(base_config(username="", password="pw-under-test"))
+
+    result = await svc.send_alert_email("s", "b")
+
+    assert result["ok"] is False
+    assert "credential" in result["error"].lower()
+    assert fake_send.calls == []
+
+
+# --- clock ---------------------------------------------------------------
+
+def test_duration_policies_use_a_monotonic_clock(monkeypatch):
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 10_000)
+    first = svc._now()
+    monkeypatch.setattr(time, "time", lambda: real() - 10_000)
+    second = svc._now()
+
+    # A wall-clock step in either direction must not move this clock.
+    assert second >= first
+    assert abs(second - first) < 5
+
+
+async def test_cooldown_is_not_expired_early_by_a_forward_clock_step(
+    store, allow_target, fake_send, monkeypatch,
+):
+    await svc.save_smtp_config(base_config())
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is True
+
+    # NTP or a VM resume steps the wall clock an hour forward.
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 3600)
+
+    assert (await svc.send_alert_email("s", "b", key="alert-a1")) == {
+        "ok": False, "error": "Cooldown active"}
+    assert len(fake_send.calls) == 1
+
+
+async def test_backoff_is_not_extended_by_a_backward_clock_step(
+    store, allow_target, monkeypatch,
+):
+    await svc.save_smtp_config(base_config())
+    monkeypatch.setattr(svc.aiosmtplib, "send", FakeSend(error=OSError("refused")))
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is False
+
+    # Clock corrected an hour backwards: with a wall clock this would suppress the
+    # alert for an extra hour.
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() - 3600)
+
+    succeeding = FakeSend()
+    monkeypatch.setattr(svc.aiosmtplib, "send", succeeding)
+    svc._last_attempt["alert-a1"] -= svc.FAILURE_BACKOFF_SECONDS + 1
+
+    assert (await svc.send_alert_email("s", "b", key="alert-a1"))["ok"] is True
+    assert len(succeeding.calls) == 1
 
 
 # --- transport arguments -------------------------------------------------
@@ -284,7 +433,11 @@ async def test_message_headers_and_body(store, allow_target, fake_send):
 # --- sender resolution ---------------------------------------------------
 
 async def test_sender_falls_back_to_an_email_username(store, allow_target, fake_send):
-    await svc.save_smtp_config(base_config(from_email="", username="relay@example.com"))
+    # A username is only ever present on an authenticated relay, so the fallback is
+    # exercised with a password set — username-without-password is refused outright
+    # (see test_username_without_password_is_refused).
+    await svc.save_smtp_config(
+        base_config(from_email="", username="relay@example.com", password="pw-under-test"))
 
     await svc.send_alert_email("s", "b")
 

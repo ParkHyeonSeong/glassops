@@ -50,6 +50,9 @@ SECURITY_FLAGS: dict[str, tuple[bool, bool]] = {
 
 _EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
+# Distinguishes "key absent" from "key present but empty" when reading a stored row.
+_ABSENT = object()
+
 # Fixed, non-reflective messages. An SMTP exception's str() carries whatever the
 # server echoed — the envelope sender and recipients (SMTPSenderRefused /
 # SMTPRecipientsRefused put real addresses in .args) and, for a server that rejects
@@ -82,6 +85,18 @@ def _reset_alert_state_for_test() -> None:
     _invalidate_config_cache()
 
 
+def _now() -> float:
+    """The single clock for every duration policy here.
+
+    The cooldown, the failure backoff and the config-cache TTL are all *elapsed
+    time* contracts, so they must not read a clock an operator or NTP can step.
+    A backward correction would stretch a 5-minute cooldown into hours and drop
+    real alerts; a forward jump would expire it early and let a flood through.
+    time.monotonic() cannot be set and never goes backwards.
+    """
+    return time.monotonic()
+
+
 def _clean(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -97,16 +112,26 @@ def _is_email(value: str) -> bool:
 def security_mode(config: dict) -> str | None:
     """Canonical mode, back-filling rows written before `security` existed.
 
-    Returns None when a legacy row is ambiguous — both flags true, which aiosmtplib
-    refuses outright. Guessing there would silently downgrade or upgrade an
-    operator's transport, so callers must treat None as "the operator has to
-    re-pick the mode" rather than substituting a default.
+    Returns None whenever the stored transport cannot be determined *unambiguously*.
+    Callers must treat None as "the operator has to re-pick the mode" and refuse to
+    send — never as a default. Three ways to land there:
+
+      * `security` is present but not a supported mode. Falling back to the legacy
+        flags here would be fail-OPEN: a row saying `security: "ssl"` with both
+        flags false resolves to "none", i.e. plaintext SMTP for a config that
+        explicitly asked for TLS.
+      * the legacy flags are not real booleans. `bool("false")` is True, so a
+        stringly-typed row would otherwise be read as the opposite of its intent.
+      * both legacy flags are true — a combination aiosmtplib refuses outright.
     """
-    mode = config.get("security")
-    if mode in SECURITY_FLAGS:
-        return mode
-    use_tls = bool(config.get("use_tls"))
-    start_tls = bool(config.get("start_tls", True))
+    if config.get("security") is not None:      # explicit; null/absent means legacy
+        mode = config["security"]
+        return mode if mode in SECURITY_FLAGS else None
+
+    use_tls = config.get("use_tls", False)
+    start_tls = config.get("start_tls", True)
+    if not isinstance(use_tls, bool) or not isinstance(start_tls, bool):
+        return None
     if use_tls and start_tls:
         return None
     if use_tls:
@@ -168,18 +193,25 @@ def _encrypt(value: str) -> str:
     return _get_fernet().encrypt(value.encode()).decode()
 
 
-def _decrypt(value: str) -> str:
-    if not value:
+def _decrypt(value: object) -> str:
+    """Return the plaintext, or "" for anything that cannot be decrypted.
+
+    Deliberately fail-closed on every bad input rather than raising: a row whose
+    password_enc is a non-string (hand-edited JSON, a schema change) would
+    otherwise raise AttributeError out of get_smtp_config and 500 the admin API.
+    Callers distinguish "no password" from "could not decrypt" via _decrypt_failed.
+    """
+    if not isinstance(value, str) or not value:
         return ""
     try:
         return _get_fernet().decrypt(value.encode()).decode()
-    except InvalidToken:
+    except (InvalidToken, ValueError, TypeError):
         logger.warning("Failed to decrypt value — secret key may have changed")
         return ""
 
 
 async def get_smtp_config() -> dict | None:
-    now = time.time()
+    now = _now()
     if _cfg_cache["cached"] and now - _cfg_cache["ts"] < _CFG_TTL:
         cached = _cfg_cache["value"]
         return copy.deepcopy(cached) if cached is not None else None  # deep copy so callers can't mutate the cache
@@ -192,15 +224,24 @@ async def get_smtp_config() -> dict | None:
         config = None
     else:
         config = json.loads(row["config"])
-        # Decrypt password — keep encrypted value if decryption fails (key rotation)
-        if config.get("password_enc"):
-            decrypted = _decrypt(config["password_enc"])
-            if decrypted:
-                config["password"] = decrypted
-            else:
-                config["password"] = ""
+        # Always strip the ciphertext, whatever shape it is in. pop() rather than a
+        # del inside the branch: an empty or non-string password_enc would otherwise
+        # survive into the returned config, and the API only filters keys starting
+        # with "_", so it would be served to the client.
+        password_enc = config.pop("password_enc", _ABSENT)
+        # Sentinel, not truthiness: the key being PRESENT means a password was meant
+        # to be stored, so a blank or unusable value is a failure to recover it — not
+        # "no password". save_smtp_config never writes an empty password_enc, so an
+        # empty one is a malformed row, and refusing beats silently downgrading to an
+        # anonymous session.
+        if password_enc is not _ABSENT:
+            decrypted = _decrypt(password_enc)
+            config["password"] = decrypted
+            if not decrypted:
+                # Wrong key (secret rotated) or corrupt ciphertext. Surfaced so the
+                # admin is told to re-enter it, and the send path refuses rather
+                # than silently authenticating with a blank password.
                 config["_decrypt_failed"] = True
-            del config["password_enc"]
 
     _cfg_cache.update(value=config, ts=now, cached=True)
     return copy.deepcopy(config) if config is not None else None
@@ -252,7 +293,7 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
     resource. A keyless call — the admin's manual /api/alerts/test — bypasses both.
     """
     if key:
-        now = time.time()
+        now = _now()
         if _last_sent.get(key, 0) + COOLDOWN_SECONDS > now:
             return {"ok": False, "error": "Cooldown active"}
         if _last_attempt.get(key, 0) + FAILURE_BACKOFF_SECONDS > now:
@@ -275,13 +316,25 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
     if not _is_email(recipient):
         return {"ok": False, "error": "No valid recipient is configured"}
 
+    # Credentials are all-or-nothing. aiosmtplib authenticates whenever username is
+    # not None and turns a None password into "" (smtp.py:530-534), so a username
+    # left behind by clear_password would retry AUTH PLAIN with a blank secret —
+    # repeated auth failures, or a lockout on the relay. The mirror case is quieter
+    # but worse: a password with no username is ignored entirely, so the operator
+    # believes the relay is authenticated when the session is anonymous.
+    username = _clean(config.get("username")) or None
+    password = config.get("password") or None
+    if (username is None) != (password is None):
+        return {"ok": False, "error":
+                "SMTP credentials are incomplete — set both a username and a password, or neither"}
+
     # Record the attempt BEFORE the first thing that can block on the network. DNS
     # resolution is a network call and can hang; recording after it would let a
     # failing resolver be re-invoked once per collection tick. Everything above this
     # line is a cheap in-memory check, so throttling those would only delay recovery
     # once the operator fixes the configuration.
     if key:
-        _last_attempt[key] = time.time()
+        _last_attempt[key] = _now()
 
     # Defense-in-depth: re-validate at send time so a config written before this
     # check (or by another code path) can't be used as an SSRF primitive. Bounded
@@ -304,10 +357,9 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
             msg,
             hostname=_clean(config["host"]),
             port=int(config.get("port", 587)),
-            # aiosmtplib gates AUTH on `username is not None`, so an empty string
-            # would make it emit AUTH PLAIN with blank credentials.
-            username=_clean(config.get("username")) or None,
-            password=config.get("password") or None,
+            # Both None (anonymous relay) or both set — enforced above.
+            username=username,
+            password=password,
             use_tls=use_tls,
             start_tls=start_tls,
             timeout=10,
@@ -322,7 +374,7 @@ async def send_alert_email(subject: str, body: str, key: str | None = None) -> d
 
     logger.info("SMTP server accepted alert email: %s", subject)
     if key:
-        _last_sent[key] = time.time()
+        _last_sent[key] = _now()
     return {"ok": True}
 
 
