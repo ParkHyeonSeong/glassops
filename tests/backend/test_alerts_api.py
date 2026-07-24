@@ -331,7 +331,13 @@ async def test_masked_password_round_trip_preserves_the_credential(client):
     await client.post("/api/alerts/config", json=valid_body(password="pw-under-test"))
     loaded = (await client.get("/api/alerts/config")).json()
 
-    # Exactly what the UI does: post the loaded config straight back.
+    # Contract under test: a VALID request DTO carrying the mask back keeps the
+    # stored credential. This is NOT a full GET->POST round-trip: the GET response
+    # also carries response-only fields (configured, password_decrypt_failed,
+    # security_ambiguous) that extra="forbid" rejects, so a UI that reposts the raw
+    # GET body 422s. Projecting the GET into a request DTO is Task 6's job; see the
+    # final report's note that stock UI save is broken while Task 5 stands alone.
+    assert loaded["password"] == "********"
     r = await client.post("/api/alerts/config", json=valid_body(
         password=loaded["password"], security=loaded["security"]))
 
@@ -448,3 +454,130 @@ async def test_test_endpoint_surfaces_the_failure_detail(client, monkeypatch):
 
     assert r.status_code == 400
     assert r.json()["detail"] == "Connection refused"
+
+
+# --- strict typing: no JSON coercion -------------------------------------
+
+@pytest.mark.parametrize("overrides", [
+    {"clear_password": "true"},              # -> True would delete the stored password
+    {"clear_password": "false"},
+    {"clear_password": 0},
+    {"clear_password": 1},
+    {"use_tls": "true", "security": None},
+    {"use_tls": "false", "security": None},
+    {"start_tls": "false", "security": None},
+    {"use_tls": 0, "start_tls": 1, "security": None},
+    {"port": "587"},
+    {"port": True},
+    {"port": 587.0},
+])
+async def test_coerced_scalar_types_are_rejected(client, overrides):
+    """extra='forbid' alone still lets pydantic coerce '"true"' -> True, '"587"' ->
+    587 and true -> 1. clear_password='true' would delete a stored credential, and a
+    boolean port silently becomes 1."""
+    r = await client.post("/api/alerts/config", json=valid_body(**overrides))
+
+    assert r.status_code == 422
+    assert await stored() == {}
+
+
+async def test_string_legacy_flags_do_not_normalise_to_plaintext(client):
+    # The sharpest case: security=null with stringy 'false' flags coerced to False
+    # would derive security='none' — plaintext SMTP — bypassing Task 4's
+    # "non-bool legacy flag is ambiguous" contract at the schema edge.
+    body = valid_body()
+    body.update(security=None, use_tls="false", start_tls="false")
+
+    r = await client.post("/api/alerts/config", json=body)
+
+    assert r.status_code == 422
+    assert await stored() == {}
+
+
+async def test_valid_typed_payload_is_still_accepted(client):
+    # Guards that strict does not break the normal Task 6 JSON shape: int port, real
+    # booleans, string security, int thresholds.
+    r = await client.post("/api/alerts/config", json=valid_body(
+        port=465, security="implicit_tls", use_tls=True, start_tls=False,
+        thresholds={"cpu_crit": 88, "mem_crit": 70, "disk_crit": 60}))
+
+    assert r.status_code == 200
+    row = await stored()
+    assert row["port"] == 465
+    assert row["thresholds"] == {"cpu_crit": 88, "mem_crit": 70, "disk_crit": 60}
+
+
+# --- every error path is a scrubbed 422 ----------------------------------
+
+@pytest.fixture
+def no_dns(monkeypatch):
+    """Spy that FAILS if the DNS/SSRF validator is called at all. Schema and parser
+    errors must be refused before it — moving DNS validation earlier is otherwise
+    invisible, because the client fixture makes the real validator always succeed."""
+    called = {"n": 0}
+
+    async def spy(host, port):
+        called["n"] += 1
+        raise AssertionError("validate_smtp_target_async called before schema validation")
+
+    monkeypatch.setattr("app.routers.alerts.validate_smtp_target_async", spy)
+    return called
+
+
+@pytest.mark.parametrize("kw", [
+    {"json": None},                                                    # JSON null
+    {"content": b""},                                                  # empty body
+    {"content": b'{"password": "pw-under-test", ',                     # malformed JSON
+     "headers": {"Content-Type": "application/json"}},
+    {"content": b'\xff\xfe{"password": "pw-under-test"}',              # invalid UTF-8
+     "headers": {"Content-Type": "application/json"}},
+    {"json": [{"password": "pw-under-test"}]},                         # top-level array
+    {"json": "password=pw-under-test"},                               # top-level string
+    {"json": 42},                                                     # top-level number
+    {"json": _drop("to_email")},                                      # missing required
+    {"json": valid_body(password="pw-under-test", port="not-a-port")},  # field type error
+    {"json": {**valid_body(password="pw-under-test"), "password_enc": "x"}},  # extra field
+])
+async def test_every_error_response_is_a_scrubbed_422(client, no_dns, kw):
+    r = await client.post("/api/alerts/config", **kw)
+
+    assert r.status_code == 422
+    assert "pw-under-test" not in r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, list) and detail
+    for entry in detail:
+        assert set(entry) == {"loc", "msg", "type"}
+    assert await stored() == {}
+    assert no_dns["n"] == 0
+
+
+# --- ordering: DNS runs only after schema + sender validation ------------
+
+@pytest.mark.parametrize("bad", [
+    {"thresholds": {"cpu_crit": 999, "mem_crit": 90, "disk_crit": 95}},  # schema
+    {"to_email": "not-an-address"},                                      # schema
+    {"password_enc": "injected"},                                        # extra=forbid
+    {"port": "587"},                                                     # coercion
+    {"from_email": "", "username": "relay-login"},                       # sender gate
+])
+async def test_dns_validator_is_not_called_for_invalid_requests(client, no_dns, bad):
+    r = await client.post("/api/alerts/config", json=valid_body(**bad))
+
+    assert r.status_code in (400, 422)
+    assert no_dns["n"] == 0
+    assert await stored() == {}
+
+
+async def test_dns_validator_runs_for_a_valid_request(client, monkeypatch):
+    seen = {"host": None, "port": None}
+
+    async def spy(host, port):
+        seen["host"], seen["port"] = host, port
+
+    monkeypatch.setattr("app.routers.alerts.validate_smtp_target_async", spy)
+
+    r = await client.post("/api/alerts/config", json=valid_body(host="  relay.example.com  "))
+
+    assert r.status_code == 200
+    # It ran, and after the host was stripped by the model.
+    assert seen == {"host": "relay.example.com", "port": 587}

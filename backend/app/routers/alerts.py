@@ -1,11 +1,12 @@
 """Alert configuration API — SMTP settings. Admin-only."""
 
-from typing import Any, Literal
+import json
+from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import (
-    BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, ValidationError,
-    ValidationInfo, field_validator, model_validator,
+    BaseModel, ConfigDict, EmailStr, Field, TypeAdapter,
+    ValidationError, ValidationInfo, field_validator, model_validator,
 )
 
 from app.dependencies import require_admin
@@ -67,9 +68,14 @@ class EmailThresholds(BaseModel):
 
 
 class SmtpConfig(BaseModel):
-    # extra="forbid" so an unknown key (notably an injected `password_enc`) is a 422
-    # rather than being silently dropped.
-    model_config = ConfigDict(extra="forbid")
+    # strict=True as well as extra="forbid". Without strict, pydantic coerces JSON
+    # scalars: clear_password="true" -> True (would delete a stored credential),
+    # use_tls="false" -> False (derives security="none" = plaintext, bypassing Task
+    # 4's "non-bool legacy flag is ambiguous" contract), port=true -> 1, port="587"
+    # -> 587. strict still accepts the normal Task 6 JSON shape — a JSON int for
+    # port, real booleans for the flags, strings for security/emails, and a nested
+    # object for thresholds — so nothing legitimate breaks.
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     host: str
     port: int = 587
@@ -157,18 +163,45 @@ async def get_config(_: str = Depends(require_admin)):
     return {"configured": True, **safe}
 
 
+def _scrubbed_422(detail: list[dict]) -> HTTPException:
+    return HTTPException(422, detail=detail)
+
+
 @router.post("/config")
-async def set_config(raw: Any = Body(...), _: str = Depends(require_admin)):
-    # `Any`, not `dict`: FastAPI validates a declared `dict` BEFORE the route runs,
-    # and its automatic 422 for a top-level list or string embeds the whole body,
-    # password included. Accept any JSON and do every check here.
+async def set_config(request: Request, _: str = Depends(require_admin)):
+    # Parse the body inside the route, not via a typed parameter. A declared body
+    # parameter lets FastAPI run its own validation BEFORE the route — and its 422
+    # for a parse failure, a top-level non-object or a missing field embeds the raw
+    # value as `input` (and `ctx`), which the loc/msg/type contract forbids and which
+    # would echo the plaintext password on some paths. Everything below is scrubbed
+    # to loc/msg/type; the raw body, `input`, `ctx` and exception text never appear
+    # in a response or a log. This is route-local — no global handler is touched, so
+    # other APIs keep FastAPI's default behaviour.
+    #
+    # Order is fixed: auth (dependency) -> parse -> object check -> strict schema ->
+    # sender -> bounded DNS/SSRF -> save. DNS is a network call, so it runs only
+    # after everything cheap and local has passed.
+    try:
+        raw = json.loads(await request.body())
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        raise _scrubbed_422(
+            [{"loc": ["body"], "msg": "Request body must be a valid JSON object",
+              "type": "json_invalid"}])
     if not isinstance(raw, dict):
-        raise HTTPException(422, detail=[
-            {"loc": ["body"], "msg": "Expected a JSON object", "type": "type_error"}])
+        raise _scrubbed_422(
+            [{"loc": ["body"], "msg": "Expected a JSON object", "type": "type_error"}])
+
     try:
         body = SmtpConfig.model_validate(raw)
     except ValidationError as e:
-        raise HTTPException(422, detail=_safe_errors(e))
+        raise _scrubbed_422(_safe_errors(e))
+
+    config = body.model_dump()
+    if not resolve_sender(config):
+        raise HTTPException(
+            400,
+            "A From Email is required (or a username that is itself a valid email address)",
+        )
 
     # Reject SSRF/internal-scan targets before persisting (INJECT-04). Bounded and
     # off-loop: a synchronous getaddrinfo here would block every other request and
@@ -179,12 +212,6 @@ async def set_config(raw: Any = Body(...), _: str = Depends(require_admin)):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    config = body.model_dump()
-    if not resolve_sender(config):
-        raise HTTPException(
-            400,
-            "A From Email is required (or a username that is itself a valid email address)",
-        )
     # MASKED_PASSWORD / "" mean "keep existing"; clear_password is the only removal.
     await save_smtp_config(config)
     return {"ok": True}
