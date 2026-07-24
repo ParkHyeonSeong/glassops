@@ -4,6 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
 import { useThresholdsStore } from "../../stores/thresholdsStore";
 import { type AlertMetricKey } from "../../lib/thresholds";
+import { formatApiDetail } from "../../lib/apiDetail";
 import { fetchWithAuth } from "../../utils/api";
 
 type Tab = "profile" | "agents" | "server" | "alerts" | "email" | "appearance";
@@ -280,6 +281,24 @@ function ServerTab() {
   );
 }
 
+type SecurityMode = "starttls" | "implicit_tls" | "none";
+
+const SECURITY_OPTIONS: { value: SecurityMode; label: string; port: number }[] = [
+  { value: "starttls", label: "STARTTLS", port: 587 },
+  { value: "implicit_tls", label: "Implicit TLS", port: 465 },
+  { value: "none", label: "None (no encryption)", port: 25 },
+];
+
+interface EmailThresholds {
+  cpu_crit: number;
+  mem_crit: number;
+  disk_crit: number;
+}
+
+// The editable form shape — a projection of the GET response that carries ONLY the
+// fields the POST body accepts. The GET response also returns configured,
+// password_decrypt_failed and security_ambiguous, which SmtpConfig rejects
+// (extra="forbid"); keeping them out of this type keeps them out of the payload.
 interface EmailConfig {
   host: string;
   port: number;
@@ -287,8 +306,11 @@ interface EmailConfig {
   password: string;
   from_email: string;
   to_email: string;
-  use_tls: boolean;
-  start_tls: boolean;
+  // null = an ambiguous legacy row (both TLS flags set). The operator must pick
+  // before anything can be saved; defaulting here would silently rewrite their
+  // transport, which is the bug the backend canonicalisation exists to stop.
+  security: SecurityMode | null;
+  thresholds: EmailThresholds;
 }
 
 type EmailFieldKey = "host" | "port" | "username" | "password" | "from_email" | "to_email";
@@ -297,92 +319,261 @@ interface EmailField {
   key: EmailFieldKey;
   label: string;
   type?: "text" | "number" | "password";
+  hint?: string;
 }
 
-function EmailTab() {
-  const [config, setConfig] = useState<EmailConfig>({
-    host: "",
-    port: 587,
-    username: "",
-    password: "",
-    from_email: "",
-    to_email: "",
-    use_tls: false,
-    start_tls: true,
-  });
-  const [msg, setMsg] = useState("");
-  const [loaded, setLoaded] = useState(false);
+const EMAIL_FIELDS: EmailField[] = [
+  { key: "host", label: "SMTP Host", hint: "Hostname only — no smtp:// scheme, no port suffix." },
+  { key: "port", label: "Port", type: "number" },
+  { key: "username", label: "Username", hint: "SMTP login identifier. Leave blank for an unauthenticated relay." },
+  { key: "password", label: "Password", type: "password" },
+  { key: "from_email", label: "From Email", hint: "Required, unless the username is itself an email address." },
+  { key: "to_email", label: "To Email (alerts)" },
+];
 
-  const updateEmailField = (key: EmailFieldKey, rawValue: string) => {
-    setConfig((previous) => (
-      key === "port"
-        ? { ...previous, port: Number(rawValue) }
-        : { ...previous, [key]: rawValue }
+const THRESHOLD_FIELDS: { key: keyof EmailThresholds; label: string }[] = [
+  { key: "cpu_crit", label: "CPU critical (%)" },
+  { key: "mem_crit", label: "Memory critical (%)" },
+  { key: "disk_crit", label: "Disk critical (%)" },
+];
+
+const EMPTY_EMAIL_CONFIG: EmailConfig = {
+  host: "", port: 587, username: "", password: "", from_email: "", to_email: "",
+  security: "starttls",   // a NEW config legitimately defaults; a loaded null does not
+  thresholds: { cpu_crit: 90, mem_crit: 90, disk_crit: 95 },
+};
+
+type EmailStatus =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "sending" }
+  | { kind: "accepted"; detail: string }
+  | { kind: "savedTestFailed"; detail: string }
+  | { kind: "error"; detail: string };
+
+function EmailTab() {
+  const role = useAuthStore((s) => s.role);
+  const [config, setConfig] = useState<EmailConfig>(EMPTY_EMAIL_CONFIG);
+  const [status, setStatus] = useState<EmailStatus>({ kind: "idle" });
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [decryptFailed, setDecryptFailed] = useState(false);
+  const isAdmin = role === "admin";
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    fetchWithAuth("/api/alerts/config")
+      .then((r) => {
+        // A 403/500 body is not a config. Falling through would render a blank
+        // editable form, and saving it would overwrite the real stored settings.
+        if (!r.ok) throw new Error(`config load failed: ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (cancelled) return;
+        if (d.configured) {
+          // Project the response into the form DTO explicitly. Only these fields
+          // exist on EmailConfig, so the response-only fields (configured,
+          // password_decrypt_failed, security_ambiguous) can never reach the POST.
+          setConfig({
+            host: d.host ?? "",
+            port: Number(d.port ?? 587),
+            username: d.username ?? "",
+            password: d.password ?? "",
+            from_email: d.from_email ?? "",
+            to_email: d.to_email ?? "",
+            // NEVER default an ambiguous legacy row (backend sends security: null
+            // with security_ambiguous: true). Guessing here would re-introduce the
+            // silent STARTTLS rewrite the backend fix exists to prevent.
+            security: (d.security as SecurityMode | null) ?? null,
+            thresholds: { ...EMPTY_EMAIL_CONFIG.thresholds, ...(d.thresholds ?? {}) },
+          });
+          setDecryptFailed(Boolean(d.password_decrypt_failed));
+        }
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
+        setLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, [isAdmin]);
+
+  const updateField = (key: EmailFieldKey, rawValue: string) => {
+    setStatus({ kind: "idle" });
+    setConfig((prev) => (
+      key === "port" ? { ...prev, port: Number(rawValue) } : { ...prev, [key]: rawValue }
     ));
   };
 
-  useEffect(() => {
-    fetchWithAuth("/api/alerts/config").then((r) => r.json()).then((d) => {
-      if (d.configured) {
-        setConfig((prev) => ({ ...prev, ...d }));
+  const updateThreshold = (key: keyof EmailThresholds, rawValue: string) => {
+    setStatus({ kind: "idle" });
+    setConfig((prev) => ({
+      ...prev, thresholds: { ...prev.thresholds, [key]: Number(rawValue) },
+    }));
+  };
+
+  // Save first, then test the configuration that was just persisted — testing a
+  // dirty form against the last-saved config silently checks the wrong settings.
+  const handleSaveAndTest = async () => {
+    // Snapshot the payload so a late edit cannot change what gets tested. `config`
+    // holds only the DTO fields, and the button is disabled while security is null,
+    // so `security` is a concrete mode here.
+    const payload = JSON.stringify({ ...config, clear_password: false });
+    setStatus({ kind: "saving" });
+    try {
+      const saveRes = await fetchWithAuth("/api/alerts/config", { method: "POST", body: payload });
+      if (!saveRes.ok) {
+        const d = await saveRes.json().catch(() => ({}));
+        setStatus({ kind: "error", detail: formatApiDetail(d.detail, "Save failed") });
+        return;
       }
-      setLoaded(true);
-    }).catch(() => setLoaded(true));
-  }, []);
+    } catch (e) {
+      // Save-phase failure only. The config was NOT stored.
+      setStatus({ kind: "error", detail: e instanceof Error ? e.message : "Save failed" });
+      return;
+    }
 
-  const handleSave = async () => {
-    setMsg("");
-    const res = await fetchWithAuth("/api/alerts/config", {
-      method: "POST",
-      body: JSON.stringify(config),
-    });
-    setMsg(res.ok ? "Saved" : "Failed to save");
+    // Separate try: past this point the save HAS landed, so every failure — including
+    // a thrown network error — must still tell the operator their settings are stored.
+    setStatus({ kind: "sending" });
+    try {
+      const testRes = await fetchWithAuth("/api/alerts/test", { method: "POST" });
+      const d = await testRes.json().catch(() => ({}));
+      if (!testRes.ok) {
+        setStatus({ kind: "savedTestFailed", detail: formatApiDetail(d.detail, "Send failed") });
+        return;
+      }
+      setStatus({ kind: "accepted",
+                  detail: formatApiDetail(d.detail, "SMTP server accepted the message") });
+    } catch (e) {
+      setStatus({ kind: "savedTestFailed",
+                  detail: e instanceof Error ? e.message : "Request failed" });
+    }
   };
 
-  const handleTest = async () => {
-    setMsg("Sending...");
-    const res = await fetchWithAuth("/api/alerts/test", { method: "POST" });
-    const d = await res.json().catch(() => ({}));
-    setMsg(res.ok ? "Test email sent!" : d.detail || "Send failed");
-  };
-
+  if (!isAdmin) {
+    return (
+      <div className="settings-section">
+        <h3 className="settings-title">Email Alerts (SMTP)</h3>
+        <p className="settings-hint">Admin access required to view or change SMTP settings.</p>
+      </div>
+    );
+  }
   if (!loaded) return <p className="settings-hint">Loading...</p>;
+  if (loadError) {
+    // Error only — never a blank editable form, which an operator could "fix" by
+    // saving, overwriting the real stored configuration with empty values.
+    return (
+      <div className="settings-section">
+        <h3 className="settings-title">Email Alerts (SMTP)</h3>
+        <p className="settings-msg">
+          Could not load the email settings. Check the connection and reopen this tab.
+        </p>
+      </div>
+    );
+  }
 
-  const fields: EmailField[] = [
-    { key: "host", label: "SMTP Host" },
-    { key: "port", label: "Port", type: "number" },
-    { key: "username", label: "Username" },
-    { key: "password", label: "Password", type: "password" },
-    { key: "from_email", label: "From Email" },
-    { key: "to_email", label: "To Email (alerts)" },
-  ];
+  const pending = status.kind === "saving" || status.kind === "sending";
+  const recommendedPort =
+    SECURITY_OPTIONS.find((o) => o.value === config.security)?.port ?? 587;
 
   return (
     <div className="settings-section">
       <h3 className="settings-title">Email Alerts (SMTP)</h3>
-      {fields.map((f) => (
+      {decryptFailed && (
+        <p className="settings-msg">
+          The stored password could not be decrypted (the master secret changed).
+          Re-enter it before saving.
+        </p>
+      )}
+
+      {EMAIL_FIELDS.map((f) => (
         <div key={f.key} className="settings-field">
-          <label className="settings-label">{f.label}</label>
+          <label className="settings-label" htmlFor={`email-${f.key}`}>{f.label}</label>
           <input
+            id={`email-${f.key}`}
             type={f.type || "text"}
             value={config[f.key]}
-            onChange={(event) => updateEmailField(f.key, event.target.value)}
+            onChange={(event) => updateField(f.key, event.target.value)}
+            disabled={pending}
             className="settings-input"
+          />
+          {f.hint && <span className="settings-hint">{f.hint}</span>}
+        </div>
+      ))}
+
+      <div className="settings-field">
+        <label className="settings-label" htmlFor="email-security">Security</label>
+        <select
+          id="email-security"
+          className="settings-input"
+          value={config.security ?? ""}
+          disabled={pending}
+          onChange={(e) => {
+            setStatus({ kind: "idle" });
+            setConfig((prev) => ({ ...prev, security: e.target.value as SecurityMode }));
+          }}
+        >
+          {config.security === null && (
+            <option value="" disabled>— select a security mode —</option>
+          )}
+          {SECURITY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        {config.security === null && (
+          <span className="settings-msg">
+            This configuration predates the security-mode setting and its stored TLS
+            flags contradict each other. Pick a mode before saving — alerts will not
+            send until you do.
+          </span>
+        )}
+        <span className="settings-hint">
+          Recommended port: {recommendedPort}. Allowed ports are 25, 465, 587 and 2525.
+        </span>
+      </div>
+
+      <h4 className="settings-subtitle">Email critical thresholds</h4>
+      <p className="settings-hint">
+        Server-side, and separate from the in-browser thresholds under Settings &gt; Alerts.
+        These decide when an email is sent, even with nobody logged in.
+      </p>
+      {THRESHOLD_FIELDS.map((t) => (
+        <div key={t.key} className="settings-field">
+          <label className="settings-label" htmlFor={`email-${t.key}`}>{t.label}</label>
+          <input
+            id={`email-${t.key}`}
+            type="number"
+            min={0}
+            max={100}
+            value={config.thresholds[t.key]}
+            onChange={(e) => updateThreshold(t.key, e.target.value)}
+            disabled={pending}
+            className="settings-input"
+            style={{ width: 80 }}
           />
         </div>
       ))}
-      <div className="settings-field">
-        <label className="settings-label">
-          <input type="checkbox" checked={config.start_tls}
-            onChange={(e) => setConfig((prev) => ({ ...prev, start_tls: e.target.checked }))} />
-          {" "}STARTTLS
-        </label>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="settings-btn" onClick={handleSaveAndTest}
+          disabled={pending || !config.host || config.security === null}>
+          {status.kind === "saving" ? "Saving..."
+            : status.kind === "sending" ? "Sending..."
+            : "Save & Send Test"}
+        </button>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <button className="settings-btn" onClick={handleSave}>Save</button>
-        <button className="settings-btn" onClick={handleTest} disabled={!config.host}>Test Email</button>
-      </div>
-      {msg && <p className="settings-msg">{msg}</p>}
+
+      {status.kind === "accepted" && (
+        <p className="settings-msg">{status.detail} — check the inbox to confirm delivery.</p>
+      )}
+      {status.kind === "savedTestFailed" && (
+        <p className="settings-msg">Settings saved, but the test send failed: {status.detail}</p>
+      )}
+      {status.kind === "error" && <p className="settings-msg">{status.detail}</p>}
     </div>
   );
 }
