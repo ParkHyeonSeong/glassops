@@ -167,7 +167,18 @@ def _scrubbed_422(detail: list[dict]) -> HTTPException:
     return HTTPException(422, detail=detail)
 
 
-@router.post("/config")
+# The body is parsed by hand (see set_config), so FastAPI cannot infer the request
+# schema and the endpoint would be undocumented in OpenAPI. Re-attach it from the
+# model, generated once at import so it never drifts from SmtpConfig.
+_CONFIG_REQUEST_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": SmtpConfig.model_json_schema()}},
+    }
+}
+
+
+@router.post("/config", openapi_extra=_CONFIG_REQUEST_BODY)
 async def set_config(request: Request, _: str = Depends(require_admin)):
     # Parse the body inside the route, not via a typed parameter. A declared body
     # parameter lets FastAPI run its own validation BEFORE the route — and its 422
@@ -183,7 +194,10 @@ async def set_config(request: Request, _: str = Depends(require_admin)):
     # after everything cheap and local has passed.
     try:
         raw = json.loads(await request.body())
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError (not a ValueError) is what json.loads raises on
+        # pathologically nested input; without it that one path would 500 and escape
+        # the fixed loc/msg/type contract.
         raise _scrubbed_422(
             [{"loc": ["body"], "msg": "Request body must be a valid JSON object",
               "type": "json_invalid"}])

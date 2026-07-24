@@ -581,3 +581,42 @@ async def test_dns_validator_runs_for_a_valid_request(client, monkeypatch):
     assert r.status_code == 200
     # It ran, and after the host was stripped by the model.
     assert seen == {"host": "relay.example.com", "port": 587}
+
+
+# --- completeness: no error path escapes the scrubbed 422 ----------------
+
+async def test_deeply_nested_json_is_a_scrubbed_422_not_a_500(client, no_dns):
+    """json.loads raises RecursionError (not a ValueError) on pathologically nested
+    input, which would otherwise 500 — the one error path that escaped the fixed
+    loc/msg/type contract."""
+    payload = ("[" * 20000 + "]" * 20000).encode()
+
+    r = await client.post("/api/alerts/config", content=payload,
+                          headers={"Content-Type": "application/json"})
+
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert isinstance(detail, list) and detail
+    for entry in detail:
+        assert set(entry) == {"loc", "msg", "type"}
+    assert no_dns["n"] == 0
+    assert await stored() == {}
+
+
+def test_post_config_documents_its_request_body_in_openapi():
+    """Manual Request parsing drops FastAPI's inferred requestBody, so the endpoint
+    became undocumented. It is re-attached from the SmtpConfig schema."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(alerts_router)
+
+    post = app.openapi()["paths"]["/api/alerts/config"]["post"]
+
+    assert "requestBody" in post
+    schema = post["requestBody"]["content"]["application/json"]["schema"]
+    # Resolve a local $ref if the body is referenced rather than inlined.
+    if "$ref" in schema:
+        name = schema["$ref"].rsplit("/", 1)[-1]
+        schema = app.openapi()["components"]["schemas"][name]
+    assert "host" in schema.get("properties", {})
+    assert "to_email" in schema.get("properties", {})
