@@ -18,6 +18,13 @@ from app.services.smtp_validate import validate_smtp_target
 
 logger = logging.getLogger("glassops.alerts")
 
+# Cooldown/backoff state is per-process, in-memory. The same-key send is kept
+# atomic by re-checking immediately before the first network await, with no await in
+# between (see send_alert_email) — which relies on a SINGLE event loop in a SINGLE
+# process. This holds for the current single-worker Uvicorn deployment. Moving to
+# multiple workers (or processes) would give each its own copy of these dicts, so the
+# cooldown would no longer be shared and the same alert could fire once per worker;
+# that step needs shared reservation (DB or Redis), not just these module globals.
 _last_sent: dict[str, float] = {}
 COOLDOWN_SECONDS = 300
 
