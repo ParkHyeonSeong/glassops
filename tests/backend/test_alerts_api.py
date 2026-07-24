@@ -595,28 +595,71 @@ async def test_deeply_nested_json_is_a_scrubbed_422_not_a_500(client, no_dns):
                           headers={"Content-Type": "application/json"})
 
     assert r.status_code == 422
-    detail = r.json()["detail"]
-    assert isinstance(detail, list) and detail
-    for entry in detail:
-        assert set(entry) == {"loc", "msg", "type"}
+    # Full-body equality, not just the key set: an exception string leaking into
+    # `msg` would pass a keys-only check but is exactly what must not happen.
+    assert r.json() == {"detail": [{
+        "loc": ["body"],
+        "msg": "Request body must be a valid JSON object",
+        "type": "json_invalid",
+    }]}
     assert no_dns["n"] == 0
     assert await stored() == {}
 
 
-def test_post_config_documents_its_request_body_in_openapi():
-    """Manual Request parsing drops FastAPI's inferred requestBody, so the endpoint
-    became undocumented. It is re-attached from the SmtpConfig schema."""
+def _resolve_ref(ref: str, doc: dict):
+    """Follow a local JSON Pointer ('#/a/b/c') from the document root, or raise."""
+    assert ref.startswith("#/"), f"non-local $ref: {ref}"
+    node = doc
+    for part in ref[2:].split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        node = node[part]   # KeyError here == a dangling $ref
+    return node
+
+
+def test_post_config_request_body_schema_is_fully_resolvable():
+    """Manual Request parsing drops FastAPI's inferred requestBody. It is re-attached
+    from SmtpConfig, but model_json_schema() emits '#/$defs/...' refs that do not
+    exist at the OpenAPI document root — so every local $ref in the request schema
+    must resolve from the root, recursively, or Swagger/codegen breaks on
+    thresholds."""
     from fastapi import FastAPI
     app = FastAPI()
     app.include_router(alerts_router)
+    doc = app.openapi()
 
-    post = app.openapi()["paths"]["/api/alerts/config"]["post"]
-
+    post = doc["paths"]["/api/alerts/config"]["post"]
     assert "requestBody" in post
     schema = post["requestBody"]["content"]["application/json"]["schema"]
-    # Resolve a local $ref if the body is referenced rather than inlined.
-    if "$ref" in schema:
-        name = schema["$ref"].rsplit("/", 1)[-1]
-        schema = app.openapi()["components"]["schemas"][name]
-    assert "host" in schema.get("properties", {})
-    assert "to_email" in schema.get("properties", {})
+
+    # Walk the whole schema; every local $ref must resolve from the document root.
+    resolved_refs = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                resolved_refs.append(node["$ref"])
+                walk(_resolve_ref(node["$ref"], doc))   # raises KeyError if dangling
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(schema)
+
+    # The body must reach both a top-level field and the nested threshold fields —
+    # the nested ones only exist if the EmailThresholds reference actually resolved.
+    def properties(node):
+        if isinstance(node, dict):
+            if "properties" in node:
+                yield from node["properties"]
+            if "$ref" in node:
+                yield from properties(_resolve_ref(node["$ref"], doc))
+            for v in node.values():
+                yield from properties(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from properties(v)
+
+    names = set(properties(schema))
+    assert {"host", "to_email", "cpu_crit", "disk_crit"} <= names

@@ -167,13 +167,48 @@ def _scrubbed_422(detail: list[dict]) -> HTTPException:
     return HTTPException(422, detail=detail)
 
 
+def _inline_defs(schema: dict) -> dict:
+    """Return `schema` with every local `#/$defs/...` reference inlined and `$defs`
+    removed.
+
+    model_json_schema() factors nested models (EmailThresholds) into a `$defs`
+    block and points at them with `#/$defs/EmailThresholds`. Handed to FastAPI via
+    openapi_extra it lands verbatim inside the operation, but the OpenAPI document
+    root has no `$defs`, so a consumer resolving that pointer gets KeyError and the
+    thresholds schema breaks. Inlining makes the request schema self-contained, so
+    it resolves the same wherever it is embedded. A `seen` chain guards the
+    (currently absent) possibility of a self-referential model.
+    """
+    defs = schema.get("$defs", {})
+
+    def resolve(node, seen):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.split("/")[-1]
+                if name in seen:
+                    return {}          # cycle: stop rather than recurse forever
+                target = defs.get(name, {})
+                inlined = resolve(target, seen | {name})
+                # Merge any sibling keywords alongside the $ref (siblings win).
+                siblings = {k: resolve(v, seen) for k, v in node.items() if k != "$ref"}
+                return {**inlined, **siblings}
+            return {k: resolve(v, seen) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [resolve(v, seen) for v in node]
+        return node
+
+    return resolve({k: v for k, v in schema.items() if k != "$defs"}, frozenset())
+
+
 # The body is parsed by hand (see set_config), so FastAPI cannot infer the request
 # schema and the endpoint would be undocumented in OpenAPI. Re-attach it from the
-# model, generated once at import so it never drifts from SmtpConfig.
+# model — inlined and generated once at import, so it stays self-contained and never
+# drifts from SmtpConfig.
 _CONFIG_REQUEST_BODY = {
     "requestBody": {
         "required": True,
-        "content": {"application/json": {"schema": SmtpConfig.model_json_schema()}},
+        "content": {"application/json": {"schema": _inline_defs(SmtpConfig.model_json_schema())}},
     }
 }
 
