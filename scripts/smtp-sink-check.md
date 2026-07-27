@@ -23,9 +23,14 @@ belongs in the unit-test gate.
 | `2` | BLOCKED — could not run at all |
 
 **BLOCKED is not a pass.** It means the SMTP path was never exercised, so the unit
-suites must not be reported as covering it. The causes are: no `docker` CLI, no
-reachable Docker daemon, no `git`, no `timeout`/`gtimeout`, or an unpinned Mailpit
-digest.
+suites must not be reported as covering it. The causes are: a missing `docker`,
+`git`, `curl` or `python3`; no `timeout`/`gtimeout`; no Docker Compose v2; an
+unreachable Docker daemon; or an unpinned Mailpit digest. Everything else — build,
+startup, login, config save, send, an assertion, or a failed teardown — is FAIL (1).
+
+Exit codes are normalised: every `curl`, `docker` and `docker compose` call is
+guarded, so a raw status like curl's `7` (connection refused) or `28` (timeout) can
+never escape as the script's exit code.
 
 ### Prerequisites
 
@@ -41,7 +46,9 @@ digest.
 ## What it asserts
 
 1. `GLASSOPS_SMTP_ALLOWED_HOSTS` is actually in effect — a POST naming a
-   non-allowlisted host must be refused before anything is sent. If this check does
+   non-allowlisted host must be refused before anything is sent. Both the status
+   (exactly `400`) and the exact `detail` string are asserted: a 500 whose body
+   merely mentions the variable would otherwise read as a pass. If this check does
    not fire, the rest of the run would be meaningless.
 2. Saving the sink config returns 200.
 3. `POST /api/alerts/test` returns 200.
@@ -55,6 +62,10 @@ digest.
      not catch it.
    - `To` is `ops@example.com`
    - body contains the test text
+
+   These are explicit `if … raise SystemExit(1)` checks, **not** `assert` statements:
+   `python -O` and `PYTHONOPTIMIZE=1` strip asserts outright, which would let a
+   completely wrong message pass every one of them.
 
 ## What it does *not* prove
 
@@ -82,6 +93,17 @@ into something that damages a real deployment.
 - **Trap-based cleanup.** `trap cleanup EXIT` plus `trap 'exit 129|130|143' HUP|INT|TERM`.
   The signal traps exist so an interrupted run cannot exit 0 — a bare
   `trap cleanup TERM` would let cleanup's own success set the status.
+- **PASS is printed only after a successful teardown.** Cleanup runs on EXIT, i.e.
+  *after* the last line of the script, so printing PASS at the end would report a
+  clean run even when containers, networks or volumes were left behind. The check
+  instead tears down explicitly, and a failed teardown turns a passing run into
+  exit 1 — keeping the generated compose file and printing the exact
+  `docker compose -f … -p … down` command needed to finish the job by hand.
+- **Every Docker call is bounded.** `docker info`, `compose port`, `compose down` and
+  the build all run under `timeout --kill-after`, so a child that ignores SIGTERM is
+  still killed. The sink polling loop uses a wall-clock deadline rather than an
+  iteration count — 20 iterations of a 20-second curl would be ~7 minutes, not 20
+  seconds.
 - **Its own database and volume.** `GLASSOPS_DB_PATH=/app/data/check.db` on a
   disposable named volume. The developer's `data/` directory, `.env`, and
   `alert_config` row are never read or written, so a real SMTP configuration cannot
