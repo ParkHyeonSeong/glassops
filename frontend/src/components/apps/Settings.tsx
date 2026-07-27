@@ -344,8 +344,14 @@ const THRESHOLD_FIELDS: { key: keyof EmailThresholds; label: string }[] = [
 function projectThresholds(raw: unknown): EmailThresholds {
   const src = (raw ?? {}) as Partial<Record<keyof EmailThresholds, unknown>>;
   const pick = (key: keyof EmailThresholds): number => {
-    const v = Number(src[key]);
-    return Number.isFinite(v) ? v : EMPTY_EMAIL_CONFIG.thresholds[key];
+    const v = src[key];
+    // Only a real number is accepted — never Number(v). Coercion would launder the
+    // exact values the backend's strict schema exists to reject: true becomes 1
+    // (CPU alerts above 1%), null and "" become 0, "90" becomes 90. A legacy row
+    // holding any of those falls back to the safe default instead.
+    return typeof v === "number" && Number.isFinite(v)
+      ? v
+      : EMPTY_EMAIL_CONFIG.thresholds[key];
   };
   return { cpu_crit: pick("cpu_crit"), mem_crit: pick("mem_crit"), disk_crit: pick("disk_crit") };
 }
@@ -443,6 +449,12 @@ function EmailTab() {
     // holds only the DTO fields, and the button is disabled while security is null,
     // so `security` is a concrete mode here.
     const payload = JSON.stringify({ ...config, clear_password: false });
+    // "" and the mask are both keep-requests: the backend leaves the stored
+    // password_enc exactly as it was, including a corrupt one. Only a real new
+    // secret changes the stored credential, and only then may the UI mask it and
+    // retire the decrypt warning.
+    const submittedNewPassword =
+      config.password !== "" && config.password !== MASKED_PASSWORD;
     setStatus({ kind: "saving" });
     try {
       const saveRes = await fetchWithAuth("/api/alerts/config", { method: "POST", body: payload });
@@ -451,10 +463,15 @@ function EmailTab() {
         setStatus({ kind: "error", detail: formatApiDetail(d.detail, "Save failed") });
         return;
       }
-      // The credential is stored now, so stop holding the plaintext in the DOM and
-      // drop any stale decrypt warning — the row it referred to has been replaced.
-      setConfig((prev) => ({ ...prev, password: MASKED_PASSWORD }));
-      setDecryptFailed(false);
+      if (submittedNewPassword) {
+        // A new secret is stored now: stop holding the plaintext in the DOM, and the
+        // decrypt warning is genuinely resolved because the row it referred to has
+        // been replaced. A keep-save must change neither — the backend preserved the
+        // old (possibly corrupt) marker, and an anonymous relay has no password to
+        // mask.
+        setConfig((prev) => ({ ...prev, password: MASKED_PASSWORD }));
+        setDecryptFailed(false);
+      }
     } catch (e) {
       // Save-phase failure only. The config was NOT stored.
       setStatus({ kind: "error", detail: e instanceof Error ? e.message : "Save failed" });

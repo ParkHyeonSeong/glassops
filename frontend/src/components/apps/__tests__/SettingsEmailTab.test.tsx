@@ -105,6 +105,83 @@ describe("Settings > Email", () => {
     expect(bodyOf(1).thresholds).toEqual({ cpu_crit: 88, mem_crit: 71, disk_crit: 66 });
   });
 
+  it.each([
+    ["a legacy boolean", true],
+    ["a numeric string", "90"],
+    ["null", null],
+    ["an empty string", ""],
+    ["a non-numeric string", "high"],
+  ])("does not launder %s into a threshold number", async (_label, bad) => {
+    // Number() turns true into 1, null and "" into 0, and "90" into 90 — values the
+    // backend's strict schema exists to reject. Laundering them here means a legacy
+    // cpu_crit: true is stored as 1 and CPU alerts fire above 1%.
+    await openEmailTab({
+      ...LOADED,
+      thresholds: { cpu_crit: bad, mem_crit: 71, disk_crit: 66 },
+    });
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    // Falls back to the safe default rather than to whatever Number() produced.
+    expect(bodyOf(1).thresholds).toEqual({ cpu_crit: 90, mem_crit: 71, disk_crit: 66 });
+  });
+
+  it("keeps an anonymous relay's password empty after a successful save", async () => {
+    // No credential is stored, so showing the mask would claim one exists.
+    await openEmailTab({ ...LOADED, password: "", username: "" });
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    expect(bodyOf(1).password).toBe("");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
+  it("keeps the decrypt warning when a save does not replace the password", async () => {
+    // save_smtp_config preserves a corrupt password_enc across a keep-save (""/mask),
+    // so the failure is still real after this save. Clearing the warning here would
+    // tell the operator the credential recovered when it did not.
+    await openEmailTab({ ...LOADED, password: "", password_decrypt_failed: true });
+    expect(screen.getByText(/could not be decrypted/i)).toBeInTheDocument();
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    // Edit something OTHER than the password.
+    fireEvent.change(screen.getByLabelText("To Email (alerts)"),
+      { target: { value: "oncall@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    expect(bodyOf(1).password).toBe("");
+    expect(screen.getByText(/could not be decrypted/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
+  it("keeps the decrypt warning when the untouched mask is re-saved", async () => {
+    // The mask is a keep-request too, so the backend preserved the corrupt marker.
+    // Treating "not empty" as "a new password" would clear the warning here.
+    await openEmailTab({ ...LOADED, password: "********", password_decrypt_failed: true });
+    expect(screen.getByText(/could not be decrypted/i)).toBeInTheDocument();
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    expect(bodyOf(1).password).toBe("********");
+    expect(screen.getByLabelText("Password")).toHaveValue("********");
+    expect(screen.getByText(/could not be decrypted/i)).toBeInTheDocument();
+  });
+
   it("keeps the form usable while the test send is in flight", async () => {
     // Only the SAVE request was previously held open, so a regression that cleared
     // pending during /test — allowing edits and duplicate sends — went unnoticed.
