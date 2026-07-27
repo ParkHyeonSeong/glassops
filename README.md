@@ -186,9 +186,10 @@ A success message means **the SMTP server accepted the message** — that is not
 it reached the inbox. Acceptance only says the relay took responsibility for the
 message; it can still bounce, be filtered, or be dropped downstream. Confirm in the
 recipient mailbox or the provider's delivery log. (The automated suites stub the SMTP
-boundary, so they prove the wire format, not delivery; an end-to-end check against a
-real SMTP server is a separate, opt-in step — see `scripts/smtp-sink-check.sh` once
-Task 8 lands.)
+boundary, so they prove the wire format, not delivery. For an end-to-end check against
+a real SMTP server — a local sink, asserting on what it actually received — run
+`scripts/smtp-sink-check.sh`; it is opt-in and needs a running Docker daemon. See
+`scripts/smtp-sink-check.md`.)
 
 The password field shows `********` for a stored credential. Posting that value back
 keeps the existing password; typing a new one replaces it. If `GLASSOPS_SECRET_KEY`
