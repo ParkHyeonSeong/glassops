@@ -37,4 +37,18 @@ describe("formatApiDetail", () => {
     expect(formatApiDetail([{ loc: ["password"], input: "pw-under-test" }], "Save failed"))
       .toBe("Save failed");
   });
+
+  it("ignores input/ctx on an otherwise VALID entry", () => {
+    // The dangerous case is not the malformed entry — it is a well-formed one that
+    // also carries `input`. The backend scrubs these, but a future handler (or
+    // another API rendered through this helper) might not, so only loc/msg is read.
+    const out = formatApiDetail(
+      [{ loc: ["body", "password"], msg: "Field required", type: "missing",
+         input: "pw-under-test", ctx: { given: "pw-under-test" } }],
+      "Save failed",
+    );
+
+    expect(out).toBe("password: Field required");
+    expect(out).not.toContain("pw-under-test");
+  });
 });

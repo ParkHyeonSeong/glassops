@@ -283,6 +283,10 @@ function ServerTab() {
 
 type SecurityMode = "starttls" | "implicit_tls" | "none";
 
+// What the API returns in place of a stored password, and what it accepts back to
+// mean "keep the stored one" (alert_service.MASKED_PASSWORD).
+const MASKED_PASSWORD = "********";
+
 const SECURITY_OPTIONS: { value: SecurityMode; label: string; port: number }[] = [
   { value: "starttls", label: "STARTTLS", port: 587 },
   { value: "implicit_tls", label: "Implicit TLS", port: 465 },
@@ -337,6 +341,15 @@ const THRESHOLD_FIELDS: { key: keyof EmailThresholds; label: string }[] = [
   { key: "disk_crit", label: "Disk critical (%)" },
 ];
 
+function projectThresholds(raw: unknown): EmailThresholds {
+  const src = (raw ?? {}) as Partial<Record<keyof EmailThresholds, unknown>>;
+  const pick = (key: keyof EmailThresholds): number => {
+    const v = Number(src[key]);
+    return Number.isFinite(v) ? v : EMPTY_EMAIL_CONFIG.thresholds[key];
+  };
+  return { cpu_crit: pick("cpu_crit"), mem_crit: pick("mem_crit"), disk_crit: pick("disk_crit") };
+}
+
 const EMPTY_EMAIL_CONFIG: EmailConfig = {
   host: "", port: 587, username: "", password: "", from_email: "", to_email: "",
   security: "starttls",   // a NEW config legitimately defaults; a loaded null does not
@@ -349,6 +362,10 @@ type EmailStatus =
   | { kind: "sending" }
   | { kind: "accepted"; detail: string }
   | { kind: "savedTestFailed"; detail: string }
+  // The save landed but the /test outcome is genuinely unknown: the request may
+  // have reached the relay and only the response was lost. Reporting that as a
+  // failure invites a retry that duplicates the test mail.
+  | { kind: "savedTestUnknown"; detail: string }
   | { kind: "error"; detail: string };
 
 function EmailTab() {
@@ -387,7 +404,11 @@ function EmailTab() {
             // with security_ambiguous: true). Guessing here would re-introduce the
             // silent STARTTLS rewrite the backend fix exists to prevent.
             security: (d.security as SecurityMode | null) ?? null,
-            thresholds: { ...EMPTY_EMAIL_CONFIG.thresholds, ...(d.thresholds ?? {}) },
+            // Field-wise, not a spread: `thresholds` was an untyped dict before the
+            // strict schema, so a stored row can still carry arbitrary keys. Spreading
+            // would carry them back into the POST, where extra="forbid" 422s — and the
+            // UI offers no way to remove them.
+            thresholds: projectThresholds(d.thresholds),
           });
           setDecryptFailed(Boolean(d.password_decrypt_failed));
         }
@@ -430,6 +451,10 @@ function EmailTab() {
         setStatus({ kind: "error", detail: formatApiDetail(d.detail, "Save failed") });
         return;
       }
+      // The credential is stored now, so stop holding the plaintext in the DOM and
+      // drop any stale decrypt warning — the row it referred to has been replaced.
+      setConfig((prev) => ({ ...prev, password: MASKED_PASSWORD }));
+      setDecryptFailed(false);
     } catch (e) {
       // Save-phase failure only. The config was NOT stored.
       setStatus({ kind: "error", detail: e instanceof Error ? e.message : "Save failed" });
@@ -449,7 +474,8 @@ function EmailTab() {
       setStatus({ kind: "accepted",
                   detail: formatApiDetail(d.detail, "SMTP server accepted the message") });
     } catch (e) {
-      setStatus({ kind: "savedTestFailed",
+      // No response at all — outcome unknown, not failed.
+      setStatus({ kind: "savedTestUnknown",
                   detail: e instanceof Error ? e.message : "Request failed" });
     }
   };
@@ -477,8 +503,8 @@ function EmailTab() {
   }
 
   const pending = status.kind === "saving" || status.kind === "sending";
-  const recommendedPort =
-    SECURITY_OPTIONS.find((o) => o.value === config.security)?.port ?? 587;
+  // Only rendered once a mode is chosen, so the lookup always hits.
+  const recommendedPort = SECURITY_OPTIONS.find((o) => o.value === config.security)?.port;
 
   return (
     <div className="settings-section">
@@ -524,16 +550,19 @@ function EmailTab() {
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
-        {config.security === null && (
+        {config.security === null ? (
+          // security=null means the stored transport could not be determined — an
+          // unsupported mode, a non-boolean flag, or contradictory flags. Naming one
+          // cause would be a guess, and no port can be recommended without a mode.
           <span className="settings-msg">
-            This configuration predates the security-mode setting and its stored TLS
-            flags contradict each other. Pick a mode before saving — alerts will not
-            send until you do.
+            The stored TLS configuration could not be determined. Pick a mode before
+            saving — alerts will not send until you do.
+          </span>
+        ) : (
+          <span className="settings-hint">
+            Recommended port: {recommendedPort}. Allowed ports are 25, 465, 587 and 2525.
           </span>
         )}
-        <span className="settings-hint">
-          Recommended port: {recommendedPort}. Allowed ports are 25, 465, 587 and 2525.
-        </span>
       </div>
 
       <h4 className="settings-subtitle">Email critical thresholds</h4>
@@ -572,6 +601,12 @@ function EmailTab() {
       )}
       {status.kind === "savedTestFailed" && (
         <p className="settings-msg">Settings saved, but the test send failed: {status.detail}</p>
+      )}
+      {status.kind === "savedTestUnknown" && (
+        <p className="settings-msg">
+          Settings saved, but we could not confirm the test result: {status.detail}.
+          The message may still have been sent — check the inbox before retrying.
+        </p>
       )}
       {status.kind === "error" && <p className="settings-msg">{status.detail}</p>}
     </div>

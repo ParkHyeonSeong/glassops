@@ -43,6 +43,11 @@ function bodyOf(call: number): Record<string, unknown> {
   return JSON.parse(String((init as RequestInit).body));
 }
 
+function methodOf(call: number): string | undefined {
+  const [, init] = vi.mocked(fetchWithAuth).mock.calls[call];
+  return (init as RequestInit | undefined)?.method;
+}
+
 describe("Settings > Email", () => {
   beforeEach(() => {
     vi.mocked(fetchWithAuth).mockReset();
@@ -69,9 +74,90 @@ describe("Settings > Email", () => {
     for (const field of RESPONSE_ONLY_FIELDS) {
       expect(posted).not.toHaveProperty(field);
     }
+    // Exact key set, not just "the known bad ones are absent": any future response
+    // field merged into state would otherwise ride along unnoticed.
+    expect(Object.keys(posted).sort()).toEqual([
+      "clear_password", "from_email", "host", "password", "port", "security",
+      "thresholds", "to_email", "username",
+    ]);
     // The edit survived and the untouched password stayed masked.
     expect(posted.to_email).toBe("oncall@example.com");
     expect(posted.password).toBe("********");
+    expect(methodOf(1)).toBe("POST");
+    expect(methodOf(2)).toBe("POST");
+  });
+
+  it("drops legacy extra threshold keys the old dict schema allowed", async () => {
+    // thresholds was `dict` before Task 5, so a stored row can carry arbitrary keys.
+    // Re-posting them now fails EmailThresholds(extra="forbid") with a 422 the UI
+    // gives the operator no way to clear.
+    await openEmailTab({
+      ...LOADED,
+      thresholds: { cpu_crit: 88, mem_crit: 71, disk_crit: 66, gpu_crit: 80, legacy_key: 1 },
+    });
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    expect(bodyOf(1).thresholds).toEqual({ cpu_crit: 88, mem_crit: 71, disk_crit: 66 });
+  });
+
+  it("keeps the form usable while the test send is in flight", async () => {
+    // Only the SAVE request was previously held open, so a regression that cleared
+    // pending during /test — allowing edits and duplicate sends — went unnoticed.
+    await openEmailTab();
+    const test = deferred<Response>();
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockReturnValueOnce(test.promise);
+
+    const button = screen.getByRole("button", { name: /Save & Send Test/i });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Sending/i })).toBeDisabled());
+    expect(screen.getByLabelText("SMTP Host")).toBeDisabled();
+    expect(screen.getByLabelText("Security")).toBeDisabled();
+    expect(screen.getByLabelText("CPU critical (%)")).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Sending/i }));
+    expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3);  // load + save + the one test
+
+    test.resolve(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+  });
+
+  it("reports an unknown outcome when the test response is lost", async () => {
+    // The request may have reached the relay and only the response was lost, so
+    // "failed" is wrong: it invites a retry that duplicates the test mail.
+    await openEmailTab();
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockRejectedValueOnce(new Error("network down"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    expect(await screen.findByText(/could not confirm the test result/i)).toBeInTheDocument();
+    expect(screen.queryByText(/test send failed/i)).toBeNull();
+    expect(screen.getByText(/network down/i)).toBeInTheDocument();
+  });
+
+  it("masks a newly entered password and clears the decrypt warning after saving", async () => {
+    await openEmailTab({ ...LOADED, password: "", password_decrypt_failed: true });
+    expect(screen.getByText(/could not be decrypted/i)).toBeInTheDocument();
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, detail: "SMTP server accepted the message" }));
+
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw-under-test" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
+
+    await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledTimes(3));
+    expect(bodyOf(1).password).toBe("pw-under-test");   // the real one reached the API
+    // ...but it must not linger in the DOM afterwards, and the stale warning is gone.
+    await waitFor(() => expect(screen.getByLabelText("Password")).toHaveValue("********"));
+    expect(screen.queryByText(/could not be decrypted/i)).toBeNull();
   });
 
   // "starttls" is also the EMPTY_EMAIL_CONFIG default, so asserting it alone would
@@ -294,6 +380,11 @@ describe("Settings > Email", () => {
     expect(screen.getByLabelText("Security")).toHaveValue("");
     expect(screen.getByText(/Pick a mode before saving/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Save & Send Test/i })).toBeDisabled();
+    // security=null covers an unsupported mode and a non-boolean flag too, not only
+    // contradictory flags — so the copy must not name one cause, and no port can be
+    // recommended before a mode exists.
+    expect(screen.queryByText(/flags contradict/i)).toBeNull();
+    expect(screen.queryByText(/Recommended port/i)).toBeNull();
   });
 
   it("enables saving once an ambiguous mode is resolved, and sends the choice", async () => {
@@ -319,8 +410,7 @@ describe("Settings > Email", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Save & Send Test/i }));
 
-    expect(await screen.findByText(/Settings saved, but the test send failed/i))
-      .toBeInTheDocument();
+    expect(await screen.findByText(/could not confirm the test result/i)).toBeInTheDocument();
     expect(screen.getByText(/network down/i)).toBeInTheDocument();
   });
 
