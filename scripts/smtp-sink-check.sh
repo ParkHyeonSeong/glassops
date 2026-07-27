@@ -48,7 +48,10 @@ STACK_TIMEOUT=420
 SINK_DEADLINE=60
 
 CLEANUP_FAILED=0
-CLEANUP_DONE=0
+# idle -> running -> done. Marking "done" only after the teardown returns means an
+# interrupted teardown is re-entered (and its recovery guidance printed) rather than
+# skipped as already handled.
+CLEANUP_STATE=idle
 
 blocked() { echo "BLOCKED: $*" >&2; exit 2; }
 fail()    { echo "FAIL: $*" >&2; exit 1; }
@@ -58,11 +61,12 @@ dk() { "$TMO" --kill-after=10 "$DOCKER_CALL_TIMEOUT" docker "$@"; }
 
 cleanup() {
   local rc=$?
-  # Re-entry guard. The explicit call at the end of a passing run exits 1 when the
-  # teardown fails, which re-enters this function through the EXIT trap — running
-  # `compose down` and printing the warning a second time, and doubling the wait.
-  [ "$CLEANUP_DONE" -eq 1 ] && return
-  CLEANUP_DONE=1
+  # `done` short-circuits the second entry that the explicit call at the end of a
+  # passing run would otherwise cause (it exits 1 on teardown failure, re-entering
+  # through the EXIT trap). `running` is NOT treated as handled: if a signal
+  # interrupts the teardown, the EXIT trap must still report what was left behind.
+  [ "$CLEANUP_STATE" = done ] && return "$rc"
+  CLEANUP_STATE=running
   # Always the SAME -f/-p pair used to create things. Without -f, `compose down`
   # would read the repository's own compose files and .env and could stop the
   # developer's real stack. --rmi local also drops the image this run built.
@@ -71,17 +75,22 @@ cleanup() {
         docker compose -f "$COMPOSE_FILE" -p "$PROJECT" down -v --rmi local --remove-orphans \
         >/dev/null 2>&1; then
       CLEANUP_FAILED=1
+      CLEANUP_STATE=done
       # Keep the compose file: without it the leftovers cannot be torn down with the
       # same -f/-p pair, and a bare `docker rm` could hit another project.
       echo "WARNING: cleanup failed — resources may remain for project '$PROJECT'." >&2
       echo "         Remove them with:" >&2
       echo "         docker compose -f $COMPOSE_FILE -p $PROJECT down -v --rmi local --remove-orphans" >&2
-      # A successful run whose cleanup failed is not a clean pass.
+      # A successful run whose cleanup failed is not a clean pass. A run that was
+      # already failing (or was signalled) keeps its own status — 1 must not
+      # overwrite 143.
       [ "$rc" -eq 0 ] && exit 1
-      return
+      return "$rc"
     fi
   fi
+  CLEANUP_STATE=done
   rm -rf "$WORKDIR"
+  return "$rc"
 }
 # EXIT carries the real status; the signal traps translate the signal to a non-zero
 # code so an interrupted run is never mistaken for a pass (a bare `trap cleanup TERM`
@@ -227,13 +236,14 @@ code="$("${CURL[@]}" -o "$WORKDIR/test.json" -w '%{http_code}' \
 # bounded by wall-clock, not by iteration count.
 SUBJECT="[GlassOps] Test Alert"
 ID=""
-sink_deadline=$(( SECONDS + SINK_DEADLINE ))
+# Fractional monotonic deadline. Integer $SECONDS plus an unconditional `sleep 1`
+# would still overshoot by up to a second; both the request and the sleep are capped
+# by the time actually left, so the phase is a hard bound.
+now() { python3 -c 'import time; print(time.monotonic())'; }
+sink_deadline="$(python3 -c "import time; print(time.monotonic() + $SINK_DEADLINE)")"
 while [ -z "$ID" ]; do
-  # Cap each request by the time actually left, so the phase cannot overrun the
-  # deadline by a full --max-time: a request started one second before it would
-  # otherwise run for another 20s.
-  remaining=$(( sink_deadline - SECONDS ))
-  [ "$remaining" -le 0 ] \
+  remaining="$(python3 -c "print(max(0.0, $sink_deadline - $(now)))")"
+  [ "$(python3 -c "print(1 if $remaining <= 0.05 else 0)")" = "1" ] \
     && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
   curl -sS --connect-timeout 5 --max-time "$remaining" \
     -f "$MAILPIT/api/v1/messages" -o "$WORKDIR/msgs.json" >/dev/null 2>&1 || true
@@ -248,9 +258,11 @@ for m in msgs:
         print(m["ID"]); break
 ' "$WORKDIR/msgs.json" 2>/dev/null || true)"
   [ -n "$ID" ] && break
-  [ "$SECONDS" -ge "$sink_deadline" ] \
+  # Sleep only as long as the deadline allows (at most 1s).
+  nap="$(python3 -c "print(min(1.0, max(0.0, $sink_deadline - $(now))))")"
+  [ "$(python3 -c "print(1 if $nap <= 0.0 else 0)")" = "1" ] \
     && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
-  sleep 1
+  sleep "$nap"
 done
 
 "${CURL[@]}" -f "$MAILPIT/api/v1/message/$ID" -o "$WORKDIR/msg.json" >/dev/null 2>&1 \

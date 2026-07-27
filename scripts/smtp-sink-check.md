@@ -101,9 +101,15 @@ into something that damages a real deployment.
   `docker compose -f … -p … down` command needed to finish the job by hand.
 - **Every Docker call is bounded.** `docker info`, `compose port`, `compose down` and
   the build all run under `timeout --kill-after`, so a child that ignores SIGTERM is
-  still killed. The sink polling loop uses a wall-clock deadline rather than an
-  iteration count — 20 iterations of a 20-second curl would be ~7 minutes, not 20
-  seconds.
+  still killed. The sink polling loop uses a fractional monotonic deadline rather than
+  an iteration count — 20 iterations of a 20-second curl would be ~7 minutes — and
+  caps both the request and the sleep by the time actually left, so it overruns only
+  by subprocess overhead (measured ≈0.1s), not by a full `--max-time` or a whole
+  `sleep 1`.
+- **Cleanup state is `idle → running → done`.** Only `done` short-circuits re-entry.
+  A teardown interrupted by a signal is therefore re-entered by the EXIT trap and
+  still prints what was left behind, and `cleanup` returns the status it was entered
+  with, so a cleanup failure after a signal keeps 143 instead of being rewritten to 1.
 - **Its own database and volume.** `GLASSOPS_DB_PATH=/app/data/check.db` on a
   disposable named volume. The developer's `data/` directory, `.env`, and
   `alert_config` row are never read or written, so a real SMTP configuration cannot
