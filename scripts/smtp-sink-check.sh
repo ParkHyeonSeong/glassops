@@ -17,8 +17,10 @@
 # does NOT prove: the metric-triggered aggregate path (check_and_alert) — that is
 # covered by tests/backend/test_alert_service.py — or anything about the frontend.
 #
-# Exit codes: 0 = PASS, 1 = FAIL, 2 = BLOCKED (could not run). Nothing else: every
-# command that can fail is guarded so a raw curl/docker status never escapes.
+# Exit codes on normal completion: 0 = PASS, 1 = FAIL, 2 = BLOCKED (could not run).
+# Nothing else: every command that can fail is guarded so a raw curl/docker status
+# never escapes. Interrupted by a signal, the traps below return 128+signo
+# (129 HUP / 130 INT / 143 TERM) so an interrupted run is never mistaken for a pass.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,6 +48,7 @@ STACK_TIMEOUT=420
 SINK_DEADLINE=60
 
 CLEANUP_FAILED=0
+CLEANUP_DONE=0
 
 blocked() { echo "BLOCKED: $*" >&2; exit 2; }
 fail()    { echo "FAIL: $*" >&2; exit 1; }
@@ -55,6 +58,11 @@ dk() { "$TMO" --kill-after=10 "$DOCKER_CALL_TIMEOUT" docker "$@"; }
 
 cleanup() {
   local rc=$?
+  # Re-entry guard. The explicit call at the end of a passing run exits 1 when the
+  # teardown fails, which re-enters this function through the EXIT trap — running
+  # `compose down` and printing the warning a second time, and doubling the wait.
+  [ "$CLEANUP_DONE" -eq 1 ] && return
+  CLEANUP_DONE=1
   # Always the SAME -f/-p pair used to create things. Without -f, `compose down`
   # would read the repository's own compose files and .env and could stop the
   # developer's real stack. --rmi local also drops the image this run built.
@@ -221,7 +229,14 @@ SUBJECT="[GlassOps] Test Alert"
 ID=""
 sink_deadline=$(( SECONDS + SINK_DEADLINE ))
 while [ -z "$ID" ]; do
-  "${CURL[@]}" -f "$MAILPIT/api/v1/messages" -o "$WORKDIR/msgs.json" >/dev/null 2>&1 || true
+  # Cap each request by the time actually left, so the phase cannot overrun the
+  # deadline by a full --max-time: a request started one second before it would
+  # otherwise run for another 20s.
+  remaining=$(( sink_deadline - SECONDS ))
+  [ "$remaining" -le 0 ] \
+    && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
+  curl -sS --connect-timeout 5 --max-time "$remaining" \
+    -f "$MAILPIT/api/v1/messages" -o "$WORKDIR/msgs.json" >/dev/null 2>&1 || true
   ID="$(SUBJ="$SUBJECT" python3 -c '
 import json, os, sys
 try:
