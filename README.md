@@ -142,12 +142,77 @@ Data is collected continuously regardless of whether anyone is viewing the dashb
 
 ## SMTP Email Alerts
 
-Configure in **Settings > Email**:
-- SMTP host, port, credentials (encrypted at rest)
-- Recipient email
-- Server-side threshold monitoring: alerts are sent even if no one is logged in
-- 5-minute cooldown per alert to prevent spam
-- Test email button to verify configuration
+Server-side alerts, sent even when nobody is logged in. Configure in
+**Settings > Email** (admin only).
+
+### Connection
+
+| Field | Notes |
+|---|---|
+| SMTP Host | Hostname only — no `smtp://` scheme and no `:port` suffix. Surrounding whitespace is stripped. |
+| Port | One of `25`, `465`, `587`, `2525`. Anything else is refused. |
+| Security | `STARTTLS` (587), `Implicit TLS` (465), or `None` (25 or 2525). The port hint is advisory — any allowed port works with any mode. |
+| Username | The SMTP **login identifier**; it does not have to be an email address. Leave it blank for an unauthenticated relay. Username and password are all-or-nothing: set both or neither, or the save is refused. |
+| Password | Encrypted at rest with Fernet, keyed off a subkey derived from `GLASSOPS_SECRET_KEY`. |
+| From Email | Required, unless the username is itself a valid email address, in which case it is used. Without a usable sender the save is refused — an empty From produces the `MAIL FROM:<>` null reverse-path that most relays drop. |
+| To Email | Where alerts are delivered. |
+
+`GLASSOPS_SMTP_ALLOWED_HOSTS` (comma-separated) restricts which relay hosts may be
+configured. When it is set, only those exact hostnames are accepted **and the
+IP-resolution checks are skipped for them** — an allowlisted host is fully trusted,
+so list only hosts you vouch for. When it is empty, any host that passes the SSRF
+checks is allowed: loopback, link-local (including the `169.254.169.254` cloud
+metadata address), unspecified, multicast and reserved addresses are blocked, while
+RFC1918 private ranges are deliberately allowed so an internal corporate relay works.
+
+### Email critical thresholds
+
+`CPU critical`, `Memory critical` and `Disk critical` (0–100) live on the server and
+decide when an email goes out. They are **separate** from the in-browser thresholds
+under **Settings > Alerts**, which only drive the desktop toasts and the System
+Monitor banner and feed. Both use a `>=` comparison, so the configured value itself
+fires.
+
+Only aggregate CPU (`cpu.percent_total`) is evaluated. A single pegged core never
+triggers an email — the per-core numbers are a diagnostic display on the Cores tab.
+
+### Saving and testing
+
+**Save & Send Test** saves the form, confirms the save succeeded, and only then sends
+through the configuration it just stored. If the save fails, the backend's reason is
+shown and no email is sent.
+
+A success message means **the SMTP server accepted the message** — that is not proof
+it reached the inbox. Acceptance only says the relay took responsibility for the
+message; it can still bounce, be filtered, or be dropped downstream. Confirm in the
+recipient mailbox or the provider's delivery log. (The automated suites stub the SMTP
+boundary, so they prove the wire format, not delivery; an end-to-end check against a
+real SMTP server is a separate, opt-in step — see `scripts/smtp-sink-check.sh` once
+Task 8 lands.)
+
+The password field shows `********` for a stored credential. Posting that value back
+keeps the existing password; typing a new one replaces it. If `GLASSOPS_SECRET_KEY`
+changes, the stored ciphertext can no longer be decrypted — the tab says so, sending
+is blocked, and the warning clears only once a new password is actually saved.
+Removing a stored credential entirely is an API-only operation (`clear_password`);
+the UI has no control for it.
+
+### Cooldown
+
+After a successful send, further alerts for **that agent** are suppressed for 5
+minutes. The cooldown is per agent, not per resource: while a CPU alert is cooling
+down, a new disk alert on the same agent waits too.
+
+A failed send does **not** start that 5-minute cooldown — it backs off for 1 minute
+instead, so a transient relay outage delays the next alert by a minute rather than
+five, while a persistently dead relay is not retried once per collection tick. The
+manual **Save & Send Test** bypasses both, so an admin can always retry immediately.
+
+> **Never commit real SMTP credentials.** There is no environment variable for the
+> SMTP username or password — they are set through **Settings > Email** or the admin
+> API and stored encrypted. They belong in neither the repository nor a compose file
+> checked into it. (`GLASSOPS_SMTP_ALLOWED_HOSTS` is not a credential and is safe to
+> commit.)
 
 ## Host Monitoring
 
