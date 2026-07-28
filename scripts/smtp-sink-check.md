@@ -35,7 +35,8 @@ never escape as the script's exit code.
 ### Prerequisites
 
 - A **running** Docker daemon (`docker info` must succeed — installing Docker is not
-  enough).
+  enough). Host `curl` is *not* required: every HTTP call runs inside the app
+  container, which ships its own.
 - `timeout` or `gtimeout` on `PATH`. macOS ships neither; `brew install coreutils`
   provides `gtimeout`. This is the outer wall-clock bound: Compose's
   `--wait-timeout` caps only the health-wait phase, so a hung `docker build` or a
@@ -99,13 +100,23 @@ into something that damages a real deployment.
   instead tears down explicitly, and a failed teardown turns a passing run into
   exit 1 — keeping the generated compose file and printing the exact
   `docker compose -f … -p … down` command needed to finish the job by hand.
-- **Every Docker call is bounded.** `docker info`, `compose port`, `compose down` and
-  the build all run under `timeout --kill-after`, so a child that ignores SIGTERM is
-  still killed. The sink polling loop uses a fractional monotonic deadline rather than
-  an iteration count — 20 iterations of a 20-second curl would be ~7 minutes — and
-  caps both the request and the sleep by the time actually left, so it overruns only
-  by subprocess overhead (measured ≈0.1s), not by a full `--max-time` or a whole
-  `sleep 1`.
+- **Every Docker call is bounded.** `docker info`, `compose down` and the build all
+  run under `timeout --kill-after`, so a child that ignores SIGTERM is still killed.
+  The sink polling loop uses a fractional monotonic deadline rather than an iteration
+  count — 20 iterations of a 20-second curl would be ~7 minutes — and caps the inner
+  request, the sleep, **and the outer `docker exec`** by the time actually left. That
+  last one matters: the shared wrapper's fixed 60s (+10s kill grace) would restart on
+  every iteration, so an exec that stalls before curl even runs could overrun by ~70s.
+  Measured with a fully stalled exec: a 5-second budget finished in 5.09s, versus 60s
+  under the fixed wrapper.
+- **Transport failure is never read as an HTTP result.** The exec's exit status and
+  the HTTP status are kept separate. curl can print a body and `200` and still exit
+  non-zero (a mid-stream timeout), and a process killed before the status trailer
+  leaves the body's last line in its place — for `/api/auth/login` that is the JSON
+  holding the access and refresh tokens, which once reached an error message. Any
+  transport failure, or a trailer that is not a 3-digit status, yields the fixed
+  sentinel `EXEC_FAILED` and an empty body, and the login failure message is fixed
+  text with nothing interpolated.
 - **Cleanup state is `idle → running → done`.** Only `done` short-circuits re-entry.
   A teardown interrupted by a signal is therefore re-entered by the EXIT trap and
   still prints what was left behind, and `cleanup` returns the status it was entered
@@ -122,6 +133,7 @@ into something that damages a real deployment.
   Port publishing and `internal: true` are mutually exclusive: Docker maps no host
   port on an internal network, and `docker compose port` then answers `invalid IP:0`
   (which a naive `sed 's/.*://'` turns into the string `0`, i.e. a request to port 0).
+  The generated compose file therefore declares **no** `ports:` at all.
   Attaching a second, non-internal network would restore the host port but also
   restore egress — verified: the container could reach the public internet again.
   Every HTTP call is therefore made **inside** the network with

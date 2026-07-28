@@ -106,7 +106,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # ---- pre-flight: everything missing here is BLOCKED, never FAIL --------------
-for tool in docker git curl python3; do
+# curl is deliberately absent: every HTTP call runs inside the app container, which
+# ships its own curl for the healthcheck. Requiring it on the host would BLOCK a
+# machine that can run this check perfectly well.
+for tool in docker git python3; do
   command -v "$tool" >/dev/null 2>&1 || blocked "$tool is not installed"
 done
 # An outer wall-clock bound. Compose's --wait-timeout only caps the health-wait
@@ -130,9 +133,11 @@ git -C "$REPO_ROOT" archive --format=tar HEAD | tar -x -C "$BUILD_CTX" \
 
 # One Compose file owns BOTH services and the network, so every resource carries the
 # project label and `compose down -v --rmi local` removes exactly them and nothing
-# else. `internal: true` removes the gateway (no container egress). Host ports are :0
-# (ephemeral) so parallel runs cannot collide. Mailpit ships its own `readyz` probe;
-# --wait bounds the health phase and the outer $TMO bounds build + pull + wait.
+# else. `internal: true` removes the gateway (no container egress) and, as a
+# consequence, publishes NO host port — so parallel runs cannot collide and the API
+# calls go through `compose exec` instead (see the header). Mailpit ships its own
+# `readyz` probe; --wait bounds the health phase and the outer $TMO bounds
+# build + pull + wait.
 cat > "$COMPOSE_FILE" <<YAML
 services:
   mailpit:
@@ -189,20 +194,45 @@ YAML
 MAILPIT="http://mailpit:8025"
 APP="http://127.0.0.1:7440"
 
-# $1 = output file on the HOST, rest = curl args run in the container.
+# $1 = output file on the HOST, rest = curl args run in the container. Returns the
+# transport's exit status; the caller decides what an empty/failed fetch means.
 in_app() {
   local out="$1"; shift
+  local rc=0
   dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
-    curl -sS --connect-timeout 5 --max-time 20 "$@" > "$out" 2>/dev/null || true
+    curl -sS --connect-timeout 5 --max-time 20 "$@" > "$out" 2>/dev/null || rc=$?
+  return "$rc"
 }
-# Same, but returns only the HTTP status on stdout and writes the body to $1.
+
+# Same, but echoes the HTTP status and writes the body to $1.
+#
+# The transport's exit status and the HTTP status are kept SEPARATE. Swallowing the
+# former with `|| true` and reading the last output line was wrong twice over: curl
+# can print a body and "200" and still exit non-zero (e.g. 28, a timeout mid-stream),
+# which then read as success; and if the process dies before the status trailer is
+# written, the last line is whatever the body ended with — for /api/auth/login that
+# is the JSON holding the access and refresh tokens, which then landed in an error
+# message. On any transport failure this echoes the fixed sentinel `EXEC_FAILED`, so
+# no response text can ever reach a caller's message.
+EXEC_FAILED_SENTINEL="EXEC_FAILED"
 in_app_status() {
   local out="$1"; shift
-  local body_and_code
+  local body_and_code rc=0
   body_and_code="$(dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
-    curl -sS --connect-timeout 5 --max-time 20 -w '\n%{http_code}' "$@" 2>/dev/null || true)"
-  printf '%s' "$body_and_code" | sed '$d' > "$out"
-  printf '%s' "$body_and_code" | tail -1
+    curl -sS --connect-timeout 5 --max-time 20 -w '\n%{http_code}' "$@" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    : > "$out"
+    printf '%s' "$EXEC_FAILED_SENTINEL"
+    return 0
+  fi
+  local code
+  code="$(printf '%s' "$body_and_code" | tail -1)"
+  # A trailer that is not a 3-digit status means the response was truncated before
+  # -w ran; the "status" would otherwise be a slice of the body.
+  case "$code" in
+    [0-9][0-9][0-9]) printf '%s' "$body_and_code" | sed '$d' > "$out"; printf '%s' "$code" ;;
+    *) : > "$out"; printf '%s' "$EXEC_FAILED_SENTINEL" ;;
+  esac
 }
 
 # Inline login. POST /api/auth/login takes {"email","password"} and returns
@@ -211,7 +241,9 @@ in_app_status() {
 LOGIN_STATUS="$(in_app_status "$WORKDIR/login.json" \
   -X POST "$APP/api/auth/login" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
-[ "$LOGIN_STATUS" = "200" ] || fail "login returned HTTP ${LOGIN_STATUS:-<no response>}"
+# Fixed message only: $LOGIN_STATUS is a status or the EXEC_FAILED sentinel, never
+# response text — but interpolating it at all is the habit that leaked tokens once.
+[ "$LOGIN_STATUS" = "200" ] || fail "admin login did not return HTTP 200"
 TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("access_token",""))' \
   "$WORKDIR/login.json" 2>/dev/null || true)"
 [ -n "$TOKEN" ] || fail "login succeeded but no access_token was returned (body not shown: it holds tokens)"
@@ -256,7 +288,14 @@ while [ -z "$ID" ]; do
   remaining="$(python3 -c "print(max(0.0, $sink_deadline - $(now)))")"
   [ "$(python3 -c "print(1 if $remaining <= 0.05 else 0)")" = "1" ] \
     && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
-  dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
+  # The OUTER timeout must use the remaining budget too. dk()'s fixed 60s (+10s kill
+  # grace) would start afresh on every iteration, so a `docker exec` that stalls
+  # before curl even runs could overrun the deadline by ~70s. Splitting `remaining`
+  # between the run and the kill grace keeps the whole phase inside the budget.
+  outer="$(python3 -c "print(max(0.1, $remaining * 0.8))")"
+  grace="$(python3 -c "print(max(0.1, $remaining * 0.2))")"
+  "$TMO" --kill-after="$grace" "$outer" \
+    docker compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
     curl -sS --connect-timeout 5 --max-time "$remaining" -f "$MAILPIT/api/v1/messages" \
     > "$WORKDIR/msgs.json" 2>/dev/null || true
   ID="$(SUBJ="$SUBJECT" python3 -c '
@@ -277,8 +316,9 @@ for m in msgs:
   sleep "$nap"
 done
 
-in_app "$WORKDIR/msg.json" -f "$MAILPIT/api/v1/message/$ID"
-[ -s "$WORKDIR/msg.json" ] || fail "could not read the message from the sink"
+in_app "$WORKDIR/msg.json" -f "$MAILPIT/api/v1/message/$ID" \
+  || fail "could not read the message from the sink (transport failed)"
+[ -s "$WORKDIR/msg.json" ] || fail "could not read the message from the sink (empty response)"
 
 # Explicit checks, not `assert`: python -O / PYTHONOPTIMIZE=1 strips assert
 # statements outright, which would make every one of these pass on a wrong message.
