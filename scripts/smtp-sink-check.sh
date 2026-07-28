@@ -292,8 +292,15 @@ while [ -z "$ID" ]; do
   # grace) would start afresh on every iteration, so a `docker exec` that stalls
   # before curl even runs could overrun the deadline by ~70s. Splitting `remaining`
   # between the run and the kill grace keeps the whole phase inside the budget.
-  outer="$(python3 -c "print(max(0.1, $remaining * 0.8))")"
-  grace="$(python3 -c "print(max(0.1, $remaining * 0.2))")"
+  #
+  # No floor on either share: a `max(0.1, …)` floor meant a 0.06s budget still
+  # authorised 0.1 + 0.1 = 0.2s. Too small a budget to be worth another exec is
+  # treated as the deadline instead — one attempt needs meaningfully more than the
+  # process spawn cost to be useful.
+  [ "$(python3 -c "print(1 if $remaining < 0.5 else 0)")" = "1" ] \
+    && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
+  outer="$(python3 -c "print($remaining * 0.8)")"
+  grace="$(python3 -c "print($remaining * 0.2)")"
   "$TMO" --kill-after="$grace" "$outer" \
     docker compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
     curl -sS --connect-timeout 5 --max-time "$remaining" -f "$MAILPIT/api/v1/messages" \

@@ -24,9 +24,10 @@ belongs in the unit-test gate.
 
 **BLOCKED is not a pass.** It means the SMTP path was never exercised, so the unit
 suites must not be reported as covering it. The causes are: a missing `docker`,
-`git`, `curl` or `python3`; no `timeout`/`gtimeout`; no Docker Compose v2; an
-unreachable Docker daemon; or an unpinned Mailpit digest. Everything else — build,
-startup, login, config save, send, an assertion, or a failed teardown — is FAIL (1).
+`git` or `python3`; no `timeout`/`gtimeout`; no Docker Compose v2; an unreachable
+Docker daemon; or an unpinned Mailpit digest. Host `curl` is *not* among them — see
+Prerequisites. Everything else — build, startup, login, config save, send, an
+assertion, or a failed teardown — is FAIL (1).
 
 Exit codes are normalised: every `curl`, `docker` and `docker compose` call is
 guarded, so a raw status like curl's `7` (connection refused) or `28` (timeout) can
