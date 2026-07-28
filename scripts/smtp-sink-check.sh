@@ -12,6 +12,12 @@
 # (image pulls, apt/npm inside the Dockerfile) still uses the host's network — this
 # is "no container runtime egress", not "no internet".
 #
+# Nothing is published to the host: `internal: true` and port publishing are mutually
+# exclusive (Docker maps no host port on an internal network, and `compose port` then
+# answers "invalid IP:0"). Every HTTP call therefore runs INSIDE the network via
+# `docker compose exec`, which keeps the isolation intact rather than trading it for
+# reachability.
+#
 # What it proves: the stored config is usable, the SMTP transport works, and the
 # sink received the expected From / envelope sender / To / Subject / body. What it
 # does NOT prove: the metric-triggered aggregate path (check_and_alert) — that is
@@ -37,7 +43,6 @@ ADMIN_PASSWORD="check-only-not-a-real-secret-$$"
 #   docker buildx imagetools inspect axllent/mailpit:v1.21.8 --format '{{.Manifest.Digest}}'
 MAILPIT_IMAGE="axllent/mailpit:v1.21.8@sha256:81370195cd4a0eab9604d17c2617a7525b0486f9365555253b6c5376c6350f1a"
 
-CURL=(curl -sS --connect-timeout 5 --max-time 20)
 # Every docker invocation runs under this. --kill-after escalates to SIGKILL for a
 # child that ignores TERM, so no docker call is unbounded.
 DOCKER_CALL_TIMEOUT=60
@@ -134,7 +139,6 @@ services:
     image: ${MAILPIT_IMAGE}
     environment:
       MP_SMTP_BIND_ADDR: 0.0.0.0:2525
-    ports: ["127.0.0.1::8025"]
     networks: [sink]
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
@@ -159,7 +163,6 @@ services:
       GLASSOPS_DB_PATH: "/app/data/check.db"
     volumes:
       - checkdata:/app/data
-    ports: ["127.0.0.1::7440"]
     networks: [sink]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7440/health"]
@@ -179,35 +182,43 @@ YAML
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --build --wait --wait-timeout 300 \
   || fail "the throwaway stack did not build and become healthy within ${STACK_TIMEOUT}s"
 
-# `|| true` then an emptiness check: an unguarded command substitution under `set -e`
-# would abort with docker's own status instead of the documented FAIL=1.
-port_of() {
-  local out
-  out="$(dk compose -f "$COMPOSE_FILE" -p "$PROJECT" port "$1" "$2" 2>/dev/null || true)"
-  printf '%s' "$out" | tail -1 | sed 's/.*://'
-}
+# All HTTP runs inside the network (see the header): the app container has curl, so
+# it drives both the GlassOps API and the Mailpit API by service name. `|| true` plus
+# an explicit status check keeps a failed exec from aborting with docker's own status
+# instead of the documented FAIL=1.
+MAILPIT="http://mailpit:8025"
+APP="http://127.0.0.1:7440"
 
-# --wait already gated on health; these only resolve the ephemeral host ports.
-MAILPIT_PORT="$(port_of mailpit 8025)"; [ -n "$MAILPIT_PORT" ] || fail "no Mailpit host port"
-APP_PORT="$(port_of glassops 7440)";    [ -n "$APP_PORT" ]     || fail "no GlassOps host port"
-MAILPIT="http://127.0.0.1:${MAILPIT_PORT}"
-APP="http://127.0.0.1:${APP_PORT}"
+# $1 = output file on the HOST, rest = curl args run in the container.
+in_app() {
+  local out="$1"; shift
+  dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
+    curl -sS --connect-timeout 5 --max-time 20 "$@" > "$out" 2>/dev/null || true
+}
+# Same, but returns only the HTTP status on stdout and writes the body to $1.
+in_app_status() {
+  local out="$1"; shift
+  local body_and_code
+  body_and_code="$(dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
+    curl -sS --connect-timeout 5 --max-time 20 -w '\n%{http_code}' "$@" 2>/dev/null || true)"
+  printf '%s' "$body_and_code" | sed '$d' > "$out"
+  printf '%s' "$body_and_code" | tail -1
+}
 
 # Inline login. POST /api/auth/login takes {"email","password"} and returns
 # access_token (backend/app/routers/auth.py). The response body is NEVER echoed: it
 # carries the access and refresh tokens.
-LOGIN_STATUS="$("${CURL[@]}" -o "$WORKDIR/login.json" -w '%{http_code}' \
+LOGIN_STATUS="$(in_app_status "$WORKDIR/login.json" \
   -X POST "$APP/api/auth/login" -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" || true)"
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
 [ "$LOGIN_STATUS" = "200" ] || fail "login returned HTTP ${LOGIN_STATUS:-<no response>}"
 TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("access_token",""))' \
   "$WORKDIR/login.json" 2>/dev/null || true)"
 [ -n "$TOKEN" ] || fail "login succeeded but no access_token was returned (body not shown: it holds tokens)"
 
 post_config() {
-  "${CURL[@]}" -o "$WORKDIR/resp.json" -w '%{http_code}' \
-    -X POST "$APP/api/alerts/config" \
-    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$1" || true
+  in_app_status "$WORKDIR/resp.json" -X POST "$APP/api/alerts/config" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$1"
 }
 
 # The allowlist must actually be in effect before anything is sent. Assert the status
@@ -226,8 +237,8 @@ code="$(post_config '{"host":"mailpit","port":2525,"security":"none",
   "thresholds":{"cpu_crit":90,"mem_crit":90,"disk_crit":95}}')"
 [ "$code" = "200" ] || fail "saving the sink config returned HTTP ${code:-<no response>}"
 
-code="$("${CURL[@]}" -o "$WORKDIR/test.json" -w '%{http_code}' \
-  -X POST "$APP/api/alerts/test" -H "Authorization: Bearer $TOKEN" || true)"
+code="$(in_app_status "$WORKDIR/test.json" \
+  -X POST "$APP/api/alerts/test" -H "Authorization: Bearer $TOKEN")"
 [ "$code" = "200" ] || fail "/api/alerts/test returned HTTP ${code:-<no response>}"
 
 # The API result is not the assertion — what the sink received is. Select the message
@@ -245,8 +256,9 @@ while [ -z "$ID" ]; do
   remaining="$(python3 -c "print(max(0.0, $sink_deadline - $(now)))")"
   [ "$(python3 -c "print(1 if $remaining <= 0.05 else 0)")" = "1" ] \
     && fail "no message with subject '$SUBJECT' reached the sink within ${SINK_DEADLINE}s"
-  curl -sS --connect-timeout 5 --max-time "$remaining" \
-    -f "$MAILPIT/api/v1/messages" -o "$WORKDIR/msgs.json" >/dev/null 2>&1 || true
+  dk compose -f "$COMPOSE_FILE" -p "$PROJECT" exec -T glassops \
+    curl -sS --connect-timeout 5 --max-time "$remaining" -f "$MAILPIT/api/v1/messages" \
+    > "$WORKDIR/msgs.json" 2>/dev/null || true
   ID="$(SUBJ="$SUBJECT" python3 -c '
 import json, os, sys
 try:
@@ -265,8 +277,8 @@ for m in msgs:
   sleep "$nap"
 done
 
-"${CURL[@]}" -f "$MAILPIT/api/v1/message/$ID" -o "$WORKDIR/msg.json" >/dev/null 2>&1 \
-  || fail "could not read the message from the sink"
+in_app "$WORKDIR/msg.json" -f "$MAILPIT/api/v1/message/$ID"
+[ -s "$WORKDIR/msg.json" ] || fail "could not read the message from the sink"
 
 # Explicit checks, not `assert`: python -O / PYTHONOPTIMIZE=1 strips assert
 # statements outright, which would make every one of these pass on a wrong message.

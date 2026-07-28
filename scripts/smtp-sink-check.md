@@ -114,10 +114,19 @@ into something that damages a real deployment.
   disposable named volume. The developer's `data/` directory, `.env`, and
   `alert_config` row are never read or written, so a real SMTP configuration cannot
   be overwritten or cleared.
-- **`internal: true` network.** This removes the gateway, so nothing in the network
-  has egress and the sink cannot relay onward. Note this is **container runtime**
-  egress only — the image pull and any `apt`/`npm` inside the Dockerfile still use the
-  host's network during build.
+- **`internal: true` network, and nothing published to the host.** The internal
+  network removes the gateway, so nothing in it has egress and the sink cannot relay
+  onward. Note this is **container runtime** egress only — the image pull and any
+  `apt`/`npm` inside the Dockerfile still use the host's network during build.
+
+  Port publishing and `internal: true` are mutually exclusive: Docker maps no host
+  port on an internal network, and `docker compose port` then answers `invalid IP:0`
+  (which a naive `sed 's/.*://'` turns into the string `0`, i.e. a request to port 0).
+  Attaching a second, non-internal network would restore the host port but also
+  restore egress — verified: the container could reach the public internet again.
+  Every HTTP call is therefore made **inside** the network with
+  `docker compose exec … curl`, so isolation is kept rather than traded away for
+  reachability. The app image already ships curl for its own healthcheck.
 - **Build context is `git archive HEAD`,** not `${REPO_ROOT}`. The repo has no
   `.dockerignore`, so a directory context would ship `.env`, `data/secret.key`, `.git`
   and ~200 MB of `node_modules` into the build daemon — a real secret-exposure risk,
