@@ -106,7 +106,8 @@ quality-python: ## Run Python dependency, compile, and test gates
 quality-frontend: ## Run strict frontend lint, tests, and production build
 	npm --prefix frontend run quality
 
-quality-compose: ## Validate every supported Compose combination and entrypoint syntax
+quality-compose: ## Validate Dockerfile pins, Compose combinations, and entrypoint syntax
+	./scripts/validate-dockerfile-base-images.sh
 	./scripts/validate-compose.sh
 
 quality: quality-python quality-frontend quality-compose ## Run all local CI-equivalent gates
