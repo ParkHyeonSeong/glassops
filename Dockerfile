@@ -10,7 +10,7 @@ COPY frontend/ .
 RUN npm run build
 
 ## ── Stage 2: Final image ────────────────────────────
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 WORKDIR /app
 
