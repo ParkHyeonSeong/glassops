@@ -1,7 +1,7 @@
 ## ── Stage 1: Build frontend ──────────────────────────
 # Base images are digest-pinned for reproducible builds — run `make refresh-digests`
 # (on a dev machine) to re-resolve, review the diff, and commit.
-FROM node:22-alpine@sha256:968df39aedcea65eeb078fb336ed7191baf48f972b4479711397108be0966920 AS frontend-build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-build
 
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json* ./
