@@ -9,6 +9,16 @@ updates:
       - "/agent"
     schedule:
       interval: "monthly"
+    # Keep runtime-line upgrades deliberate; continue accepting in-line image
+    # refreshes and Dependabot security updates.
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
