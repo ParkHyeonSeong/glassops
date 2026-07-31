@@ -2,6 +2,101 @@
 set -eu
 
 repo_root=${1:-.}
+repo_root=$(cd "$repo_root" && pwd)
+
+find_managed_dockerfiles() {
+  find "$repo_root" \
+    \( -type d \( -name .git -o -name node_modules -o -name .venv \) \
+      -o -path "$repo_root/deploy/contracts" \) -prune -o \
+    -type f \( -name Dockerfile -o -name 'Dockerfile.*' \) -print | LC_ALL=C sort
+}
+
+validate_external_froms() {
+  dockerfile=$1
+  relative_path=$2
+
+  awk -v relative_path="$relative_path" '
+    function is_pinned(ref, marker, digest) {
+      marker = index(ref, "@sha256:")
+      if (marker <= 1) {
+        return 0
+      }
+
+      digest = substr(ref, marker + length("@sha256:"))
+      return length(digest) == 64 && digest ~ /^[0-9a-f]+$/
+    }
+
+    function reject_unpinned(ref) {
+      printf "%s: unpinned external FROM %s\\n", relative_path, ref
+      invalid = 1
+    }
+
+    function process_instruction(instruction, count, i, ref, lower_ref) {
+      sub(/^[[:space:]]+/, "", instruction)
+      if (instruction == "" || instruction ~ /^#/) {
+        return
+      }
+
+      count = split(instruction, fields, /[[:space:]]+/)
+      if (toupper(fields[1]) != "FROM") {
+        return
+      }
+
+      i = 2
+      while (i <= count && fields[i] ~ /^--/) {
+        i += 1
+      }
+
+      ref = fields[i]
+      if (ref == "") {
+        printf "%s: invalid FROM instruction\\n", relative_path
+        invalid = 1
+        return
+      }
+
+      lower_ref = tolower(ref)
+      if (lower_ref != "scratch" && !(lower_ref in aliases) && !is_pinned(ref)) {
+        reject_unpinned(ref)
+      }
+
+      if (toupper(fields[i + 1]) == "AS") {
+        if (fields[i + 2] == "") {
+          printf "%s: invalid FROM instruction\\n", relative_path
+          invalid = 1
+        } else {
+          aliases[tolower(fields[i + 2])] = 1
+        }
+      }
+    }
+
+    {
+      line = $0
+      sub(/\\r$/, "", line)
+      if (continued) {
+        instruction = instruction " " line
+      } else {
+        instruction = line
+      }
+
+      if (instruction ~ /\\[[:space:]]*$/) {
+        sub(/\\[[:space:]]*$/, "", instruction)
+        continued = 1
+        next
+      }
+
+      process_instruction(instruction)
+      continued = 0
+      instruction = ""
+    }
+
+    END {
+      if (continued) {
+        process_instruction(instruction)
+      }
+      exit invalid ? 1 : 0
+    }
+  ' "$dockerfile" >&2
+}
 
 extract_pinned_ref() {
   image=$1
@@ -71,3 +166,10 @@ validate_lockstep \
   "Dockerfile" \
   "backend/Dockerfile" \
   "agent/Dockerfile"
+
+find_managed_dockerfiles | while IFS= read -r dockerfile; do
+  relative_path=${dockerfile#"$repo_root"/}
+  validate_external_froms "$dockerfile" "$relative_path"
+done
+
+printf '%s\n' "all external Dockerfile base images are digest-pinned"
