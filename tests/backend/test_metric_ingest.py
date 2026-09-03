@@ -119,12 +119,14 @@ async def seeded_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "_db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(db, "_conn", None)
     monkeypatch.setattr(db, "_metric_conn", None, raising=False)
-    monkeypatch.setattr(db, "_metric_write_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(db, "_op_lock", asyncio.Lock(), raising=False)
+    # Fail-stop latches for the life of the process by design; clear it per test.
+    monkeypatch.setattr(db, "_fail_stop", None, raising=False)
     monkeypatch.setattr(agent_ws, "_last_assigned_id", 0, raising=False)
     await db.init_db()
     for i in range(3):
         await db.store_metric("a1", 100.0 + i, {"cpu": {"percent_total": i}})
-    conn = await db.get_db()
+    conn = await db._get_conn()
     await conn.execute("DELETE FROM metrics WHERE id = 3")  # cleanup drops the newest
     await conn.commit()
 
@@ -141,6 +143,7 @@ async def seeded_db(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_ws, "extract_and_store_net_audit", noop)
     yield db, broadcasts, monkeypatch
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 async def test_prime_seeds_after_seq_from_sqlite_sequence(seeded_db):
@@ -196,6 +199,7 @@ async def test_lifespan_fails_startup_and_closes_db_when_prime_raises(monkeypatc
 
     async def fake_close_db():
         calls.append("close")
+        return main_mod.CloseVerdict.CLOSED   # close_db now reports a verdict
 
     created = []
     real_create_task = asyncio.create_task
@@ -230,7 +234,9 @@ async def test_lifespan_runs_maintenance_and_cleans_up(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "_db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(db, "_conn", None)
     monkeypatch.setattr(db, "_metric_conn", None, raising=False)
-    monkeypatch.setattr(db, "_metric_write_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(db, "_op_lock", asyncio.Lock(), raising=False)
+    # Fail-stop latches for the life of the process by design; clear it per test.
+    monkeypatch.setattr(db, "_fail_stop", None, raising=False)
     monkeypatch.setattr(agent_ws, "_last_assigned_id", 0, raising=False)
 
     before = set(asyncio.all_tasks())
@@ -283,7 +289,7 @@ async def test_ingest_drains_durable_path_when_cancelled_early(seeded_db):
     assert broadcasts and broadcasts[-1]["sample_id"] == "raw:4"
     assert broadcasts[-1]["arrival_seq"] == 4
     assert agent_ws._last_assigned_id == 4
-    conn = await db.get_db()
+    conn = await db._get_conn()
     cursor = await conn.execute("SELECT COUNT(*) FROM metrics WHERE id = 4")
     assert (await cursor.fetchone())[0] == 1
 
@@ -365,7 +371,7 @@ async def test_ingest_drains_durable_path_when_worker_is_executing_commit(seeded
     assert broadcasts and broadcasts[-1]["sample_id"] == "raw:4"
     assert broadcasts[-1]["arrival_seq"] == 4
     assert agent_ws._last_assigned_id == 4
-    check = await db.get_db()
+    check = await db._get_conn()
     cursor = await check.execute("SELECT COUNT(*) FROM metrics WHERE id = 4")
     assert (await cursor.fetchone())[0] == 1
 

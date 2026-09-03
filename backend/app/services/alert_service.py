@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from app.config import smtp_fernet_key
-from app.database import get_db
+from app.database import get_alert_config_row, write_transaction
 from app.services.smtp_validate import validate_smtp_target
 
 logger = logging.getLogger("glassops.alerts")
@@ -248,14 +248,12 @@ async def get_smtp_config() -> dict | None:
         cached = _cfg_cache["value"]
         return copy.deepcopy(cached) if cached is not None else None  # deep copy so callers can't mutate the cache
 
-    db = await get_db()
-    cursor = await db.execute("SELECT config FROM alert_config WHERE id = 1")
-    row = await cursor.fetchone()
+    raw = await get_alert_config_row()
     config: dict | None
-    if not row:
+    if raw is None:
         config = None
     else:
-        config = json.loads(row["config"])
+        config = json.loads(raw)
         # Always strip the ciphertext, whatever shape it is in. pop() rather than a
         # del inside the branch: an empty or non-string password_enc would otherwise
         # survive into the returned config, and the API only filters keys starting
@@ -280,40 +278,42 @@ async def get_smtp_config() -> dict | None:
 
 
 async def save_smtp_config(config: dict) -> None:
-    # Merge with existing config to preserve encrypted password if not provided
-    existing_raw = None
-    db = await get_db()
-    cursor = await db.execute("SELECT config FROM alert_config WHERE id = 1")
-    row = await cursor.fetchone()
-    if row:
-        existing_raw = json.loads(row["config"])
+    # Read-then-write: the existing row is read and the merged row written back
+    # inside ONE operation boundary. Splitting them would let another writer
+    # commit in between — the merge would then be based on a row that no longer
+    # exists, and the read cursor could straddle that commit (the measured
+    # SQLITE_BUSY_SNAPSHOT wedge; see app.database.write_transaction).
+    async with write_transaction() as tx:
+        existing_raw = None
+        row = await tx.fetch_one("SELECT config FROM alert_config WHERE id = 1")
+        if row:
+            existing_raw = json.loads(row["config"])
 
-    store = {**config}
-    password = store.pop("password", "")
-    clear_password = bool(store.pop("clear_password", False))
+        store = {**config}
+        password = store.pop("password", "")
+        clear_password = bool(store.pop("clear_password", False))
 
-    if clear_password:
-        # Explicit removal — write no password_enc at all. This is the only way to
-        # reach a no-password-stored state; "" and the mask both mean "keep".
-        pass
-    elif password and password != MASKED_PASSWORD:
-        # New password provided — encrypt it
-        store["password_enc"] = _encrypt(password)
-    elif existing_raw is not None and "password_enc" in existing_raw:
-        # No new password — preserve the existing marker VERBATIM, whether or not it
-        # still decrypts. Deciding this on truthiness dropped an empty or corrupt
-        # marker on any unrelated save: the row then read as "no password", the
-        # decrypt-failure flag vanished, and sending silently resumed anonymously
-        # without the operator ever being told to re-enter the credential. Only an
-        # explicit clear_password or a real new password may resolve that state.
-        store["password_enc"] = existing_raw["password_enc"]
-    # else: no password at all
+        if clear_password:
+            # Explicit removal — write no password_enc at all. This is the only way to
+            # reach a no-password-stored state; "" and the mask both mean "keep".
+            pass
+        elif password and password != MASKED_PASSWORD:
+            # New password provided — encrypt it
+            store["password_enc"] = _encrypt(password)
+        elif existing_raw is not None and "password_enc" in existing_raw:
+            # No new password — preserve the existing marker VERBATIM, whether or not it
+            # still decrypts. Deciding this on truthiness dropped an empty or corrupt
+            # marker on any unrelated save: the row then read as "no password", the
+            # decrypt-failure flag vanished, and sending silently resumed anonymously
+            # without the operator ever being told to re-enter the credential. Only an
+            # explicit clear_password or a real new password may resolve that state.
+            store["password_enc"] = existing_raw["password_enc"]
+        # else: no password at all
 
-    await db.execute(
-        "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)",
-        (json.dumps(store),),
-    )
-    await db.commit()
+        await tx.execute(
+            "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)",
+            (json.dumps(store),),
+        )
     _invalidate_config_cache()  # next read reflects the change immediately
 
 

@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import FastAPI, WebSocket, Path
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist, cleanup_audit_log, cleanup_net_audit
+from app.database import CloseVerdict, readiness, init_db, close_db, cleanup_old_metrics, downsample_metrics, get_recent_metrics, get_metrics_range, get_container_history, cleanup_blacklist, cleanup_audit_log, cleanup_net_audit
 from app.websocket.agent_ws import handle_agent_ws, connected_agents
 from app.websocket.client_ws import handle_client_ws
 from app.routers.docker import router as docker_router
@@ -99,7 +100,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                 await cleanup_task
             except (asyncio.CancelledError, Exception):
                 pass
-        await close_db()
+        verdict = await close_db()
+        if verdict is not CloseVerdict.CLOSED:
+            # Bounded, but not clean: a worker outcome or a connection close
+            # could not be confirmed, so this process must not be reused.
+            logger.error("Database shutdown verdict: %s — restart required", verdict.value)
 
 
 app = FastAPI(title="GlassOps", version="0.1.0", lifespan=lifespan)
@@ -142,7 +147,31 @@ app.include_router(net_audit_router)
 
 @app.get("/health")
 async def health():
+    """Liveness only: the process is up and serving.
+
+    Deliberately says nothing about storage. Turning this into a storage check
+    would make a wedged database restart the container in a loop, which is a
+    deployment decision — see /ready and the deployment blocker in the slice
+    notes. Readiness is reported separately so an operator or an orchestrator
+    can see that storage stopped without changing restart behaviour today."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Storage readiness: 200 when writes are being accepted, 503 otherwise.
+
+    Without this, a fail-stopped backend answers /health with 200 and keeps
+    broadcasting ephemeral samples, so nothing an operator looks at reveals that
+    the database stopped storing anything.
+
+    Reads in-process state only — it never submits SQL, so it still answers when
+    the database is wedged."""
+    state = readiness()
+    return JSONResponse(
+        status_code=200 if state["status"] == "ready" else 503,
+        content=state,
+    )
 
 
 @app.get("/api/info")

@@ -23,6 +23,7 @@ async def client(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://t") as c:
         yield c
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 async def test_events_endpoint_returns_stored(client):
@@ -90,6 +91,7 @@ async def test_non_admin_gets_403(tmp_path, monkeypatch):
         r = await c.get("/api/net-audit/a1/events")
     assert r.status_code == 403
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 async def test_tokenless_request_is_rejected_on_real_app():

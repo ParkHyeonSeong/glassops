@@ -42,6 +42,7 @@ def valid_body(**overrides) -> dict:
 @pytest.fixture
 async def client(tmp_path, monkeypatch):
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
     monkeypatch.setattr(db, "_db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(db, "_conn", None)
     try:
@@ -61,10 +62,11 @@ async def client(tmp_path, monkeypatch):
     finally:
         _reset_alert_state()
         await db.close_db()
+        db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 async def stored() -> dict:
-    conn = await db.get_db()
+    conn = await db._get_conn()
     cursor = await conn.execute("SELECT config FROM alert_config WHERE id = 1")
     row = await cursor.fetchone()
     return json.loads(row["config"]) if row else {}
@@ -72,7 +74,7 @@ async def stored() -> dict:
 
 async def _write_legacy_row(**flags) -> None:
     """Write a row in the pre-`security` shape, straight to the DB."""
-    conn = await db.get_db()
+    conn = await db._get_conn()
     row = {"host": "relay.example.com", "port": 465, "username": "",
            "from_email": "alerts@example.com", "to_email": "ops@example.com",
            "thresholds": {"cpu_crit": 90, "mem_crit": 90, "disk_crit": 95}, **flags}
@@ -93,6 +95,7 @@ async def test_non_admin_is_refused(tmp_path, monkeypatch, method, path):
     # Override get_current_user (not require_admin) so the REAL admin gate runs
     # against a seeded non-admin user.
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
     monkeypatch.setattr(db, "_db_path", str(tmp_path / "na.db"))
     monkeypatch.setattr(db, "_conn", None)
     await db.init_db()
@@ -109,6 +112,7 @@ async def test_non_admin_is_refused(tmp_path, monkeypatch, method, path):
         assert r.status_code == 403
     finally:
         await db.close_db()
+        db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 # --- GET shape -----------------------------------------------------------

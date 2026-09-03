@@ -6,6 +6,7 @@ there must not break collection of this file while Task 2 is unimplemented.
 
 import asyncio
 import json
+import threading
 
 import aiosqlite
 import pytest
@@ -22,10 +23,13 @@ async def fresh_db(tmp_path, monkeypatch):
     # first contended acquire, and pytest-asyncio gives each test its own
     # function-scoped loop — reusing a bound lock across tests would raise
     # "bound to a different event loop".
-    monkeypatch.setattr(db, "_metric_write_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(db, "_op_lock", asyncio.Lock(), raising=False)
+    # Fail-stop latches for the life of the process by design; clear it per test.
+    monkeypatch.setattr(db, "_fail_stop", None, raising=False)
     await db.init_db()
     yield db
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 def _metric(cpu=10.0):
@@ -73,7 +77,7 @@ async def test_concurrent_stores_all_persist_with_distinct_ids(fresh_db, monkeyp
         )
         assert len(opened) == 1  # one metric connection for all 10 stores, not ten
         assert sorted(ids) == list(range(1, 11))
-        conn = await db.get_db()
+        conn = await db._get_conn()
         cursor = await conn.execute("SELECT COUNT(*) FROM metrics")
         assert (await cursor.fetchone())[0] == 10
     finally:
@@ -123,7 +127,7 @@ async def test_store_serializes_insert_commit_under_lock(fresh_db):
         b = asyncio.create_task(db.store_metric("a1", 101.0, _metric(2)))
         for _ in range(5):                   # give B every chance to run its INSERT
             await asyncio.sleep(0)
-        # B is blocked on _metric_write_lock — only A's INSERT has run.
+        # B is blocked on the DB-file operation lock — only A's INSERT has run.
         assert inserts == ["INSERT INTO metrics (agent_id, timestamp, data) VALUES (?, ?, ?)"]
     finally:
         conn.execute = real_execute
@@ -164,86 +168,90 @@ async def test_store_metric_rolls_back_failed_commit(fresh_db):
     assert (await cursor.fetchone())[0] == 1
 
 
-async def test_store_metric_rolls_back_when_cancelled_before_commit_submitted(fresh_db):
-    # Cancellation BEFORE the real COMMIT reaches the worker: stalled_commit
-    # parks before calling the real commit, so cancelling here rolls back the
-    # pending INSERT (no row). `except Exception` would miss CancelledError;
-    # the BaseException handler pins this. (The commit-SUBMITTED case is the
-    # commit-wins ingest test in test_metric_ingest.py — a row DOES persist
-    # there, and ingest completes the durable path.)
+async def test_store_metric_rolls_back_when_cancelled_after_worker_submission(fresh_db):
+    # Cancellation while the INSERT is genuinely owned by the aiosqlite WORKER —
+    # not a wrapper parked before it ever called the driver. The worker finishes
+    # the statement either way, so the boundary must recover its outcome, roll
+    # the pending INSERT back (no row), and only then hand back the
+    # CancelledError. `except Exception` would miss CancelledError; this pins
+    # the BaseException handler.
+    #
+    # The COMMIT-cancellation outcomes (commit-wins, and unresolved -> fail-stop)
+    # are pinned separately in test_db_write_transaction.py.
     conn = await db._get_metric_db()
-    entered_commit = asyncio.Event()
-    block = asyncio.Event()  # never set — real commit is never reached
-    original_commit = conn.commit
 
-    async def stalled_commit():
-        entered_commit.set()
-        await block.wait()  # parked BEFORE real_commit() — nothing submitted yet
+    # Occupy the worker thread with a real statement so the write's next
+    # submission is truly queued to it.
+    entered, release = threading.Event(), threading.Event()
 
-    conn.commit = stalled_commit
-    task = None
-    try:
-        task = asyncio.create_task(db.store_metric("a1", 100.0, _metric(50)))
-        await asyncio.wait_for(entered_commit.wait(), timeout=5)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
-    finally:
-        conn.commit = original_commit
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)  # drain, never leak
+    def occupy(x):
+        entered.set()
+        release.wait(timeout=30)
+        return x
 
+    await conn.create_function("occupy", 1, occupy)
+    holder = asyncio.create_task(conn.execute("SELECT occupy(1)"))
+    await asyncio.wait_for(asyncio.to_thread(entered.wait, 5), timeout=10)
+    assert entered.is_set(), "worker never entered the occupying statement"
+
+    task = asyncio.create_task(db.store_metric("a1", 100.0, _metric(50)))
+    for _ in range(50):                      # let BEGIN reach the worker queue
+        if conn._tx.qsize() >= 1:
+            break
+        await asyncio.sleep(0)
+    assert conn._tx.qsize() >= 1, "the write never reached the aiosqlite worker"
+
+    task.cancel()
+    release.set()                            # the worker drains its queue
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=15)
+    cursor = await asyncio.wait_for(holder, timeout=10)
+    await cursor.close()
+
+    assert db._fail_stop is None, db._fail_stop  # a clean rollback is not fail-stop
+    assert conn.in_transaction is False, "transaction left open"
     survivor = await db.store_metric("a1", 101.0, _metric(60))
     assert isinstance(survivor, int)
-    cursor = await conn.execute("SELECT COUNT(*) FROM metrics WHERE agent_id = 'a1'")
-    assert (await cursor.fetchone())[0] == 1
+    rows = await db.get_recent_metrics("a1", limit=10)
+    assert len(rows) == 1, rows              # only the survivor persisted
 
 
-async def test_close_db_closes_metric_conn_even_if_shared_close_is_cancelled(fresh_db):
-    # r3.6 minor: close_db detaches both globals first, so a CancelledError
-    # from the shared close still lets the finally close the metric conn —
-    # no aiosqlite worker survives, no stale global remains.
-    shared = await db.get_db()
+@pytest.mark.expect_db_leftovers
+async def test_close_db_reports_restart_required_when_a_close_is_cancelled(fresh_db):
+    # Contract change: a connection close that comes back CANCELLED proves
+    # nothing about whether the connection actually closed, so close_db can no
+    # longer treat it as "handled" and carry on to the next connection as if the
+    # first were done. It detaches both globals (no stale global survives) and
+    # reports RESTART_REQUIRED instead of propagating a bare CancelledError.
+    shared = await db._get_conn()
     metric = await db._get_metric_db()
     real_shared_close, real_metric_close = shared.close, metric.close
-    closed = []
 
     async def cancelled_close():
         raise asyncio.CancelledError()
 
-    async def recording_close():
-        closed.append("metric")
-
     shared.close = cancelled_close
-    metric.close = recording_close
     try:
-        with pytest.raises(asyncio.CancelledError):
-            await db.close_db()
-        assert closed == ["metric"]  # second close ran despite the first cancelling
+        verdict = await asyncio.wait_for(db.close_db(timeout=5), timeout=15)
+        assert verdict is db.CloseVerdict.RESTART_REQUIRED, verdict
         assert db._conn is None and db._metric_conn is None  # globals detached
+        assert db._fail_stop is not None
     finally:
-        # The patched closes were no-ops — really close both, or their
-        # non-daemon aiosqlite workers outlive the test.
+        # The patched close was a no-op — really close both, or their non-daemon
+        # aiosqlite workers outlive the test.
         shared.close, metric.close = real_shared_close, real_metric_close
         await shared.close()
         await metric.close()
 
 
-async def test_store_metric_discards_connection_when_rollback_fails(fresh_db):
-    # r3.4 #1: if commit fails AND rollback fails, the pending INSERT must not
-    # ride the next commit. The connection is discarded on rollback failure,
-    # so the next store rebuilds a fresh one and only the survivor persists.
-    #
-    # Hardening: this test only WORKS as a regression net for the production
-    # `await db.close()` in that discard path if a removal of that line makes
-    # something here observably fail. It doesn't — the assertions below still
-    # pass even without it — the only symptom is the poisoned connection's
-    # non-daemon aiosqlite worker thread staying alive, which can hang the
-    # whole suite at interpreter exit instead of failing this test. So: close
-    # the ORIGINAL connection object ourselves in a finally (independent of
-    # whatever production code did or didn't do), and bound store_metric with
-    # a timeout so a genuine hang fails fast instead of wedging the runner.
+async def test_store_metric_fails_stop_when_rollback_cannot_be_confirmed(fresh_db):
+    # Contract change (storage-wedge slice): when commit fails AND rollback
+    # fails, this used to detach the connection so the next store rebuilt a
+    # fresh one. That is no longer done — with the rollback outcome unknown,
+    # the pending INSERT's fate is unknown too, so a replacement connection
+    # would keep writing the same file next to a transaction that may still be
+    # open. The DB now latches restart-required and refuses every later write,
+    # on BOTH connections, until the process restarts.
     conn = await db._get_metric_db()
 
     async def failing_commit():
@@ -258,26 +266,17 @@ async def test_store_metric_discards_connection_when_rollback_fails(fresh_db):
         with pytest.raises(RuntimeError):
             await asyncio.wait_for(db.store_metric("a1", 100.0, _metric(50)), timeout=5)
 
-        # The poisoned connection was detached; the next store opens a new one.
-        assert db._metric_conn is None
-        survivor = await asyncio.wait_for(
-            db.store_metric("a1", 101.0, _metric(60)), timeout=5
-        )
-        assert isinstance(survivor, int)
-
-        check = await db.get_db()  # read on the shared connection
-        cursor = await check.execute("SELECT data FROM metrics WHERE agent_id = 'a1'")
-        rows = [json.loads(r["data"]) for r in await cursor.fetchall()]
-        assert rows == [_metric(60)]  # only the survivor — the ephemeral row is gone
+        # The connection is kept, NOT swapped, and writes are refused outright.
+        assert db._metric_conn is conn
+        assert db._fail_stop is not None
+        with pytest.raises(db.DatabaseFailStop):
+            await asyncio.wait_for(db.store_metric("a1", 101.0, _metric(60)), timeout=5)
+        # One DB file, one verdict: the shared connection is refused too.
+        with pytest.raises(db.DatabaseFailStop):
+            await asyncio.wait_for(db.blacklist_token("t", 1.0), timeout=5)
     finally:
-        # Belt-and-suspenders: close the ORIGINAL (poisoned) connection
-        # object directly, regardless of whether production code's own
-        # discard-path close() ran — a double-close is harmless, but a
-        # missing close would otherwise leak a non-daemon worker thread.
-        try:
-            await conn.close()
-        except Exception:
-            pass
+        del conn.commit
+        del conn.rollback
 
 
 def _container_metric(cpu=10.0, name="worker"):
@@ -361,7 +360,7 @@ async def test_metrics_range_strips_forged_reserved_keys_from_raw_rows(fresh_db)
 
 
 async def test_metrics_range_downsampled_rows_carry_no_raw_identity(fresh_db):
-    conn = await db.get_db()
+    conn = await db._get_conn()
     poisoned = json.dumps({"cpu": {"percent_total": 5},
                            "sample_id": "raw:31337", "arrival_seq": 31337,
                            "persisted": False, "after_seq": 31336})
@@ -396,7 +395,7 @@ async def test_container_history_points_carry_identity(fresh_db):
 async def test_preexisting_rows_gain_identity_on_read(fresh_db):
     # Legacy rows (stored by the pre-identity code) gain identity purely at
     # read time from the id column — no migration, init_db untouched.
-    conn = await db.get_db()
+    conn = await db._get_conn()
     legacy = json.dumps({"cpu": {"percent_total": 5}, "persisted": False})
     await conn.execute(
         "INSERT INTO metrics (agent_id, timestamp, data) VALUES ('a1', 100.0, ?)",
@@ -416,7 +415,7 @@ async def test_get_max_metric_id_uses_last_issued_not_max(fresh_db):
     # last ISSUED id, so the anchor is 3 (last issued), not MAX(id)=2.
     for i in range(3):
         await db.store_metric("a1", 100.0 + i, _metric(i))
-    conn = await db.get_db()
+    conn = await db._get_conn()
     await conn.execute("DELETE FROM metrics WHERE id = 3")
     await conn.commit()
 
@@ -438,7 +437,9 @@ async def test_memory_db_path_shares_schema_across_connections(monkeypatch, tmp_
     monkeypatch.setattr(db, "_db_path", ":memory:")
     monkeypatch.setattr(db, "_conn", None)
     monkeypatch.setattr(db, "_metric_conn", None, raising=False)
-    monkeypatch.setattr(db, "_metric_write_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(db, "_op_lock", asyncio.Lock(), raising=False)
+    # Fail-stop latches for the life of the process by design; clear it per test.
+    monkeypatch.setattr(db, "_fail_stop", None, raising=False)
     # init_db bootstraps a default admin when no users exist, writing a
     # one-time password file relative to os.path.dirname(_db_path) — empty
     # for a bare ":memory:", i.e. cwd. Unrelated to this test's subject;
@@ -455,3 +456,4 @@ async def test_memory_db_path_shares_schema_across_connections(monkeypatch, tmp_
         assert recent[0]["cpu"]["percent_total"] == 42
     finally:
         await db.close_db()
+        db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB

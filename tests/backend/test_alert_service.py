@@ -32,6 +32,7 @@ def _reset_alert_state():
 async def store(tmp_path, monkeypatch):
     """Isolated DB + clean module-level cooldown/cache state."""
     await db.close_db()          # never inherit another module's connection
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
     monkeypatch.setattr(db, "_db_path", str(tmp_path / "alerts.db"))
     monkeypatch.setattr(db, "_conn", None)
     try:
@@ -41,6 +42,7 @@ async def store(tmp_path, monkeypatch):
     finally:
         _reset_alert_state()
         await db.close_db()
+        db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 class FakeSend:
@@ -89,7 +91,7 @@ def fake_send(monkeypatch):
 
 
 async def raw_stored_config() -> dict:
-    conn = await db.get_db()
+    conn = await db._get_conn()
     cursor = await conn.execute("SELECT config FROM alert_config WHERE id = 1")
     row = await cursor.fetchone()
     return json.loads(row["config"]) if row else {}
@@ -186,7 +188,7 @@ async def test_save_invalidates_the_config_cache(store):
 
 async def _write_raw_config(raw: dict) -> None:
     """Write the stored row verbatim, bypassing save_smtp_config's encryption."""
-    conn = await db.get_db()
+    conn = await db._get_conn()
     await conn.execute(
         "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)", (json.dumps(raw),))
     await conn.commit()
@@ -934,7 +936,7 @@ async def test_config_cache_ttl_is_measured_on_the_monotonic_clock(
     # Change the row underneath the cache, without invalidating it.
     raw = await raw_stored_config()
     raw["to_email"] = "oncall@example.com"
-    conn = await db.get_db()
+    conn = await db._get_conn()
     await conn.execute(
         "INSERT OR REPLACE INTO alert_config (id, config) VALUES (1, ?)", (json.dumps(raw),))
     await conn.commit()

@@ -10,6 +10,7 @@ async def fresh_db(tmp_path, monkeypatch):
     await db.init_db()
     yield db
     await db.close_db()
+    db._closed = False  # close_db latches "closed" for the process; a test reopens a fresh DB
 
 
 def _mk(ev):
