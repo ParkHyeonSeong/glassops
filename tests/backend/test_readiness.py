@@ -48,15 +48,38 @@ async def test_health_stays_a_liveness_probe(client):
     assert resp.json()["status"] == "ok"
 
 
-async def test_ready_is_503_with_a_reason_when_fail_stopped(client):
+async def test_ready_is_503_when_fail_stopped(client):
     db._fail_stop = "database is restart-required: rollback outcome unknown"
     resp = await client.get("/ready")
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "not_ready"
     assert body["database"] == "fail_stop"
-    assert "rollback outcome unknown" in body["reason"]
     assert body["restart_required"] is True
+
+
+async def test_ready_never_serves_the_reason_text(client, caplog):
+    """The latch is public; the sentence explaining it is not.
+
+    /ready is outside the /api/ auth gate and is proxied at the edge, and the
+    reason is built from repr() of driver exceptions — it carries table and
+    column names and statement context. An operator still needs it, so it goes
+    to the log instead of the response."""
+    secret = "no such column: users.totp_secret"
+    db._fail_stop = f"database is restart-required: OperationalError('{secret}')"
+    with caplog.at_level("ERROR", logger="glassops"):
+        resp = await client.get("/ready")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert "reason" not in body, "the free-text reason was served to an unauthenticated caller"
+    assert secret not in resp.text
+    # Still actionable without it.
+    assert body["database"] == "fail_stop"
+    assert body["restart_required"] is True
+    # And not lost: the operator can still find out why.
+    assert any(secret in r.getMessage() for r in caplog.records), (
+        "the reason was withheld from the response AND never logged")
 
 
 async def test_ready_is_503_while_closing(client):

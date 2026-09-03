@@ -166,11 +166,21 @@ async def ready():
     the database stopped storing anything.
 
     Reads in-process state only — it never submits SQL, so it still answers when
-    the database is wedged."""
+    the database is wedged.
+
+    The free-text `reason` is deliberately NOT served. This path sits outside
+    the /api/ auth gate and is proxied at the edge, and the reason is built from
+    repr() of driver exceptions — it names tables, columns and statement
+    context. Everything an operator or an orchestrator has to act on (ready or
+    not, which latch, whether a restart is required, the counters) stays in the
+    body; the detail goes to the log, where it is already attributable."""
     state = readiness()
+    is_ready = state["status"] == "ready"
+    if not is_ready:
+        logger.error("Not ready (%s): %s", state["database"], state["reason"])
     return JSONResponse(
-        status_code=200 if state["status"] == "ready" else 503,
-        content=state,
+        status_code=200 if is_ready else 503,
+        content={k: v for k, v in state.items() if k != "reason"},
     )
 
 
