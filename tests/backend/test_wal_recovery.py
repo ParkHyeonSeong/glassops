@@ -395,9 +395,19 @@ def test_a_wal_that_postdates_the_sentinel_is_refused(tmp_path, children):
 def test_recovery_entrypoint_rejects_a_clean_close_before_touching_source(
     tmp_path, children, monkeypatch
 ):
+    """The CP-5A entrypoint refuses a source with no WAL before asking anyone.
+
+    Whether a clean close leaves an empty `-wal` sidecar behind or removes it
+    is the OS's choice (macOS keeps it, Linux deletes it), so the absent shape
+    is made explicit here rather than inherited from the platform. That also
+    keeps the real CP-5B fence out of the picture — it needs a sidecar to
+    open — because what is under test is the recovery oracle, not the probe.
+    """
     source = tmp_path / "source"
     source.mkdir()
     clean = _build_fixture(source, children, mode="clean")
+    clean.wal.unlink(missing_ok=True)
+    assert not clean.wal.exists()
     before = _source_digests(clean)
 
     def checkpoint_must_not_run(conn):
@@ -405,12 +415,22 @@ def test_recovery_entrypoint_rejects_a_clean_close_before_touching_source(
 
     monkeypatch.setattr(wal_recovery, "_checkpoint_pragma", checkpoint_must_not_run)
 
+    class CountingNeverAsked(NeverAsked):
+        source_open_checks = 0
+
+        def check_before_source_open(self, *, db_path):
+            self.source_open_checks += 1
+            return super().check_before_source_open(db_path=db_path)
+
+    authority = CountingNeverAsked()
+
     with pytest.raises(wal_recovery.OracleInvalid) as caught:
-        _rehearse(clean, tmp_path)
+        _rehearse(clean, tmp_path, fence=authority)
 
     assert caught.value.reason == "no-wal"
     assert caught.value.report.checkpoint_started is False
     assert _source_digests(clean) == before
+    assert authority.source_open_checks == 0
 
 
 def test_recovery_entrypoint_rejects_a_wal_that_does_not_hold_the_sentinel(
@@ -1070,18 +1090,37 @@ def test_recovery_leaves_the_journal_mode_and_the_wal_file_alone(crashed, tmp_pa
 
 
 def test_reusing_a_run_id_is_refused_without_disturbing_the_first_run(
-    crashed, tmp_path
+    crashed, tmp_path, children
 ):
     first = _rehearse(crashed, tmp_path, run_id="run-1")
     run_dir = Path(first.run_dir)
-    before = {p.name: _sha256(p) for p in sorted(run_dir.rglob("*")) if p.is_file()}
+    before = {
+        str(p.relative_to(run_dir)): _sha256(p)
+        for p in sorted(run_dir.rglob("*"))
+        if p.is_file()
+    }
     assert before, "the first run wrote no files to preserve"
 
+    # The first run consumed the source's WAL, and whether an empty sidecar
+    # survives that is the OS's choice (macOS keeps it, Linux deletes it). A
+    # second source with its own hard crash carries a real WAL on every
+    # platform, so the second run gets past the fence and the refusal under
+    # test is the run directory, not the probe.
+    second_source = tmp_path / "source-2"
+    second_source.mkdir()
+    second = _build_fixture(second_source, children)
+    assert second.wal.stat().st_size > 0, "the second source has no WAL to offer"
+
     with pytest.raises(wal_recovery.BackupRejected) as caught:
-        _rehearse(crashed, tmp_path, run_id="run-1")
+        _rehearse(second, tmp_path, run_id="run-1")
 
     assert caught.value.code == "BACKUP_REJECTED"
-    after = {p.name: _sha256(p) for p in sorted(run_dir.rglob("*")) if p.is_file()}
+    assert caught.value.stage == "run-dir"
+    after = {
+        str(p.relative_to(run_dir)): _sha256(p)
+        for p in sorted(run_dir.rglob("*"))
+        if p.is_file()
+    }
     assert after == before
 
 
