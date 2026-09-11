@@ -12,7 +12,8 @@ help: ## Show this help
 build: ## Build the GlassOps image
 	docker compose build
 
-up: ## Start GlassOps (build if needed)
+up: ## Start GlassOps (build if needed; applies .env changes)
+	@test -f .env || (echo "  Missing .env — copy .env.example and edit" && exit 1)
 	docker compose down --remove-orphans 2>/dev/null || true
 	docker compose up -d --build
 	@echo ""
@@ -25,13 +26,14 @@ down: ## Stop GlassOps
 logs: ## Show logs (follow)
 	docker compose logs -f
 
-restart: ## Restart GlassOps
+restart: ## Restart GlassOps (does not re-read .env; use make up for that)
 	docker compose restart
 
 clean: ## Stop and remove all data
 	docker compose down -v --remove-orphans
 
-dev: ## Start in dev mode (backend/agent hot-reload)
+dev: ## Start in dev mode (backend/agent source mounted; restart to apply edits)
+	@test -f .env || (echo "  Missing .env — copy .env.example and edit" && exit 1)
 	docker compose -f docker-compose.dev.yml up -d --build
 	@echo ""
 	@echo "  GlassOps dev running at http://localhost:$(PORT)"
@@ -44,6 +46,7 @@ shell: ## Open shell in running container
 	docker compose exec glassops bash
 
 prod: ## Production build (no cache) and start
+	@test -f .env || (echo "  Missing .env — copy .env.example and edit" && exit 1)
 	docker compose down --remove-orphans 2>/dev/null || true
 	docker compose build --no-cache
 	docker compose up -d
@@ -51,11 +54,10 @@ prod: ## Production build (no cache) and start
 	@echo "  GlassOps production running at http://localhost:$(PORT)"
 	@echo ""
 
-status: ## Show container status + agent connection
+status: ## Show container status + /health
 	@docker compose ps
 	@echo ""
 	@curl -s http://localhost:$(PORT)/health 2>/dev/null && echo "" || echo "  Not running"
-	@curl -s http://localhost:$(PORT)/api/agents 2>/dev/null && echo "" || true
 
 update: ## Pull latest and rebuild
 	git pull

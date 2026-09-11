@@ -166,7 +166,7 @@ make up          # Build if needed, then start (also applies .env changes)
 make down        # Stop
 make restart     # Restart the container (does not re-read .env)
 make logs        # Follow logs
-make status      # Container status and /health (the agent list needs a login)
+make status      # Container status and /health
 make shell       # Shell inside the container
 make build       # Build the image only
 make prod        # Rebuild from scratch (no cache) and start

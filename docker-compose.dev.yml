@@ -26,7 +26,7 @@ services:
       - /var/log:/host/log:ro
       - /proc:/host/proc:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
-      - ./backend/app:/app/app       # Backend hot-reload (uvicorn --reload)
+      - ./backend/app:/app/app       # Backend source mount (no auto-reload: restart to apply edits)
       - ./agent/agent:/app/agent     # Agent code mount
     env_file: .env
     environment:
