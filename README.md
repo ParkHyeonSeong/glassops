@@ -463,6 +463,42 @@ healthcheck polls `/ready`. A `503` body names the condition (`database`) and wh
 `restart_required` is true — in which case the process will not recover on its own: read
 `make logs` for the reason (it is logged, not served) and restart the container.
 
+### Backup and restore
+
+Everything GlassOps remembers — accounts and passwords, host mappings, alert and email
+settings, the audit log and the last 7 days of metrics — lives in one place: the `/app/data`
+directory inside the container, which Docker keeps in the `glassops_data` volume. If
+`GLASSOPS_SECRET_KEY` is empty in `.env`, the master secret (`secret.key`) is in there too.
+`.env` itself lives on the host next to the compose file and is **not** in the volume.
+
+Back up with the container **stopped**. The database is written to continuously while it
+runs, and a copy taken mid-write can be inconsistent:
+
+```bash
+docker compose down
+docker compose run --rm --no-deps --entrypoint "" -v "$PWD:/backup" glassops \
+  tar czf /backup/glassops-data.tgz -C /app/data .
+make up
+```
+
+Keep `glassops-data.tgz` together with `.env`, and treat both like a password file: between
+them they hold the master secret and every account.
+
+To restore — on the same machine, or on a new one after `git clone`, copying the saved
+`.env` into place and `make build`:
+
+```bash
+docker compose down
+docker compose run --rm --no-deps --entrypoint "" -v "$PWD:/backup" glassops \
+  sh -c 'rm -rf /app/data/* && tar xzf /backup/glassops-data.tgz -C /app/data'
+make up
+```
+
+This replaces whatever is in the volume with the backup. Use the same `.env` the backup was
+taken with: a different `GLASSOPS_SECRET_KEY` would log everyone out, break stored SMTP
+passwords and disconnect remote agents. This is also how you move GlassOps to another
+server — the transfer tool two sections below is only for the old-schema upgrade.
+
 ### Updating
 
 ```bash
