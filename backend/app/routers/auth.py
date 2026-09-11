@@ -220,8 +220,26 @@ async def update_password(
     return {"ok": True}
 
 
+# 2FA enrolment is switched off until the login screen can prompt for a code.
+# setup/confirm/verify all work, but LoginScreen.tsx answers requires_totp with
+# "not yet implemented", so an account that enables TOTP today loses browser
+# access. Refusing here, before anything is written, keeps that from happening;
+# verification for accounts enabled earlier is left in place so their API
+# logins keep the second factor. Remove the refusal together with the login
+# screen change, not before.
+TOTP_ENROLMENT_UNAVAILABLE = (
+    "Two-factor authentication cannot be enabled yet: "
+    "the login screen does not prompt for a code."
+)
+
+
+def _refuse_totp_enrolment() -> None:
+    raise HTTPException(501, TOTP_ENROLMENT_UNAVAILABLE)
+
+
 @router.post("/totp/setup")
 async def totp_setup(email: str = Depends(get_current_user)):
+    _refuse_totp_enrolment()
     result = await setup_totp(email)
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "Setup failed"))
@@ -233,6 +251,7 @@ async def totp_confirm(
     body: TotpConfirmRequest,
     email: str = Depends(get_current_user),
 ):
+    _refuse_totp_enrolment()
     if not await confirm_totp(email, body.code):
         raise HTTPException(400, "Invalid TOTP code")
     return {"ok": True, "totp_enabled": True}

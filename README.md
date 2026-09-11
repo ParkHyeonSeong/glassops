@@ -651,13 +651,42 @@ The module docstrings of `backend/app/wal_recovery_cli.py`, `wal_fence.py` and
   attempts/minute per IP
 - Roles: `admin` and `user`. Docker, Users, Terminal and the Network Audit tab are admin-only
 - Terminal requires an admin session **and** the host user's password
-- TOTP two-factor authentication exists in the API (`POST /api/auth/totp/setup`, then
-  `/api/auth/totp/confirm`), but the login screen cannot yet ask for the code — do not
-  enable it on an account you use through the browser
+- Two-factor authentication (TOTP) is **not available yet**: enrolment is refused with
+  `501` until the login screen can prompt for a code (see below)
 - SMTP passwords encrypted at rest (Fernet, key derived from `GLASSOPS_SECRET_KEY`)
 - Environment variables masked in container details
 - IP allowlist with self-lockout prevention
 - Runtime settings validated (username format, CIDR format, strict booleans)
+
+### Two-factor authentication (not available yet)
+
+The backend can verify TOTP codes, but the login screen cannot prompt for one, so an account
+that turned 2FA on would be locked out of the browser. Until the login screen supports it,
+the enrolment endpoints (`POST /api/auth/totp/setup` and `POST /api/auth/totp/confirm`)
+answer `501 Not Implemented` and change nothing. Nothing in the UI enables 2FA, so most
+installations are unaffected.
+
+If an account was enabled through the API before this, it still needs its code on API logins
+and cannot log in through the browser. To see whether any such account exists, and to switch
+2FA off for one, run these with the container stopped (`docker compose down`, then `make up`
+afterwards):
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint "" glassops python3 - <<'EOF'
+import sqlite3
+db = sqlite3.connect("/app/data/glassops.db")
+print(db.execute("SELECT email FROM users WHERE totp_enabled = 1").fetchall())
+EOF
+```
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint "" glassops python3 - <<'EOF'
+import sqlite3
+db = sqlite3.connect("/app/data/glassops.db")
+db.execute("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE email = ?", ("alice@example.com",))
+db.commit()
+EOF
+```
 
 ### Container privileges
 
