@@ -16,8 +16,9 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Esc → close focused window
+      // Esc → close focused window, unless it comes from the dock menu, which closes itself
       if (e.key === "Escape") {
+        if (e.target instanceof Element && e.target.closest("[data-dock-menu]")) return;
         closeFocusedWindow();
       }
     };

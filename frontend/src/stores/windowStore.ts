@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { WindowState, AppDefinition, WindowBounds } from "../types";
+import { dockReserve } from "../components/desktop/dockMotion";
 import { useAuthStore } from "./authStore";
+import { useSettingsStore } from "./settingsStore";
 
 export const APP_DEFINITIONS: AppDefinition[] = [
   {
@@ -182,10 +184,12 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-// Chrome reserved by the menubar (top) and dock (bottom). Keep in sync with
-// the values in `snapWindow` and `Window.tsx`.
-const MENUBAR_HEIGHT = 36;
-const DOCK_HEIGHT = 72;
+// Chrome reserved by the menubar (top); the dock (Dock.tsx) reads it too. The dock's share
+// comes from `dockReserve` (components/desktop/dockMotion.ts): it follows the dock's side and
+// size, and is read each time a window opens or snaps so a settings change applies to the next
+// one. Keep MENUBAR_HEIGHT in sync with --menubar-height in global.css and MENU_BAR_HEIGHT in
+// `Window.tsx`, and `dockReserve` with the dock itself.
+export const MENUBAR_HEIGHT = 36;
 
 function paramsKey(params?: Record<string, string>): string {
   if (!params) return "";
@@ -240,19 +244,23 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
 
     // Restore the user's last size for this appId; clamp into a sane range so
     // a stored size from a larger display doesn't push the window off-screen.
-    // Height excludes menubar + dock so a restored window never overlaps them.
+    // Only the size is clamped, to the room the menubar and the dock (on whichever side
+    // it is) leave; the position is not, so a cascaded window can still reach under the
+    // dock. The cascade starts after a left/top dock.
+    const reserve = dockReserve(useSettingsStore.getState().dock);
     const remembered = lastSizes[appId];
-    const viewportW = globalThis.innerWidth || app.defaultWidth;
-    const viewportH = (globalThis.innerHeight || app.defaultHeight) - MENUBAR_HEIGHT - DOCK_HEIGHT;
-    const width = clamp(remembered?.width ?? app.defaultWidth, app.minWidth, viewportW);
-    const height = clamp(remembered?.height ?? app.defaultHeight, app.minHeight, viewportH);
+    const availW = (globalThis.innerWidth || app.defaultWidth) - reserve.left - reserve.right;
+    const availH =
+      (globalThis.innerHeight || app.defaultHeight) - MENUBAR_HEIGHT - reserve.top - reserve.bottom;
+    const width = clamp(remembered?.width ?? app.defaultWidth, app.minWidth, availW);
+    const height = clamp(remembered?.height ?? app.defaultHeight, app.minHeight, availH);
 
     const newWindow: WindowState = {
       id: `window-${crypto.randomUUID()}`,
       appId: app.id,
       title: options?.title ?? app.title,
-      x: 100 + offset,
-      y: 50 + offset,
+      x: reserve.left + 100 + offset,
+      y: reserve.top + 50 + offset,
       width,
       height,
       minWidth: app.minWidth,
@@ -363,19 +371,19 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
 
   snapWindow: (windowId: string, side: "left" | "right") => {
     const { nextZIndex } = get();
-    const screenW = globalThis.innerWidth;
-    const menuH = 36;
-    const dockH = 72;
-    const availH = globalThis.innerHeight - menuH - dockH;
+    // The halves share the room below the menubar and beside the dock.
+    const reserve = dockReserve(useSettingsStore.getState().dock);
+    const availW = globalThis.innerWidth - reserve.left - reserve.right;
+    const availH = globalThis.innerHeight - MENUBAR_HEIGHT - reserve.top - reserve.bottom;
 
     set((state) => ({
       windows: state.windows.map((w) => {
         if (w.id !== windowId) return w;
         return {
           ...w,
-          x: side === "left" ? 0 : screenW / 2,
-          y: 0,
-          width: screenW / 2,
+          x: side === "left" ? reserve.left : reserve.left + availW / 2,
+          y: reserve.top,
+          width: availW / 2,
           height: availH,
           isMaximized: false,
           preMaximizeBounds: w.preMaximizeBounds ?? { x: w.x, y: w.y, width: w.width, height: w.height },

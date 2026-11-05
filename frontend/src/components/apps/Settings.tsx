@@ -1,13 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useAuthStore } from "../../stores/authStore";
-import { useSettingsStore, WALLPAPERS } from "../../stores/settingsStore";
+import {
+  DOCK_RANGES, useSettingsStore, WALLPAPERS,
+  type DockPosition, type DockSpring, type DockTheme,
+} from "../../stores/settingsStore";
 import { useThresholdsStore } from "../../stores/thresholdsStore";
 import { type AlertMetricKey } from "../../lib/thresholds";
 import { formatApiDetail } from "../../lib/apiDetail";
 import { fetchWithAuth } from "../../utils/api";
 
-type Tab = "profile" | "agents" | "server" | "alerts" | "email" | "appearance";
+type Tab = "profile" | "agents" | "server" | "alerts" | "email" | "appearance" | "dock";
 
 export default function SettingsApp() {
   const [tab, setTab] = useState<Tab>("profile");
@@ -19,7 +22,7 @@ export default function SettingsApp() {
   return (
     <div className="settings-app">
       <div className="settings-sidebar">
-        {(["profile", "agents", "server", "alerts", "email", "appearance"] as Tab[]).map((t) => (
+        {(["profile", "agents", "server", "alerts", "email", "appearance", "dock"] as Tab[]).map((t) => (
           <button key={t} className={`settings-nav ${tab === t ? "settings-nav-active" : ""}`}
             onClick={() => setTab(t)}>
             {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -33,6 +36,7 @@ export default function SettingsApp() {
         {tab === "alerts" && <AlertsTab />}
         {tab === "email" && <EmailTab />}
         {tab === "appearance" && <AppearanceTab />}
+        {tab === "dock" && <DockTab />}
       </div>
     </div>
   );
@@ -646,6 +650,162 @@ function AppearanceTab() {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+const THEME_OPTIONS: { value: DockTheme; label: string }[] = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+];
+
+const POSITION_OPTIONS: { value: DockPosition; label: string }[] = [
+  { value: "bottom", label: "Bottom" },
+  { value: "top", label: "Top" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+];
+
+const SPRING_OPTIONS: { value: DockSpring; label: string }[] = [
+  { value: "smooth", label: "Smooth" },
+  { value: "snappy", label: "Snappy" },
+  { value: "bouncy", label: "Bouncy" },
+  { value: "gentle", label: "Gentle" },
+];
+
+// Every control hands setDock a concrete value: setDock treats undefined as "missing"
+// and would reset that key to its default.
+function DockTab() {
+  const dock = useSettingsStore((s) => s.dock);
+  const setDock = useSettingsStore((s) => s.setDock);
+  const resetDock = useSettingsStore((s) => s.resetDock);
+
+  return (
+    <div className="settings-groups">
+      <div className="settings-section">
+        <h3 className="settings-title">Appearance</h3>
+        <DockSelect label="Theme" value={dock.theme} options={THEME_OPTIONS}
+          onChange={(theme) => setDock({ theme })} />
+        <DockColor label="Accent color" value={dock.accentColor}
+          onChange={(accentColor) => setDock({ accentColor })} />
+        <DockColor label="Badge color" value={dock.badgeColor}
+          onChange={(badgeColor) => setDock({ badgeColor })} />
+        <DockSlider label="Roundness" range={DOCK_RANGES.roundness} value={dock.roundness}
+          onChange={(roundness) => setDock({ roundness })} />
+        <DockSwitch label="Tiles" checked={dock.tiles}
+          onChange={(tiles) => setDock({ tiles })} />
+      </div>
+
+      <div className="settings-section">
+        <h3 className="settings-title">Size</h3>
+        <DockSlider label="Item size" unit="px" range={DOCK_RANGES.baseItemSize} value={dock.baseItemSize}
+          onChange={(baseItemSize) => setDock({ baseItemSize })} />
+        <DockSlider label="Magnification" unit="px" range={DOCK_RANGES.magnification} value={dock.magnification}
+          onChange={(magnification) => setDock({ magnification })} />
+        <DockSlider label="Magnification range" unit="px" range={DOCK_RANGES.distance} value={dock.distance}
+          onChange={(distance) => setDock({ distance })} />
+        <DockSlider label="Bar height" unit="px" range={DOCK_RANGES.panelHeight} value={dock.panelHeight}
+          onChange={(panelHeight) => setDock({ panelHeight })} />
+        <DockSlider label="Gap" unit="px" range={DOCK_RANGES.gap} value={dock.gap}
+          onChange={(gap) => setDock({ gap })} />
+      </div>
+
+      <div className="settings-section">
+        <h3 className="settings-title">Behavior</h3>
+        <DockSelect label="Position" value={dock.position} options={POSITION_OPTIONS}
+          onChange={(position) => setDock({ position })} />
+        <DockSelect label="Spring" value={dock.spring} options={SPRING_OPTIONS}
+          onChange={(spring) => setDock({ spring })} />
+        <DockSwitch label="Bounce" checked={dock.bounce}
+          onChange={(bounce) => setDock({ bounce })} />
+        <DockSwitch label="Auto-hide" checked={dock.autoHide}
+          onChange={(autoHide) => setDock({ autoHide })} />
+      </div>
+
+      <div className="settings-section">
+        <h3 className="settings-title">Show</h3>
+        <DockSwitch label="Labels" checked={dock.showLabels}
+          onChange={(showLabels) => setDock({ showLabels })} />
+        <DockSwitch label="Indicators" checked={dock.showIndicators}
+          onChange={(showIndicators) => setDock({ showIndicators })} />
+        <DockSwitch label="Badges" checked={dock.showBadges}
+          onChange={(showBadges) => setDock({ showBadges })} />
+      </div>
+
+      <button className="settings-btn" onClick={() => resetDock()}>Reset to defaults</button>
+    </div>
+  );
+}
+
+// One row per control. Selects, colour inputs and sliders reuse the Alerts tab's slider-row
+// layout so their labels and controls line up; switches keep the toggle row. Every control
+// takes its accessible name from the visible label text.
+function DockSelect<T extends string>({ label, value, options, onChange }: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="settings-slider-row">
+      <label className="settings-label" htmlFor={id}>{label}</label>
+      <select id={id} className="settings-input" style={{ width: 200 }} value={value}
+        onChange={(e) => onChange(e.target.value as T)}>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function DockColor({ label, value, onChange }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="settings-slider-row">
+      <label className="settings-label" htmlFor={id}>{label}</label>
+      <input id={id} type="color" className="settings-color" value={value}
+        onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+function DockSlider({ label, unit = "", range, value, onChange }: {
+  label: string;
+  unit?: string;
+  range: { min: number; max: number; step: number };
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="settings-slider-row">
+      <label className="settings-label" htmlFor={id}>{label}</label>
+      <input id={id} type="range" min={range.min} max={range.max} step={range.step}
+        value={value} onChange={(e) => onChange(Number(e.target.value))}
+        className="settings-range" />
+      <span className="settings-range-value">{`${value}${unit}`}</span>
+    </div>
+  );
+}
+
+function DockSwitch({ label, checked, onChange }: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="settings-toggle-row">
+      <span className="settings-toggle-label" id={id}>{label}</span>
+      <button role="switch" aria-checked={checked} aria-labelledby={id}
+        className={`settings-toggle ${checked ? "settings-toggle-on" : ""}`}
+        onClick={() => onChange(!checked)}>
+        <span className="settings-toggle-knob" />
+      </button>
     </div>
   );
 }

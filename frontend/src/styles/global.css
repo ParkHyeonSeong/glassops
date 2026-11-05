@@ -12,7 +12,6 @@
   --glass-highlight: rgba(255, 255, 255, 0.08);
   --glass-shadow: rgba(0, 0, 0, 0.3);
   --menubar-bg: rgba(20, 20, 35, 0.4);
-  --dock-bg: rgba(40, 40, 60, 0.5);
   --text-primary: #e0e0e0;
   --text-secondary: #8888aa;
   --color-accent: #4facfe;
@@ -25,7 +24,6 @@
 
   /* Sizes */
   --menubar-height: 36px;
-  --dock-height: 72px;
   --window-radius: 12px;
   --titlebar-height: 38px;
 
@@ -719,195 +717,643 @@ body {
 }
 
 /* ===== Dock ===== */
-.dock-trigger-zone {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 6px;
-  z-index: var(--z-dock);
+/* A toolbar fixed to one screen edge (data-position) in its own theme (data-theme). Dock.tsx
+   sets the geometry as custom properties: --dock-base (item size), --dock-thickness, --dock-pad,
+   --dock-gap, --dock-radius, --dock-roundness, --dock-edge and --dock-hover-reach, plus
+   --dock-accent and --dock-badge. It also writes each item's width and height as they animate,
+   and sets data-hidden on the bar and data-hop on a hopping item.
+   Glass layering: an element with backdrop-filter, filter, opacity < 1, mask, clip-path or
+   mix-blend-mode stops the backdrop-filter of everything inside it from seeing the page. Tiles
+   and labels stick out of the bar and carry their own blur, so the bar's glass is .dock-glass,
+   a layer behind the items, and nothing from the toolbar down to a tile or a label may set any
+   of those properties. transform is fine. */
+.dock[data-theme="dark"] {
+  --dock-panel-fill: rgba(38, 35, 46, 0.34);
+  --dock-panel-backdrop: blur(24px) saturate(1.8);
+  --dock-panel-edge: rgba(255, 255, 255, 0.14);
+  --dock-panel-highlight: rgba(255, 255, 255, 0.14);
+  --dock-panel-shadow:
+    0 22px 44px -20px rgba(0, 0, 0, 0.7),
+    0 6px 16px -8px rgba(0, 0, 0, 0.4);
+  --dock-tile-fill: linear-gradient(180deg, rgba(72, 68, 88, 0.62), rgba(40, 37, 50, 0.62));
+  --dock-tile-backdrop: blur(12px) saturate(1.6);
+  --dock-tile-edge: rgba(255, 255, 255, 0.12);
+  --dock-tile-highlight: rgba(255, 255, 255, 0.2);
+  --dock-tile-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.55);
+  --dock-ink: #f4f4f5;
+  --dock-ink-shadow: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+  --dock-pip: rgba(255, 255, 255, 0.8);
+  --dock-divider: rgba(255, 255, 255, 0.16);
+  --dock-tip-fill: rgba(42, 39, 49, 0.62);
+  --dock-tip-backdrop: blur(16px) saturate(1.6);
+  --dock-tip-edge: rgba(255, 255, 255, 0.12);
+  --dock-tip-ink: #f4f4f5;
+  --dock-pressed: brightness(0.75);
 }
 
-.dock-wrapper {
-  position: fixed;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%) translateY(0);
-  z-index: var(--z-dock);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-              opacity 0.25s ease;
-}
-
-.dock-hidden {
-  transform: translateX(-50%) translateY(100%);
-  opacity: 0;
-  pointer-events: none;
+.dock[data-theme="light"] {
+  --dock-panel-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.22));
+  --dock-panel-backdrop: blur(28px) saturate(2);
+  --dock-panel-edge: rgba(255, 255, 255, 0.7);
+  --dock-panel-highlight: rgba(255, 255, 255, 0.9);
+  --dock-panel-shadow:
+    0 22px 44px -22px rgba(24, 24, 27, 0.3),
+    0 6px 16px -10px rgba(24, 24, 27, 0.16),
+    0 0 0 1px rgba(24, 24, 27, 0.05);
+  --dock-tile-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.3));
+  --dock-tile-backdrop: blur(14px) saturate(1.8);
+  --dock-tile-edge: rgba(255, 255, 255, 0.75);
+  --dock-tile-highlight: rgba(255, 255, 255, 0.95);
+  --dock-tile-shadow: 0 4px 12px -5px rgba(24, 24, 27, 0.22);
+  --dock-ink: #27272a;
+  --dock-ink-shadow: none;
+  --dock-pip: rgba(24, 24, 27, 0.55);
+  --dock-divider: rgba(24, 24, 27, 0.14);
+  --dock-tip-fill: rgba(255, 255, 255, 0.62);
+  --dock-tip-backdrop: blur(18px) saturate(1.8);
+  --dock-tip-edge: rgba(255, 255, 255, 0.8);
+  --dock-tip-ink: #18181b;
+  --dock-pressed: brightness(0.9);
 }
 
 .dock {
+  position: fixed;
+  z-index: var(--z-dock);
   display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 9px 12px;
-  background: linear-gradient(
-    180deg,
-    rgba(56, 56, 84, 0.55) 0%,
-    rgba(28, 28, 48, 0.62) 100%
-  );
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  box-shadow:
-    0 12px 36px rgba(0, 0, 0, 0.4),
-    0 1px 0 rgba(255, 255, 255, 0.08) inset,
-    0 -1px 0 rgba(0, 0, 0, 0.25) inset;
+  gap: var(--dock-gap);
+  padding: var(--dock-pad);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
-.dock-item-col {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  position: relative;
-}
-
-.dock-tooltip {
-  position: absolute;
-  bottom: calc(100% + 14px);
+/* Centred along its edge by the translate property, which leaves transform free for moving
+   the bar. Items line up on the screen-edge side, so an item larger than the bar rises out of
+   it away from the edge while the bar keeps its thickness. --dock-tip-from is where a label
+   starts before it slides out: 4px nearer its tile. */
+.dock[data-position="bottom"],
+.dock[data-position="top"] {
   left: 50%;
-  transform: translateX(-50%);
-  display: flex;
+  translate: -50% 0;
+  width: max-content;
+  height: var(--dock-thickness);
+}
+
+.dock[data-position="bottom"] {
+  bottom: var(--dock-edge);
+  align-items: flex-end;
+  --dock-tip-from: translateY(4px);
+}
+
+.dock[data-position="top"] {
+  top: calc(var(--menubar-height) + var(--dock-edge));
+  align-items: flex-start;
+  --dock-tip-from: translateY(-4px);
+}
+
+/* A side dock is centred on the room below the menubar. */
+.dock[data-position="left"],
+.dock[data-position="right"] {
+  top: calc(50% + var(--menubar-height) / 2);
+  translate: 0 -50%;
   flex-direction: column;
-  align-items: center;
+  width: var(--dock-thickness);
+}
+
+.dock[data-position="left"] {
+  left: var(--dock-edge);
+  align-items: flex-start;
+  --dock-tip-from: translateX(-4px);
+}
+
+.dock[data-position="right"] {
+  right: var(--dock-edge);
+  align-items: flex-end;
+  --dock-tip-from: translateX(4px);
+}
+
+/* The hover region. Once the pointer is on the dock it reaches --dock-hover-reach past the bar
+   (one item's swell plus a margin), so the pointer keeps the swell while it crosses grown items.
+   An idle bar reaches no further than itself, so it never takes clicks meant for the windows
+   above it, and the swell starts at the bar. Only where the device can hover: on a touch screen
+   :hover sticks after a tap, and the reach would go on taking taps meant for those windows.
+   Transparent, and under the items. */
+.dock::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+@media (hover: hover) {
+  .dock[data-position="bottom"]:hover::before {
+    top: calc(-1 * var(--dock-hover-reach));
+  }
+
+  .dock[data-position="top"]:hover::before {
+    bottom: calc(-1 * var(--dock-hover-reach));
+  }
+
+  .dock[data-position="left"]:hover::before {
+    right: calc(-1 * var(--dock-hover-reach));
+  }
+
+  .dock[data-position="right"]:hover::before {
+    left: calc(-1 * var(--dock-hover-reach));
+  }
+}
+
+/* Hidden (auto-hide, or a maximised window on screen): slid off its edge by its thickness plus
+   the edge gap. A top dock also clears the menubar; a bottom or left dock also the alert badge,
+   which sticks out of its tile's top-right corner, away from those edges, by up to 0.19 × base,
+   and the badge's 3px shadow. It takes no pointer events but stays focusable. The transition
+   comes from the state it moves into: shown over 0.5 s, hidden over 0.36 s. The bar only
+   slides; fading it would make it a backdrop root (see above). */
+.dock {
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dock[data-hidden] {
   pointer-events: none;
-  animation: dock-tooltip-in 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
-  transform-origin: bottom center;
+  transition-duration: 0.36s;
+  transition-timing-function: cubic-bezier(0.55, 0, 0.75, 0.15);
 }
 
-.dock-tooltip-label {
-  padding: 5px 10px;
-  background: rgba(20, 20, 36, 0.92);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
-  color: #f5f5fa;
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+.dock[data-position="bottom"][data-hidden] {
+  transform: translateY(calc(var(--dock-thickness) + var(--dock-edge) + 0.19 * var(--dock-base) + 3px));
 }
 
-.dock-tooltip-caret {
-  width: 8px;
-  height: 8px;
-  background: rgba(20, 20, 36, 0.92);
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  transform: translateY(-5px) rotate(45deg);
+.dock[data-position="top"][data-hidden] {
+  transform: translateY(calc(-1 * (var(--dock-thickness) + var(--dock-edge) + var(--menubar-height))));
 }
 
-@keyframes dock-tooltip-in {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(4px) scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
+.dock[data-position="left"][data-hidden] {
+  transform: translateX(calc(-1 * (var(--dock-thickness) + var(--dock-edge) + 0.19 * var(--dock-base) + 3px)));
 }
 
-.dock-item-lift {
-  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-  will-change: transform;
+.dock[data-position="right"][data-hidden] {
+  transform: translateX(calc(var(--dock-thickness) + var(--dock-edge)));
+}
+
+.dock-glass {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: var(--dock-radius);
+  background: var(--dock-panel-fill);
+  -webkit-backdrop-filter: var(--dock-panel-backdrop);
+  backdrop-filter: var(--dock-panel-backdrop);
+  box-shadow:
+    inset 0 0 0 1px var(--dock-panel-edge),
+    inset 0 1px 0 var(--dock-panel-highlight),
+    var(--dock-panel-shadow);
 }
 
 .dock-item {
   position: relative;
-  width: 48px;
-  height: 48px;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* A badge sticks out of its tile; with a small gap it would go under the next tile. */
+.dock-item:has(.dock-count) {
+  z-index: 1;
+}
+
+/* The focus ring is drawn round the tile instead, and the focused item goes above its
+   neighbours: with a small gap the next tile would cover the ring. It also goes above a badge's
+   item, so a badge that sticks out over it waits under it until focus moves on. */
+.dock-item:focus-visible {
+  z-index: 2;
+  outline: none;
+}
+
+/* The tile fills its item and is the badge's size container, so the badge grows with it. */
+.dock-tile {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.1) 0%,
-    rgba(255, 255, 255, 0.04) 100%
-  );
-  color: var(--text-primary);
-  cursor: pointer;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
-  transition:
-    transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-    background 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
-  transform-origin: bottom center;
-}
-
-.dock-item:hover {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.18) 0%,
-    rgba(255, 255, 255, 0.08) 100%
-  );
-  border-color: rgba(255, 255, 255, 0.16);
+  container-type: inline-size;
+  border-radius: calc(var(--dock-roundness) * 50%);
+  background: var(--dock-tile-fill);
+  -webkit-backdrop-filter: var(--dock-tile-backdrop);
+  backdrop-filter: var(--dock-tile-backdrop);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.1) inset,
-    0 6px 16px rgba(0, 0, 0, 0.25);
+    inset 0 0 0 1px var(--dock-tile-edge),
+    inset 0 1px 0 var(--dock-tile-highlight),
+    var(--dock-tile-shadow);
+  color: var(--dock-ink);
+  transition: filter 0.2s ease;
 }
 
-.dock-item:focus-visible {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow:
-    0 0 0 2px rgba(var(--color-accent-rgb), 0.25),
-    0 1px 0 rgba(255, 255, 255, 0.1) inset;
+.dock-glyph {
+  width: 44%;
+  height: 44%;
+  filter: var(--dock-ink-shadow);
 }
 
-.dock-item--open {
-  background: linear-gradient(
-    180deg,
-    rgba(var(--color-accent-rgb), 0.18) 0%,
-    rgba(var(--color-accent-rgb), 0.06) 100%
-  );
-  border-color: rgba(var(--color-accent-rgb), 0.28);
+.dock[data-bare] .dock-tile {
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
 }
 
-.dock-item--open:hover {
-  background: linear-gradient(
-    180deg,
-    rgba(var(--color-accent-rgb), 0.26) 0%,
-    rgba(var(--color-accent-rgb), 0.1) 100%
-  );
-  border-color: rgba(var(--color-accent-rgb), 0.4);
+.dock[data-bare] .dock-glyph {
+  width: 62%;
+  height: 62%;
 }
 
-.dock-item-seam {
+.dock-item:focus-visible .dock-tile {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 3px;
+}
+
+/* Pressed, or showing its menu: darker at once, then back with a short ease. */
+.dock-item:active .dock-tile,
+.dock-item[data-menu-open] .dock-tile {
+  filter: var(--dock-pressed);
+  transition-duration: 0s;
+}
+
+/* The alert count on the tile's top-right corner. Its sizes are shares of the tile (cqi), so
+   it grows with a magnified tile; a negative offset makes it stick out of the corner. */
+.dock-count {
   position: absolute;
-  left: 50%;
-  bottom: 4px;
-  width: 18px;
-  height: 2px;
-  border-radius: 1px;
-  transform: translateX(-50%) scaleX(0);
-  transform-origin: center;
-  background: var(--color-accent);
-  box-shadow: 0 0 8px rgba(var(--color-accent-rgb), 0.7);
+  top: calc((0.1465 * var(--dock-roundness) - 0.19) * 100cqi);
+  right: calc((0.1465 * var(--dock-roundness) - 0.19) * 100cqi);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38cqi;
+  height: 38cqi;
+  padding: 0 10cqi;
+  border-radius: 19cqi;
+  background: var(--dock-badge);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  color: #fff;
+  font-size: 22cqi;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* The open-app dot sits past the tile's screen-edge side, its centre max(pad / 2, 5px) out. */
+.dock-pip {
+  --dock-pip-offset: calc(100% + max(var(--dock-pad) / 2, 5px) - 2px);
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--dock-pip);
+}
+
+.dock[data-position="bottom"] .dock-pip {
+  top: var(--dock-pip-offset);
+  left: calc(50% - 2px);
+}
+
+.dock[data-position="top"] .dock-pip {
+  bottom: var(--dock-pip-offset);
+  left: calc(50% - 2px);
+}
+
+.dock[data-position="left"] .dock-pip {
+  right: var(--dock-pip-offset);
+  top: calc(50% - 2px);
+}
+
+.dock[data-position="right"] .dock-pip {
+  left: var(--dock-pip-offset);
+  top: calc(50% - 2px);
+}
+
+/* The label, 12px past the tile's outer edge and centred on the item. */
+.dock-tip {
+  position: absolute;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dock-tip-fill);
+  -webkit-backdrop-filter: var(--dock-tip-backdrop);
+  backdrop-filter: var(--dock-tip-backdrop);
+  box-shadow:
+    inset 0 0 0 1px var(--dock-tip-edge),
+    0 8px 20px -8px rgba(0, 0, 0, 0.35);
+  color: var(--dock-tip-ink);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
   opacity: 0;
+  transform: var(--dock-tip-from);
   transition:
-    transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.18s ease;
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.dock[data-position="bottom"] .dock-tip {
+  bottom: calc(100% + 12px);
+  left: 50%;
+  translate: -50% 0;
+}
+
+.dock[data-position="top"] .dock-tip {
+  top: calc(100% + 12px);
+  left: 50%;
+  translate: -50% 0;
+}
+
+.dock[data-position="left"] .dock-tip {
+  left: calc(100% + 12px);
+  top: 50%;
+  translate: 0 -50%;
+}
+
+.dock[data-position="right"] .dock-tip {
+  right: calc(100% + 12px);
+  top: 50%;
+  translate: 0 -50%;
+}
+
+/* Shown on hover (only where the device can hover) and on keyboard focus. */
+@media (hover: hover) {
+  .dock-item:hover .dock-tip {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dock-item:focus-visible .dock-tip {
+  opacity: 1;
+  transform: none;
+}
+
+/* Hidden while the item shows its menu or hops. */
+.dock-item[data-menu-open] .dock-tip,
+.dock-item[data-hop] .dock-tip {
+  opacity: 0;
+  transform: var(--dock-tip-from);
+}
+
+/* The separator: a 1px line across the middle of the bar, 0.72 × base long. */
+.dock-divider {
+  flex: none;
+  align-self: center;
+  border-radius: 1px;
+  background: var(--dock-divider);
+}
+
+.dock[data-position="bottom"] .dock-divider,
+.dock[data-position="top"] .dock-divider {
+  width: 1px;
+  height: calc(var(--dock-base) * 0.72);
+}
+
+.dock[data-position="left"] .dock-divider,
+.dock[data-position="right"] .dock-divider {
+  width: calc(var(--dock-base) * 0.72);
+  height: 1px;
+}
+
+/* Reduced motion: no transitions, so the bar also shows and hides without sliding. */
+@media (prefers-reduced-motion: reduce) {
+  .dock,
+  .dock-tile,
+  .dock-tip {
+    transition: none;
+  }
+}
+
+/* ===== Dock menu ===== */
+/* The dock's context menu, portalled into <body>. The root only carries the theme and the
+   accent; each open level (.dock-menu) is a fixed box that DockMenu positions. The glass is
+   the list's own backdrop-filter and the tail's. The tail is a sibling of the list, never
+   inside it: a blur inside an element that has a backdrop-filter cannot see the page. */
+.dock-menu-root {
+  display: contents;
+}
+
+.dock-menu-root[data-theme="dark"] {
+  --dock-menu-fill: rgba(40, 37, 47, 0.72);
+  --dock-menu-backdrop: blur(24px) saturate(1.8);
+  --dock-menu-edge: rgba(255, 255, 255, 0.13);
+  --dock-menu-ink: #f4f4f5;
+  --dock-menu-muted: rgba(244, 244, 245, 0.42);
+  --dock-menu-rule: rgba(255, 255, 255, 0.1);
+  --dock-menu-shadow:
+    0 18px 40px -12px rgba(0, 0, 0, 0.65),
+    0 3px 10px rgba(0, 0, 0, 0.3);
+}
+
+.dock-menu-root[data-theme="light"] {
+  --dock-menu-fill: rgba(248, 248, 250, 0.78);
+  --dock-menu-backdrop: blur(24px) saturate(1.8);
+  --dock-menu-edge: rgba(24, 24, 27, 0.1);
+  --dock-menu-ink: #18181b;
+  --dock-menu-muted: rgba(24, 24, 27, 0.4);
+  --dock-menu-rule: rgba(24, 24, 27, 0.1);
+  --dock-menu-shadow:
+    0 18px 40px -14px rgba(24, 24, 27, 0.3),
+    0 3px 10px rgba(24, 24, 27, 0.1);
+}
+
+.dock-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: calc(var(--z-menubar) + 1);
+  width: max-content;
+  min-width: 172px;
+  max-width: 280px;
+  font-size: 13px;
+  user-select: none;
+}
+
+/* The opening animation grows from the tail tip, 9px beyond the menu's edge. */
+.dock-menu[data-side="bottom"] {
+  transform-origin: var(--dock-menu-tail) calc(100% + 9px);
+}
+.dock-menu[data-side="top"] {
+  transform-origin: var(--dock-menu-tail) -9px;
+}
+.dock-menu[data-side="left"] {
+  transform-origin: -9px var(--dock-menu-tail);
+}
+.dock-menu[data-side="right"] {
+  transform-origin: calc(100% + 9px) var(--dock-menu-tail);
+}
+
+.dock-menu-list {
+  position: relative;
+  padding: 5px;
+  border-radius: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  background: var(--dock-menu-fill);
+  -webkit-backdrop-filter: var(--dock-menu-backdrop);
+  backdrop-filter: var(--dock-menu-backdrop);
+  box-shadow:
+    inset 0 0 0 1px var(--dock-menu-edge),
+    var(--dock-menu-shadow);
+  color: var(--dock-menu-ink);
+  outline: none;
+}
+
+.dock-menu-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* The lit row's background, one per list, sliding between rows. */
+.dock-menu-highlight {
+  position: absolute;
+  top: 0;
+  left: 5px;
+  right: 5px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--dock-menu-accent);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 160ms cubic-bezier(0.3, 0.8, 0.3, 1),
+    height 160ms cubic-bezier(0.3, 0.8, 0.3, 1),
+    opacity 120ms ease;
+}
+
+.dock-menu-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px 0 7px;
+  border-radius: 6px;
+  white-space: nowrap;
+  cursor: default;
+  outline: none;
+}
+
+.dock-menu-row[data-active] {
+  color: #fff;
+}
+
+.dock-menu-row[aria-disabled="true"] {
+  color: var(--dock-menu-muted);
+}
+
+.dock-menu-check,
+.dock-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.dock-menu-check {
+  width: 14px;
+}
+
+.dock-menu-icon {
+  width: 15px;
+}
+
+.dock-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-menu-shortcut {
+  flex: none;
+  margin-left: 18px;
+  color: var(--dock-menu-muted);
+}
+
+.dock-menu-row[data-active] .dock-menu-shortcut {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.dock-menu-chevron {
+  flex: none;
+  margin-left: 14px;
+  color: var(--dock-menu-muted);
+}
+
+.dock-menu-row[data-active] .dock-menu-chevron {
+  color: #fff;
+}
+
+.dock-menu-separator {
+  height: 1px;
+  margin: 5px 10px;
+  background: var(--dock-menu-rule);
+}
+
+/* The tail is 18px wide at its base and 9px long, with 1px more under the list's edge so the
+   edge line does not show across the base. It is drawn pointing down and turned for the
+   other sides; --dock-menu-tail is where its centre sits along the menu's edge. */
+.dock-menu-tail {
+  position: absolute;
+  z-index: 1;
+  width: 18px;
+  height: 10px;
+  background: var(--dock-menu-fill);
+  -webkit-backdrop-filter: var(--dock-menu-backdrop);
+  backdrop-filter: var(--dock-menu-backdrop);
+  clip-path: polygon(0 0, 100% 0, 100% 1px, 50% 100%, 0 1px);
   pointer-events: none;
 }
 
-.dock-item--open .dock-item-seam {
-  transform: translateX(-50%) scaleX(1);
-  opacity: 1;
+/* The edge line along the two slanted sides: 1px thick square-on is 1.42px across. */
+.dock-menu-tail::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--dock-menu-edge);
+  clip-path: polygon(
+    0 1px,
+    50% 100%,
+    100% 1px,
+    calc(100% - 1.42px) 1px,
+    50% calc(100% - 1.42px),
+    1.42px 1px
+  );
+}
+
+.dock-menu[data-side="bottom"] .dock-menu-tail {
+  top: calc(100% - 1px);
+  left: calc(var(--dock-menu-tail) - 9px);
+}
+.dock-menu[data-side="top"] .dock-menu-tail {
+  top: -9px;
+  left: calc(var(--dock-menu-tail) - 9px);
+  transform: rotate(180deg);
+}
+.dock-menu[data-side="left"] .dock-menu-tail {
+  left: -13px;
+  top: calc(var(--dock-menu-tail) - 5px);
+  transform: rotate(90deg);
+}
+.dock-menu[data-side="right"] .dock-menu-tail {
+  left: calc(100% - 5px);
+  top: calc(var(--dock-menu-tail) - 5px);
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock-menu-highlight {
+    transition: opacity 100ms ease;
+  }
 }
 
 /* ===== App Placeholder ===== */
@@ -1900,6 +2346,34 @@ button.viz-vital { cursor: pointer; }
   color: rgba(255, 255, 255, 0.7);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
+
+/* Settings > Dock: the groups sit further apart than the rows inside them, and the
+   label column is wide enough that "Magnification range" keeps its slider in line
+   even when the fallback font is wider than Pretendard. */
+.settings-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.settings-groups .settings-slider-row .settings-label {
+  min-width: 150px;
+}
+
+.settings-color {
+  flex-shrink: 0;
+  width: 50px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.settings-color::-webkit-color-swatch-wrapper { padding: 0; }
+.settings-color::-webkit-color-swatch { border: none; border-radius: 4px; }
+.settings-color::-moz-color-swatch { border: none; border-radius: 4px; }
 
 /* Terminal container */
 .terminal-container .xterm {
