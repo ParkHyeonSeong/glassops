@@ -2,6 +2,7 @@
 .docs/
 .plan/
 .superpowers/
+.pytest_cache/
 .playwright-mcp/
 docs/
 PLAN.md
