@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import signal
 import time as _time
 
@@ -12,7 +13,7 @@ from agent.collectors.gpu import collect_gpu, shutdown_nvml
 from agent.collectors.docker_collector import collect_containers
 from agent.collectors.network import collect_network
 from agent.collectors.process import collect_processes
-from agent.collectors import cgroup_stats, net_audit
+from agent.collectors import cgroup_stats, net_audit, pm2
 from agent.transport.ws_client import (
     MetricsPusher, serve_rpc, check_transport_security, teardown_all_streams,
 )
@@ -23,6 +24,11 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("glassops.agent")
+
+try:
+    OWN_CONTAINER_ID = cgroup_stats.container_id_for_pid(os.getpid())
+except Exception:
+    OWN_CONTAINER_ID = None
 
 
 def _attach_gpu_to_containers(containers: list[dict], gpus: list[dict]) -> None:
@@ -93,11 +99,13 @@ async def collect_metrics() -> dict:
             metrics["gpu"] = gpu_data
 
     if ENABLE_DOCKER:
-        containers = collect_containers()
+        containers = collect_containers(gpu_data, OWN_CONTAINER_ID)
         if containers is not None:
             if gpu_data:
                 _attach_gpu_to_containers(containers, gpu_data)
             metrics["containers"] = containers
+
+    metrics["pm2_apps"] = pm2.collect()
 
     metrics["network"] = collect_network()
     if ENABLE_NET_AUDIT:
