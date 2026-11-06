@@ -65,6 +65,22 @@ export interface ContainerGpuUsage {
   processes?: { pid: number; vram_bytes: number; gpu_util?: number; gpu_index: number }[];
 }
 
+export interface ContainerLimits {
+  cpus: number | null;
+  cpuset: string;
+  memory: number;
+  memory_reservation: number;
+}
+
+export interface Pm2App {
+  name: string;
+  home: string;
+  instances: number;
+  pids: number[];
+  cpu_percent: number;
+  mem_bytes: number;
+}
+
 export interface ContainerInfo {
   id: string;
   name: string;
@@ -76,6 +92,16 @@ export interface ContainerInfo {
   mem_limit: number;
   ports: string[];
   gpu?: ContainerGpuUsage;
+  created?: string;
+  compose_project?: string;
+  compose_service?: string;
+  gpu_reserved?: boolean;
+  // Topology fields: absent from older agents, which means "unknown".
+  limits?: ContainerLimits;
+  started_at?: string;
+  finished_at?: string;
+  exit_code?: number | null;
+  gpu_reserved_indices?: number[];
 }
 
 export interface NetworkConnection {
@@ -119,6 +145,7 @@ export interface MetricSnapshot {
   containers?: ContainerInfo[];
   network?: NetworkMetrics;
   processes?: ProcessInfo[];
+  pm2_apps?: Pm2App[];
   timestamp: number;
   /** Server-assigned identity: "raw:<id>" (persisted) or "ephemeral:<uuid>"
       (store failed, session-local). Absent from legacy backends. Opaque. */

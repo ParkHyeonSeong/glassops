@@ -22,11 +22,11 @@ function frames() {
   vi.stubGlobal("cancelAnimationFrame", () => {});
   return { run(ms: number) { const end = now + ms; while (now < end) { now += 16; const q = queue; queue = []; q.forEach((cb) => cb(now)); } } };
 }
-// Default admin dock: 9 apps + 1 separator → restLength = 9×50 + 1 + 9×10 + 2×9 = 559.
+// Default admin dock: 10 apps + 1 separator → restLength = 10×50 + 1 + 10×10 + 2×9 = 619.
 function placeBar(centreX: number) {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const r = this.getAttribute("role") === "toolbar"
-      ? { x: centreX - 279.5, y: 720, width: 559, height: 68 } : { x: 0, y: 0, width: 0, height: 0 };
+      ? { x: centreX - 309.5, y: 720, width: 619, height: 68 } : { x: 0, y: 0, width: 0, height: 0 };
     return { ...r, left: r.x, top: r.y, right: r.x + r.width, bottom: r.y + r.height, toJSON() {} } as DOMRect;
   });
 }
@@ -46,12 +46,12 @@ describe("Dock motion", () => {
   it("magnifies around the pointer and relaxes when it leaves", () => {
     motion(true); placeBar(600);
     render(<Dock />);
-    fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 }); // first item's rest centre
+    fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 }); // first item's rest centre
     expect(width(items()[0])).toBeCloseTo(70, 2);
     expect(width(items()[1])).toBeCloseTo(65.878, 2);
-    expect(width(items()[8])).toBeCloseTo(50, 2);
+    expect(width(items()[9])).toBeCloseTo(50, 2);
     fireEvent.pointerLeave(bar());
-    expect(items().map(width)).toEqual(Array(9).fill(50));
+    expect(items().map(width)).toEqual(Array(10).fill(50));
   });
 
   it("magnifies the keyboard-focused item", () => {
@@ -65,7 +65,7 @@ describe("Dock motion", () => {
   it("springs toward the target over frames when motion is allowed", () => {
     motion(false); placeBar(600); const clock = frames();
     render(<Dock />);
-    fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 });
+    fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 });
     act(() => clock.run(48));
     expect(width(items()[0])).toBeGreaterThan(50);
     expect(width(items()[0])).toBeLessThan(70);
@@ -97,7 +97,7 @@ describe("Dock motion", () => {
     motion(true); setViewport(400, 800);
     render(<Dock />);
     // 400 − 2 × 12 of room for the rest length plus the most the items grow together.
-    expect(width(items()[0])).toBeCloseTo(50 * (376 / (559 + 66.81)), 1);
+    expect(width(items()[0])).toBeCloseTo(50 * (376 / (619 + 66.81)), 1);
   });
 
   it("auto-hides and reveals near its edge", () => {
@@ -143,7 +143,7 @@ describe("Dock motion", () => {
     function placeColumn(centreY: number) {
       vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
         const r = this.getAttribute("role") === "toolbar"
-          ? { x: 12, y: centreY - 279.5, width: 68, height: 559 } : { x: 0, y: 0, width: 0, height: 0 };
+          ? { x: 12, y: centreY - 309.5, width: 68, height: 619 } : { x: 0, y: 0, width: 0, height: 0 };
         return { ...r, left: r.x, top: r.y, right: r.x + r.width, bottom: r.y + r.height, toJSON() {} } as DOMRect;
       });
     }
@@ -153,12 +153,12 @@ describe("Dock motion", () => {
     it("lets the pointer lead while it is over the bar, then the focused item", () => {
       motion(true); placeBar(600);
       render(<Dock />);
-      act(() => items()[8].focus());
-      fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 });
+      act(() => items()[9].focus());
+      fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 });
       expect(width(items()[0])).toBeCloseTo(70, 2);
-      expect(width(items()[8])).toBe(50);
+      expect(width(items()[9])).toBe(50);
       fireEvent.pointerLeave(bar());
-      expect(width(items()[8])).toBeCloseTo(70, 2);
+      expect(width(items()[9])).toBeCloseTo(70, 2);
       expect(width(items()[0])).toBe(50);
     });
 
@@ -167,11 +167,11 @@ describe("Dock motion", () => {
       render(<Dock />);
       fireEvent.pointerDown(items()[3], { pointerType: "mouse" });
       act(() => items()[3].focus()); // a browser focuses the button the mouse pressed
-      expect(items().map(width)).toEqual(Array(9).fill(50));
+      expect(items().map(width)).toEqual(Array(10).fill(50));
       fireEvent.keyDown(items()[3], { key: "ArrowRight" });
       expect(width(items()[4])).toBeCloseTo(70, 2);
       act(() => items()[4].blur());
-      expect(items().map(width)).toEqual(Array(9).fill(50));
+      expect(items().map(width)).toEqual(Array(10).fill(50));
     });
 
     it("does not take shortcut or modifier keys for keyboard navigation", () => {
@@ -189,7 +189,7 @@ describe("Dock motion", () => {
       for (const init of [{ key: "Meta", metaKey: true }, { key: "Tab", metaKey: true }, { key: "c", ctrlKey: true },
         { key: "Tab", altKey: true }, { key: "Shift", shiftKey: true }, { key: "CapsLock" }, { key: "AltGraph" }]) {
         keyThenRefocus(init);
-        expect(items().map(width)).toEqual(Array(9).fill(50));
+        expect(items().map(width)).toEqual(Array(10).fill(50));
         expect(bar()).toHaveAttribute("data-hidden");
       }
       keyThenRefocus({ key: "Tab", shiftKey: true }); // Shift+Tab is keyboard navigation
@@ -221,14 +221,14 @@ describe("Dock motion", () => {
       expect(width(items()[1])).toBeCloseTo(70, 2);
       expect(bar()).not.toHaveAttribute("data-hidden");
       // The mouse clicks the item that already has focus, so no focus event follows, then leaves.
-      fireEvent.pointerMove(bar(), { clientX: 414.5, clientY: 750 }); // GPU Monitor's rest centre
+      fireEvent.pointerMove(bar(), { clientX: 384.5, clientY: 750 }); // GPU Monitor's rest centre
       fireEvent.pointerDown(items()[1], { pointerType: "mouse" });
       fireEvent.click(items()[1]);
       fireEvent.pointerLeave(bar());
       fireEvent.pointerMove(window, { clientX: 600, clientY: 300 });
       act(() => { vi.advanceTimersByTime(300); });
       expect(bar()).toHaveAttribute("data-hidden");
-      expect(items().map(width)).toEqual(Array(9).fill(50));
+      expect(items().map(width)).toEqual(Array(10).fill(50));
       expect(items()[1]).toHaveFocus();
     });
 
@@ -239,7 +239,7 @@ describe("Dock motion", () => {
       fireEvent.keyDown(items()[0], { key: "ArrowRight" });
       expect(width(items()[1])).toBeCloseTo(70, 2);
       fireEvent.pointerDown(document.body, { pointerType: "mouse" });
-      expect(items().map(width)).toEqual(Array(9).fill(50));
+      expect(items().map(width)).toEqual(Array(10).fill(50));
       act(() => { vi.advanceTimersByTime(300); });
       expect(bar()).toHaveAttribute("data-hidden");
       expect(items()[1]).toHaveFocus();
@@ -248,20 +248,20 @@ describe("Dock motion", () => {
     it("holds the swell while a menu is open and lets go once it closes", () => {
       motion(true); placeBar(600);
       render(<Dock />);
-      fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 });
+      fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 });
       fireEvent.contextMenu(items()[0]);
       fireEvent.pointerLeave(bar()); // on its way into the menu, which is outside the toolbar
       expect(width(items()[0])).toBeCloseTo(70, 2);
       fireEvent.pointerDown(document.body); // a click elsewhere closes the menu
       expect(screen.queryByRole("menu")).toBeNull();
-      expect(items().map(width)).toEqual(Array(9).fill(50));
+      expect(items().map(width)).toEqual(Array(10).fill(50));
     });
 
     it.each(["left", "right"] as const)("follows the pointer along a %s dock", (position) => {
       motion(true); placeColumn(418);
       useSettingsStore.setState({ dock: { ...DOCK_DEFAULTS, position } });
       render(<Dock />);
-      fireEvent.pointerMove(bar(), { clientX: 40, clientY: 172.5 }); // first item's rest centre
+      fireEvent.pointerMove(bar(), { clientX: 40, clientY: 142.5 }); // first item's rest centre
       expect(width(items()[0])).toBeCloseTo(70, 2);
       expect(width(items()[1])).toBeCloseTo(65.878, 2);
     });
@@ -269,7 +269,7 @@ describe("Dock motion", () => {
     it("steps the spring by the time between frames, from the first frame on, at most 0.1 s a frame", () => {
       motion(false); placeBar(600); const clock = frameClock();
       render(<Dock />);
-      fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 });
+      fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 });
       act(() => clock.at(16));
       expect(width(items()[0])).toBeGreaterThan(50);
       act(() => clock.at(1016)); // a second later, say after a background tab
@@ -280,14 +280,14 @@ describe("Dock motion", () => {
     it("puts its sizes back after React rewrites them, then settles exactly and stops", () => {
       motion(false); placeBar(600); const clock = frameClock();
       render(<Dock />);
-      fireEvent.pointerMove(bar(), { clientX: 354.5, clientY: 750 });
+      fireEvent.pointerMove(bar(), { clientX: 324.5, clientY: 750 });
       act(() => clock.run(2000));
       act(() => useSettingsStore.getState().setDock({ baseItemSize: 40 })); // React writes 40px on every item
       expect([items()[0].style.width, items()[0].style.height]).toEqual(["70px", "70px"]);
-      expect([items()[8].style.width, items()[8].style.height]).toEqual(["50px", "50px"]);
+      expect([items()[9].style.width, items()[9].style.height]).toEqual(["50px", "50px"]);
       fireEvent.pointerLeave(bar());
       act(() => clock.run(2000));
-      expect(items().map((el) => el.style.width)).toEqual(Array(9).fill("40px"));
+      expect(items().map((el) => el.style.width)).toEqual(Array(10).fill("40px"));
       expect(clock.pending()).toBe(0);
     });
 
@@ -296,9 +296,9 @@ describe("Dock motion", () => {
       useAuthStore.setState({ role: "user" });
       render(<Dock />);
       act(() => useAuthStore.setState({ role: "admin" }));
-      fireEvent.pointerMove(bar(), { clientX: 845.5, clientY: 750 }); // Users' rest centre
+      fireEvent.pointerMove(bar(), { clientX: 875.5, clientY: 750 }); // Users' rest centre
       act(() => clock.run(2000));
-      expect(width(items()[8])).toBe(70);
+      expect(width(items()[9])).toBe(70);
     });
 
     it.each([
@@ -323,13 +323,13 @@ describe("Dock motion", () => {
     it("hops 0.4 × the tile's current size high and carries on when clicked in the air", () => {
       motion(false); placeBar(600); const clock = frameClock();
       render(<Dock />);
-      fireEvent.pointerMove(bar(), { clientX: 534.5, clientY: 750 }); // Network's rest centre
+      fireEvent.pointerMove(bar(), { clientX: 564.5, clientY: 750 }); // Network's rest centre
       act(() => clock.run(2000));
-      fireEvent.click(items()[3]);
-      const lift = () => -Number.parseFloat(/-?[\d.]+/.exec(tile(items()[3]).style.transform)?.[0] ?? "0");
+      fireEvent.click(items()[4]);
+      const lift = () => -Number.parseFloat(/-?[\d.]+/.exec(tile(items()[4]).style.transform)?.[0] ?? "0");
       act(() => clock.run(96));
       const before = lift();
-      fireEvent.click(items()[3]);
+      fireEvent.click(items()[4]);
       act(() => clock.run(16));
       expect(lift()).toBeGreaterThan(before);
       act(() => clock.run(80)); // the top of the arc, 0.19 s in
@@ -412,11 +412,11 @@ describe("Dock motion", () => {
       expect(width(items()[0])).toBe(50);
       setViewport(400, 800);
       fireEvent(window, new Event("resize"));
-      expect(width(items()[0])).toBeCloseTo(50 * (376 / (559 + 66.81)), 1);
+      expect(width(items()[0])).toBeCloseTo(50 * (376 / (619 + 66.81)), 1);
       act(() => useSettingsStore.getState().setDock({ position: "left" }));
       setViewport(1200, 500);
       fireEvent(window, new Event("resize"));
-      expect(width(items()[0])).toBeCloseTo(50 * (440 / (559 + 66.81)), 1); // 500 − 36 − 2 × 12
+      expect(width(items()[0])).toBeCloseTo(50 * (440 / (619 + 66.81)), 1); // 500 − 36 − 2 × 12
     });
 
     it.each([
@@ -431,8 +431,8 @@ describe("Dock motion", () => {
       const toolbar = bar();
       const tiles = items();
       const css = (name: string) => Number.parseFloat(toolbar.style.getPropertyValue(name));
-      // The bar is its items, the gaps between its 10 entries, the separator's 1px and its padding.
-      const length = () => tiles.reduce((sum, tile) => sum + width(tile), 0) + 9 * css("--dock-gap") + 1 +
+      // The bar is its items, the gaps between its 11 entries, the separator's 1px and its padding.
+      const length = () => tiles.reduce((sum, tile) => sum + width(tile), 0) + 10 * css("--dock-gap") + 1 +
         2 * css("--dock-pad");
       let longest = 0;
       for (let at = centre - room / 2; at <= centre + room / 2; at += 1) { // the pointer along the whole bar

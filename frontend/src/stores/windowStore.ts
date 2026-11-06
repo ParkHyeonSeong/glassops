@@ -56,6 +56,15 @@ export const APP_DEFINITIONS: AppDefinition[] = [
     adminOnly: true,   // container env/mounts/networks + actions are admin-only (API-enforced)
   },
   {
+    id: "topology",
+    title: "Topology",
+    icon: "Network",
+    defaultWidth: 1120,
+    defaultHeight: 720,
+    minWidth: 640,
+    minHeight: 420,
+  },
+  {
     id: "network",
     title: "Network",
     icon: "Globe",

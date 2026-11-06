@@ -29,11 +29,11 @@ function recorder(): { calls: string[]; actions: DockMenuActions } {
 describe("buildDockEntries", () => {
   it("lists launcher apps for an admin with one separator before Settings", () => {
     expect(ids(buildDockEntries({ apps: APP_DEFINITIONS, role: "admin", windows: [], alertCount: 0 }))).toEqual(
-      ["system-monitor", "gpu-monitor", "docker", "network", "process", "logs", "terminal", "|", "settings", "users"]);
+      ["system-monitor", "gpu-monitor", "docker", "topology", "network", "process", "logs", "terminal", "|", "settings", "users"]);
   });
   it("hides admin-only apps from other roles and keeps one inner separator", () => {
     const out = ids(buildDockEntries({ apps: APP_DEFINITIONS, role: "viewer", windows: [], alertCount: 0 }));
-    expect(out).toEqual(["system-monitor", "gpu-monitor", "network", "process", "logs", "terminal", "|", "settings"]);
+    expect(out).toEqual(["system-monitor", "gpu-monitor", "topology", "network", "process", "logs", "terminal", "|", "settings"]);
     expect(out[0]).not.toBe("|");
     expect(out.at(-1)).not.toBe("|");
   });

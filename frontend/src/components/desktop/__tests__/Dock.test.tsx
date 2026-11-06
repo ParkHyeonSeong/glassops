@@ -32,7 +32,7 @@ describe("Dock", () => {
     render(<Dock />);
     const buttons = within(bar()).getAllByRole("button");
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["System Monitor", "GPU Monitor", "Docker",
-      "Network", "Process Viewer", "Logs", "Terminal", "Settings", "Users"]);
+      "Topology", "Network", "Process Viewer", "Logs", "Terminal", "Settings", "Users"]);
     expect(within(bar()).getAllByRole("separator")).toHaveLength(1);
     expect(buttons.filter((b) => b.tabIndex === 0)).toHaveLength(1);
   });
@@ -168,7 +168,7 @@ describe("Dock", () => {
     vi.mocked(useActiveAlerts).mockReturnValue([{}] as ReturnType<typeof useActiveAlerts>);
     const { container } = render(<Dock />);
     expect(Array.from(container.querySelectorAll(".dock-tip"), (tip) => tip.textContent)).toEqual(["System Monitor",
-      "GPU Monitor", "Docker", "Network", "Process Viewer", "Logs", "Terminal", "Settings", "Users"]);
+      "GPU Monitor", "Docker", "Topology", "Network", "Process Viewer", "Logs", "Terminal", "Settings", "Users"]);
     expect(container.querySelectorAll(".dock-count")).toHaveLength(1);
   });
 
@@ -177,7 +177,7 @@ describe("Dock", () => {
     button("Users").focus();
     act(() => useAuthStore.setState({ role: "user" }));
     expect(within(bar()).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["System Monitor",
-      "GPU Monitor", "Network", "Process Viewer", "Logs", "Terminal", "Settings"]);
+      "GPU Monitor", "Topology", "Network", "Process Viewer", "Logs", "Terminal", "Settings"]);
     expect(button("System Monitor").tabIndex).toBe(0);
   });
 

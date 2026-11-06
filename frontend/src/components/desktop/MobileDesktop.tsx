@@ -5,6 +5,7 @@ import {
   Container,
   Globe,
   ListTree,
+  Network,
   FileText,
   TerminalSquare,
   Settings,
@@ -19,6 +20,7 @@ import AppPlaceholder from "../apps/AppPlaceholder";
 import SystemMonitor from "../apps/SystemMonitor";
 import GpuMonitor from "../apps/GpuMonitor";
 import DockerManager from "../apps/DockerManager";
+import Topology from "../apps/Topology";
 import NetworkAnalyzer from "../apps/NetworkAnalyzer";
 import ProcessViewer from "../apps/ProcessViewer";
 import LogViewer from "../apps/LogViewer";
@@ -32,6 +34,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number }>> = {
   Container,
   Globe,
   ListTree,
+  Network,
   FileText,
   TerminalSquare,
   Settings,
@@ -110,6 +113,8 @@ export default function MobileDesktop({
             <GpuMonitor />
           ) : activeAppId === "docker" ? (
             <DockerManager />
+          ) : activeAppId === "topology" ? (
+            <Topology />
           ) : activeAppId === "network" ? (
             <NetworkAnalyzer />
           ) : activeAppId === "process" ? (

@@ -4,6 +4,7 @@ import Window from "./Window";
 import SystemMonitor from "../apps/SystemMonitor";
 import GpuMonitor from "../apps/GpuMonitor";
 import DockerManager from "../apps/DockerManager";
+import Topology from "../apps/Topology";
 import NetworkAnalyzer from "../apps/NetworkAnalyzer";
 import ProcessViewer from "../apps/ProcessViewer";
 import LogViewer from "../apps/LogViewer";
@@ -38,6 +39,8 @@ function AppContent({
       return <GpuMonitor />;
     case "docker":
       return <DockerManager />;
+    case "topology":
+      return <Topology />;
     case "network":
       return <NetworkAnalyzer />;
     case "process":
