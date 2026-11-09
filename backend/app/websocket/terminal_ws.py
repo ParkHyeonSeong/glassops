@@ -74,8 +74,8 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
     accounts = await get_user_host_accounts(email)
     host_user = accounts.get(agent_id, "").strip()
 
-    # For the local agent we allow falling back to the GLASSOPS_TERMINAL_USER env var
-    # (preserves single-user installs that haven't configured per-user mappings yet).
+    # The local agent resolves its default from saved Settings, then the environment
+    # if no value has been saved. Remote hosts still require a per-user mapping.
     if not host_user and agent_id != settings.local_agent_id:
         await ws.close(code=4003, reason=f"No shell access on host '{agent_id}'")
         return
@@ -95,10 +95,10 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
         _release_session(email)
         raise
 
-    logger.info("Terminal WebSocket: user=%s agent=%s host_user=%s", email, agent_id, host_user or "(env default)")
+    logger.info("Terminal WebSocket: user=%s agent=%s host_user=%s", email, agent_id, host_user or "(dashboard default)")
     started = time.monotonic()
     await audit(email, "terminal.open", agent_id,
-                {"host_user": host_user or "(env default)", "ip": resolve_client_ip(ws.scope)})
+                {"host_user": host_user or "(dashboard default)", "ip": resolve_client_ip(ws.scope)})
 
     try:
         # Both local and remote hosts go through the agent RPC stream; the bundled
@@ -111,7 +111,7 @@ async def handle_terminal_ws(ws: WebSocket) -> None:
     finally:
         _release_session(email)
         await audit(email, "terminal.close", agent_id,
-                    {"host_user": host_user or "(env default)",
+                    {"host_user": host_user or "(dashboard default)",
                      "duration_s": round(time.monotonic() - started, 1)})
 
 

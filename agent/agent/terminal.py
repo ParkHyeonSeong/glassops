@@ -151,8 +151,10 @@ class TerminalSession:
                        "login"]
             else:
                 raise RuntimeError(
-                    "No terminal user configured — set GLASSOPS_TERMINAL_USER, add a per-user "
-                    "host-account mapping, or set GLASSOPS_ALLOW_LOGIN_PROMPT=true to allow a host login prompt.")
+                    "No terminal user configured — set Settings > Server > Terminal User for the dashboard host, "
+                    "or add a host-account mapping in Users. GLASSOPS_TERMINAL_USER applies only when no "
+                    "Terminal User value has been saved in Settings. Set GLASSOPS_ALLOW_LOGIN_PROMPT=true "
+                    "to allow a host login prompt.")
         else:
             cmd = [os.environ.get("SHELL", "/bin/bash"), "--login"]
 
