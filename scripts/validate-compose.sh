@@ -29,6 +29,7 @@ if [ ! -e agent.env ] && [ ! -L agent.env ]; then
 fi
 
 docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
 docker compose -f docker-compose.dev.yml config --quiet
 docker compose -f docker-compose.agent.yml config --quiet
 docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml config --quiet

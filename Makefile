@@ -1,7 +1,10 @@
-.PHONY: help build up down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs refresh-digests quality-python quality-frontend quality-compose quality
+.PHONY: help build up up-gpu down logs restart clean dev dev-down shell prod status update agent-up agent-up-gpu agent-down agent-logs refresh-digests quality-python quality-frontend quality-compose quality
 
 # Default port
 PORT ?= 7440
+
+# Explicit -f options disable Compose's automatic host override discovery.
+GPU_HOST_OVERRIDE := $(firstword $(wildcard docker-compose.override.yml docker-compose.override.yaml))
 
 # Dockerfiles whose base-image digests are pinned (kept in lockstep)
 DOCKERFILES := Dockerfile backend/Dockerfile agent/Dockerfile frontend/Dockerfile frontend/Dockerfile.dev
@@ -18,6 +21,13 @@ up: ## Start GlassOps (build if needed; applies .env changes)
 	docker compose up -d --build
 	@echo ""
 	@echo "  GlassOps is running at http://localhost:$(PORT)"
+	@echo ""
+
+up-gpu: ## Start GlassOps with NVIDIA GPU access and collection enabled
+	@test -f .env || (echo "  Missing .env — copy .env.example and edit" && exit 1)
+	docker compose -f docker-compose.yml $(if $(GPU_HOST_OVERRIDE),-f $(GPU_HOST_OVERRIDE)) -f docker-compose.gpu.yml up -d --build --no-deps glassops
+	@echo ""
+	@echo "  GlassOps (GPU) is running at http://localhost:$(PORT)"
 	@echo ""
 
 down: ## Stop GlassOps

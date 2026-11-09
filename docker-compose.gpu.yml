@@ -1,0 +1,12 @@
+# Optional GPU access for the dashboard's built-in agent: make up-gpu.
+services:
+  glassops:
+    environment:
+      GLASSOPS_ENABLE_GPU: "true"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

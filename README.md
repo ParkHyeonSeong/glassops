@@ -17,6 +17,9 @@ make up
 
 Open **http://localhost:7440**.
 
+For NVIDIA GPU monitoring on the dashboard host, use `make up-gpu` instead of
+`make up` after completing the [GPU setup](#gpu-monitoring).
+
 **First login.** On the first start GlassOps creates one admin account,
 `admin@glassops.local`, with a random one-time password. The password is never printed to
 the logs; it is written to a file inside the data volume, which you read like this:
@@ -85,11 +88,55 @@ anyone has the dashboard open.
 
 - A Linux host with Docker Engine and Docker Compose v2. The host-level features (process
   list, host logs, web terminal) rely on Linux namespaces (`pid: host`, `nsenter`).
-- For NVIDIA GPU monitoring: the NVIDIA driver on the host and `GLASSOPS_ENABLE_GPU=true`.
-  The container picks up `libnvidia-ml` from the host at start.
+- For NVIDIA GPU monitoring: a working host NVIDIA driver, NVIDIA Container Toolkit
+  configured for Docker, and GPU access enabled for the container (see below).
 - macOS with Docker Desktop is fine for trying the UI, but Docker runs in a Linux VM there:
   Process Viewer and Terminal show the VM, not macOS, and the `make agent-*` targets expect
   Linux tools.
+
+## GPU Monitoring
+
+The default `make up` works without a GPU or NVIDIA software. On an NVIDIA GPU host,
+check that `nvidia-smi -L` lists the host's GPUs and install/configure the
+[NVIDIA Container Toolkit for Docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html#configuring-docker).
+
+With `.env` created as in Quick Start, start the dashboard with:
+
+```bash
+make up-gpu
+```
+
+This loads `docker-compose.gpu.yml` alongside the base Compose file. It grants the
+dashboard container access to all NVIDIA GPUs and sets `GLASSOPS_ENABLE_GPU=true`,
+even if `.env` still contains the default `false`. The built-in agent collects this
+host's GPU metrics; a separate agent container is not needed on the dashboard host.
+Existing host settings in `docker-compose.override.yml` (or `.yaml` if `.yml` is
+absent) are included, so custom port bindings and mounts are preserved.
+
+The command builds the image and starts or recreates only the `glassops` service,
+preserving its data volume. A recreation briefly interrupts the dashboard and metric
+collection. The environment flag `GLASSOPS_ENABLE_GPU` controls collection but does
+**not** grant GPU device access; adding device access requires recreating the container,
+not just restarting it.
+
+Use `make up-gpu` again when recreating or upgrading a GPU deployment (`git pull`,
+then `make up-gpu`). The ordinary `up`, `prod`, and `update` targets do not load the
+GPU overlay.
+
+Verify GPU access inside the running dashboard container:
+
+```bash
+docker compose exec glassops python -c 'import pynvml; pynvml.nvmlInit(); print("Detected GPUs:", pynvml.nvmlDeviceGetCount())'
+```
+
+The count should match the host's GPUs. In the dashboard, select the dashboard host
+(`local` by default) and open **GPU Monitor** to check utilization and VRAM. If NVML
+fails inside the container while `nvidia-smi` works on the host, check the Toolkit
+configuration and recreate with `make up-gpu`.
+
+For an additional, remote GPU host, set `GLASSOPS_ENABLE_GPU=true` in `agent.env` and
+use `make agent-up-gpu` there. The driver and Toolkit requirements also apply to that
+host.
 
 ## Configuration
 
@@ -117,7 +164,7 @@ cp .env.example .env
 |----------|---------|--------------|
 | `GLASSOPS_COLLECT_INTERVAL` | `1` | Seconds between metric snapshots (1–60) |
 | `GLASSOPS_ENABLE_DOCKER` | `true` | Collect container metrics and enable the Docker app |
-| `GLASSOPS_ENABLE_GPU` | `false` | Collect NVIDIA GPU metrics (needs the host driver) |
+| `GLASSOPS_ENABLE_GPU` | `false` | Collect NVIDIA GPU metrics; also needs container GPU access. `make up-gpu` enables both for the dashboard |
 | `GLASSOPS_LOCAL_AGENT_ID` | `local` | Id of the built-in agent. Requests for this id skip RPC and use the local Docker socket directly |
 | `GLASSOPS_AGENT_ID` | `local` | Remote agents only (`agent.env`): a unique name per host. Inside the dashboard container it is always overridden with `GLASSOPS_LOCAL_AGENT_ID` |
 | `GLASSOPS_AGENT_KEY` | *(derived)* | Remote agents only: the key a remote agent presents. Get it from the dashboard host with `docker compose exec glassops python -m app.secret_bootstrap agent`. The built-in agent derives it itself |
@@ -151,11 +198,10 @@ cp .env.example .env
 | `GLASSOPS_NET_AUDIT_EVENT_DAYS` | `7` | Retention (days) of raw connection events |
 | `GLASSOPS_NET_AUDIT_ROLLUP_DAYS` | `30` | Retention (days) of traffic rollups |
 
-> Five of these can be changed while running, from **Settings > Server** (admin):
-> `GLASSOPS_ENABLE_GPU`, `GLASSOPS_ENABLE_DOCKER`, `GLASSOPS_COLLECT_INTERVAL`,
-> `GLASSOPS_TERMINAL_USER`, `GLASSOPS_ALLOWED_IPS`. Everything else is read from `.env`
-> when the container is created — run `make up` after editing it (a plain restart keeps the
-> old environment).
+> `.env` changes take effect when the container is recreated: use `make up` or
+> `make up-gpu` for GPU deployments. A plain restart keeps the old environment.
+> The built-in agent reads its GPU collection flag at startup; the GPU value saved
+> in **Settings > Server** does not change that flag or add device access.
 
 ## Make Commands
 
@@ -163,6 +209,7 @@ Dashboard host:
 
 ```bash
 make up          # Build if needed, then start (also applies .env changes)
+make up-gpu      # Build/start the dashboard with NVIDIA GPU access and collection
 make down        # Stop
 make restart     # Restart the container (does not re-read .env)
 make logs        # Follow logs
