@@ -6,21 +6,22 @@ import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.database import get_runtime_config, set_runtime_configs, audit
 from app.dependencies import require_admin
 from app.net import resolve_client_ip
-from app.runtime_config_validate import validate_config_value
-from app.services.supervisor_service import restart_service, get_service_status
+from app.runtime_config_validate import validate_config_value, normalize_ip_rules
+from app.services.supervisor_service import restart_service, get_service_status, get_ip_rules_state, apply_ip_rules
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Defaults match .env defaults
 DEFAULTS = {
     "enable_gpu": "true" if os.getenv("GLASSOPS_ENABLE_GPU", "false").lower() == "true" else "false",
-    "enable_docker": os.getenv("GLASSOPS_ENABLE_DOCKER", "true"),
-    "collect_interval": os.getenv("GLASSOPS_COLLECT_INTERVAL", "1"),
+    "enable_docker": "true" if os.getenv("GLASSOPS_ENABLE_DOCKER", "false").lower() == "true" else "false",
+    "collect_interval": str(max(1, int(os.getenv("GLASSOPS_COLLECT_INTERVAL", "1")))),
     "terminal_user": os.getenv("GLASSOPS_TERMINAL_USER", ""),
     "allowed_ips": os.getenv("GLASSOPS_ALLOWED_IPS", ""),
 }
@@ -38,6 +39,29 @@ class RestartRequest(BaseModel):
     service: Literal["agent", "nginx", "all"]
 
 
+class IpRulesApply(BaseModel):
+    allowed_ips: str
+
+
+def current_client_ip(request: Request) -> str | None:
+    try:
+        return str(ipaddress.ip_address(resolve_client_ip(request.scope)))
+    except ValueError:
+        return None
+
+
+def check_ip_access(value: str, request: Request) -> None:
+    client_ip = current_client_ip(request)
+    if client_ip is None:
+        raise HTTPException(400, "Could not determine your IP. IP rules were not applied.")
+    normalized = normalize_ip_rules(value)
+    if not normalized or client_ip in ("127.0.0.1", "::1"):
+        return
+    client_addr = ipaddress.ip_address(client_ip)
+    if not any(client_addr in ipaddress.ip_network(entry) for entry in normalized.split(",")):
+        raise HTTPException(400, f"Your IP ({client_ip}) would be blocked. Add it to the whitelist.")
+
+
 def gpu_access_available() -> bool:
     """Probe the dashboard container, even when collection is switched off."""
     try:
@@ -52,11 +76,23 @@ def gpu_access_available() -> bool:
 
 
 @router.get("/runtime")
-async def get_config(_: str = Depends(require_admin)):
+async def get_config(request: Request, _: str = Depends(require_admin)):
     db_config = await get_runtime_config()
     # Merge: DB overrides defaults
-    merged = {**DEFAULTS, **db_config}
-    return {"config": merged, "gpu_available": await asyncio.to_thread(gpu_access_available)}
+    merged = {key: db_config.get(key, value) for key, value in DEFAULTS.items()}
+    ip_state = await get_ip_rules_state()
+    has_draft = "allowed_ips" in db_config
+    pending = has_draft
+    if has_draft and ip_state["active"] is not None:
+        try:
+            pending = normalize_ip_rules(db_config["allowed_ips"]) != ip_state["active"]
+        except ValueError:
+            pass  # An invalid legacy draft is never interpreted as allow-all.
+    return {
+        "config": merged, "gpu_available": await asyncio.to_thread(gpu_access_available),
+        "ip_rules": {**ip_state, "pending": pending, "has_saved_draft": has_draft,
+                     "client_ip": current_client_ip(request)},
+    }
 
 
 @router.post("/runtime")
@@ -72,16 +108,7 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
 
         # allowed_ips: additional request-context self-lockout guard.
         if key == "allowed_ips" and value:
-            client_ip = resolve_client_ip(request.scope)
-            entries = [e.strip() for e in value.split(",") if e.strip()]
-            if client_ip and entries:
-                client_addr = ipaddress.ip_address(client_ip)
-                allowed = any(
-                    client_addr in ipaddress.ip_network(e, strict=False)
-                    for e in entries
-                )
-                if not allowed:
-                    raise HTTPException(400, f"Your IP ({client_ip}) would be blocked. Add it to the whitelist.")
+            check_ip_access(value, request)
 
         updates[key] = value
 
@@ -95,6 +122,23 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
         await audit(actor, "settings.update", detail={"updated": updates})
 
     return {"ok": True, "updated": list(updates.keys())}
+
+
+@router.post("/ip-rules/apply")
+async def confirm_ip_rules(body: IpRulesApply, request: Request, actor: str = Depends(require_admin)):
+    saved = await get_runtime_config()
+    if "allowed_ips" not in saved or body.allowed_ips != saved["allowed_ips"]:
+        raise HTTPException(409, "The saved IP draft changed or does not exist. Save and review it before applying.")
+    try:
+        validate_config_value("allowed_ips", body.allowed_ips)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    check_ip_access(body.allowed_ips, request)
+    result = await apply_ip_rules(body.allowed_ips)
+    await audit(actor, "settings.ip_rules.apply", detail={"allowed_ips": body.allowed_ips, **result})
+    if result["outcome"] == "restored":
+        raise HTTPException(500, result)
+    return JSONResponse(result, status_code=200 if result["ok"] else 202)
 
 
 @router.post("/restart")

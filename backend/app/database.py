@@ -3732,6 +3732,26 @@ async def set_runtime_configs(configs: dict[str, str]) -> None:
         await set_runtime_config(key, value)
 
 
+async def get_confirmed_ip_rules() -> str | None:
+    row = await _fetch_one("SELECT value FROM runtime_config WHERE key = 'allowed_ips_confirmed'")
+    return row["value"] if row else None
+
+
+async def set_confirmed_ip_rules(value: str | None) -> None:
+    """Only the explicit IP-apply flow uses this; ordinary Save cannot promote drafts."""
+    from app.runtime_config_validate import normalize_ip_rules
+    if value is not None:
+        value = normalize_ip_rules(value)
+    async with write_transaction() as tx:
+        if value is None:
+            await tx.execute("DELETE FROM runtime_config WHERE key = 'allowed_ips_confirmed'")
+        else:
+            await tx.execute(
+                "INSERT OR REPLACE INTO runtime_config (key, value) VALUES ('allowed_ips_confirmed', ?)",
+                (value,),
+            )
+
+
 # ── Token Blacklist ──────────────────────────────────
 
 

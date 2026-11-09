@@ -102,7 +102,7 @@ function ContainersTab() {
     return (
       <div className="docker-empty">
         <p className="docker-empty-title">No containers found</p>
-        <p className="docker-empty-sub">Ensure Docker is running and GLASSOPS_ENABLE_DOCKER=true</p>
+        <p className="docker-empty-sub">Ensure Docker is running. For the dashboard host, enable Docker Monitoring in Settings → Server. For remote agents, set GLASSOPS_ENABLE_DOCKER=true in agent.env and recreate the agent.</p>
       </div>
     );
   }

@@ -1,6 +1,7 @@
 import os
 import logging
 import sqlite3
+import re
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode
@@ -19,20 +20,20 @@ ENABLE_NET_AUDIT = os.getenv("GLASSOPS_ENABLE_NET_AUDIT", "false").lower() == "t
 NET_AUDIT_MAX_EVENTS = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_MAX_EVENTS", "200")))
 NET_AUDIT_TOP_TALKERS = max(1, int(os.getenv("GLASSOPS_NET_AUDIT_TOP_TALKERS", "20")))
 
-_last_gpu_enabled: bool | None = None
+_last_runtime_overrides: dict[str, str] = {}
 
 
-def gpu_collection_enabled(default: bool) -> bool:
-    """Read the bundled agent's saved GPU choice; standalone agents use their env.
+def read_runtime_overrides() -> dict[str, str]:
+    """Read the bundled agent's saved choices; standalone agents use their env.
 
     Only the dashboard image supplies GLASSOPS_DB_PATH. Open a short-lived,
     read-only connection so the agent never creates a DB or writes configuration.
     A temporary read failure keeps the last applied choice.
     """
-    global _last_gpu_enabled
+    global _last_runtime_overrides
     db_path = os.getenv("GLASSOPS_DB_PATH")
     if not db_path:
-        return default
+        return {}
     try:
         if db_path.startswith("file:"):
             base, _, query = db_path.partition("#")[0].partition("?")
@@ -41,8 +42,41 @@ def gpu_collection_enabled(default: bool) -> bool:
         else:
             uri = Path(db_path).resolve().as_uri() + "?mode=ro"
         with closing(sqlite3.connect(uri, uri=True, timeout=0.1)) as conn:
-            row = conn.execute("SELECT value FROM runtime_config WHERE key = 'enable_gpu'").fetchone()
-        _last_gpu_enabled = row[0] == "true" if row else default
+            rows = conn.execute(
+                "SELECT key, value FROM runtime_config WHERE key IN "
+                "('enable_gpu', 'enable_docker', 'collect_interval', 'terminal_user')"
+            ).fetchall()
+        overrides = {}
+        for key, value in rows:
+            if not isinstance(value, str):
+                continue
+            if key in ("enable_gpu", "enable_docker") and value in ("true", "false"):
+                overrides[key] = value
+            elif key == "terminal_user" and (not value or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", value)):
+                overrides[key] = value
+            elif key == "collect_interval":
+                try:
+                    if 1 <= int(value) <= 60:
+                        overrides[key] = value
+                except ValueError:
+                    pass
+        _last_runtime_overrides = overrides
     except sqlite3.Error:
-        logging.getLogger("glassops.agent").debug("Could not read saved GPU setting", exc_info=True)
-    return default if _last_gpu_enabled is None else _last_gpu_enabled
+        logging.getLogger("glassops.agent").debug("Could not read saved runtime settings", exc_info=True)
+    return dict(_last_runtime_overrides)
+
+
+def gpu_collection_enabled(default: bool) -> bool:
+    return read_runtime_overrides().get("enable_gpu", str(default).lower()) == "true"
+
+
+def docker_collection_enabled(default: bool) -> bool:
+    return read_runtime_overrides().get("enable_docker", str(default).lower()) == "true"
+
+
+def collection_interval_seconds() -> int:
+    return int(read_runtime_overrides().get("collect_interval", COLLECT_INTERVAL))
+
+
+def terminal_default_user() -> str:
+    return read_runtime_overrides().get("terminal_user", os.getenv("GLASSOPS_TERMINAL_USER", ""))

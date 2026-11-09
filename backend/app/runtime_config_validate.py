@@ -8,6 +8,27 @@ import re
 USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
 
+def normalize_ip_rules(value: str) -> str:
+    """Canonical nginx-compatible CIDRs. Only an explicit empty value allows all."""
+    if value == "":
+        return ""
+    networks = set()
+    for entry in (part.strip() for part in value.split(",")):
+        if not entry:
+            continue
+        try:
+            if "%" in entry:  # IPv6 scoped addresses are not nginx geo CIDRs.
+                raise ValueError
+            networks.add(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise ValueError(f"Invalid CIDR: {entry}") from None
+    if not networks:
+        raise ValueError("Enter at least one IP/CIDR, or clear the field to allow all")
+    return ",".join(str(net) for net in sorted(
+        networks, key=lambda net: (net.version, int(net.network_address), net.prefixlen)
+    ))
+
+
 def validate_config_value(key: str, value: str) -> None:
     """Raise ValueError if `value` is not a valid runtime_config value for `key`."""
     if key == "collect_interval":
@@ -24,10 +45,4 @@ def validate_config_value(key: str, value: str) -> None:
         if value and not USERNAME_PATTERN.match(value):
             raise ValueError("Invalid username format")
     elif key == "allowed_ips":
-        for entry in (e.strip() for e in (value or "").split(",")):
-            if not entry:
-                continue
-            try:
-                ipaddress.ip_network(entry, strict=False)
-            except ValueError:
-                raise ValueError(f"Invalid CIDR: {entry}")
+        normalize_ip_rules(value)

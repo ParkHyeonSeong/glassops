@@ -136,7 +136,8 @@ class TerminalSession:
     def spawn(self, host_user: str | None = None) -> None:
         """Spawn a shell in a PTY. Uses nsenter to reach the host (pid=host)."""
         use_nsenter = os.path.exists("/host/proc/1/ns/pid")
-        terminal_user = host_user or os.environ.get("GLASSOPS_TERMINAL_USER", "")
+        from agent.config import terminal_default_user
+        terminal_user = host_user or terminal_default_user()
 
         if use_nsenter:
             if terminal_user:

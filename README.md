@@ -224,8 +224,8 @@ cp .env.example .env
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `GLASSOPS_COLLECT_INTERVAL` | `1` | Integer seconds between collection cycles, minimum 1. Collection work also takes time |
-| `GLASSOPS_ENABLE_DOCKER` | `true` | Populate Docker's Containers tab with snapshots. Off leaves the app visible but the list empty; it does not revoke Docker API access |
+| `GLASSOPS_COLLECT_INTERVAL` | `1` | Initial seconds between collection cycles, minimum 1. A saved dashboard setting (1–60 seconds) takes precedence. Collection work also takes time |
+| `GLASSOPS_ENABLE_DOCKER` | `true` | Initial Docker snapshot collection choice in the supplied Compose setup; a saved dashboard choice takes precedence. Off leaves the app visible but its list empty; it does not stop containers or revoke Docker API access |
 | `GLASSOPS_ENABLE_GPU` | `false` | Initial GPU collection default; saved Settings choice takes precedence for the dashboard. `make up-gpu` sets this to true and grants device access |
 | `GLASSOPS_LOCAL_AGENT_ID` | `local` | Built-in agent ID. Keep the default for browser terminal fallback; if customized, add an explicit host account mapping in Users |
 | `GLASSOPS_AGENT_ID` | *(set in `agent.env`)* | Unique remote host ID: 1–64 letters, digits, `_` or `-`; do not reuse the built-in ID. In the dashboard container it is overridden with `GLASSOPS_LOCAL_AGENT_ID` |
@@ -236,14 +236,14 @@ cp .env.example .env
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `GLASSOPS_TERMINAL_USER` | *(unset)* | Host user the local terminal logs in as when the dashboard user has no mapping in the Users app |
+| `GLASSOPS_TERMINAL_USER` | *(unset)* | Initial local terminal fallback user. Users app mappings take priority, followed by the saved Server setting, then this environment value if no setting has been saved |
 | `GLASSOPS_ALLOW_LOGIN_PROMPT` | `false` | With no terminal user configured, show the host `login` prompt instead of refusing. Lets an admin log in as **any** host account, root included — off by default |
 
 **Network access, proxies, browsers**
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `GLASSOPS_ALLOWED_IPS` | *(all)* | Comma-separated CIDR allowlist of client addresses. Checked against the real client IP — behind a proxy, also set `GLASSOPS_TRUSTED_PROXIES` |
+| `GLASSOPS_ALLOWED_IPS` | *(all)* | Initial client CIDR allowlist, used until IP rules are explicitly confirmed in Settings. Confirmed rules take precedence across restarts/recreation. Behind a proxy, also set `GLASSOPS_TRUSTED_PROXIES` |
 | `GLASSOPS_TRUSTED_PROXIES` | `127.0.0.1,::1` (backend) | Backend trusts bundled nginx on loopback. Add the direct proxy peer's non-loopback CIDR as seen by the container for edge nginx to restore `X-Forwarded-For` |
 | `GLASSOPS_FORCE_SECURE_COOKIES` | `false` | Mark auth cookies `Secure` when TLS is terminated by an upstream proxy (see Production Deployment) |
 | `GLASSOPS_ALLOWED_ORIGINS` | *(same host)* | Hostnames/URLs allowed by browser WebSocket and HTTP CSRF checks. Only hostnames are compared (scheme/port ignored). A configured list replaces matching the request `Host` hostname |
@@ -265,16 +265,33 @@ cp .env.example .env
 | Setting | Where to change it | When it takes effect |
 |---|---|---|
 | Dashboard GPU collection | Settings > Server > GPU Monitoring, then Save | Next collection cycle, provided the container already has GPU access |
-| Docker collection, collection interval, local terminal fallback, IP allowlist | `.env` on the dashboard host | Standard setup: `make up` or `make up-gpu`; with extra overlays, use `docker compose up -d --build` with the [complete file selection](#keeping-deployment-options) |
+| Dashboard Docker collection | Settings > Server > Docker Monitoring, then Save | Next collection cycle; containers keep running |
+| Dashboard collection interval | Settings > Server, enter 1–60 seconds, then Save | Subsequent waits after the current wait finishes; the agent is not restarted |
+| Local terminal fallback user | Settings > Server > Terminal User, then Save | New local terminal sessions; Users app host-account mappings take priority |
+| Dashboard IP allowlist | Settings > Server, Save the draft, then Apply IP Rules and confirm | nginx restarts with the confirmed rules; success is shown after the active rules are verified |
 | Remote agent collection | `agent.env` on that host | Standard setup: `make agent-up` or `make agent-up-gpu`; with a private CA/custom overlay, use `docker compose up -d --build` with the full `-f` list |
 | Email alerts | Settings > Email | Saved server-side; applies across monitored hosts |
 | Browser alert thresholds, Dock and wallpaper | Corresponding Settings tab | Applied in this browser; not synchronized to other browsers |
 
-The non-GPU fields in **Settings > Server** currently save values to the database, but
-**Restart Agent / Apply IP Rules do not connect those saved values to the running
-configuration**. Use the environment-file paths above for those settings. A plain
-container restart keeps its old environment. GPU collection reads its saved choice each
-cycle; neither saving it nor restarting can add missing device access.
+Server settings are stored in the dashboard database and survive container recreation.
+For collection and terminal settings, saved values override environment defaults; an
+explicitly saved empty terminal user does not fall back to the environment user.
+Remote agents keep their own `agent.env` settings. To change an environment default,
+recreate with `make up` or `make up-gpu`, or the [complete Compose file selection](#keeping-deployment-options).
+A plain restart does not re-read `.env`, and changing a default does not override a saved choice.
+Neither saving GPU Monitoring nor restarting can add missing GPU device access.
+
+**Upgrading an existing installation:** previously saved Docker, interval and terminal
+values now take effect, so review them before deploying. Previously saved **IP drafts
+never activate automatically**, including after a service restart or container recreation.
+The IP field shows the saved draft separately from the active rules. Save alone does not
+change access; only explicit Apply confirmation records a policy for subsequent nginx starts.
+
+Normal Save keeps existing terminal sessions open. **Applying IP rules ends open web
+terminal sessions and briefly disconnects remote agents.** An agent whose address is
+excluded cannot reconnect. If the apply response is lost or times out, the UI checks the
+current rules without automatically applying again. An unverified operation stays marked
+as needing verification; the confirmed rules may still take effect on a subsequent start.
 
 ## Make Commands
 
@@ -587,15 +604,43 @@ allow 192.168.0.0/16;
 deny all;
 ```
 
-**Option B — in GlassOps**, set `.env` and recreate the container:
+**Option B — in GlassOps:** open **Settings > Server**, edit the IP Whitelist and Save.
+Review the active rules, saved draft and your current IP, then select **Apply IP Rules**
+and confirm. A rule that excludes your current IP is rejected; loopback remains allowed.
+Empty means allow all. Include remote agent addresses as well as browser clients.
+
+Before the first explicit confirmation, `.env` supplies the initial policy:
 ```env
 GLASSOPS_ALLOWED_IPS=10.0.0.0/8,192.168.0.0/16
 ```
 
 Use `make up` for a basic deployment or `make up-gpu` for the standard GPU setup. With
 additional files such as the socket proxy, select the [complete file list](#keeping-deployment-options)
-and use `docker compose up -d --build` instead. Saving the IP list in Settings and clicking Apply IP Rules currently does
-not regenerate active rules; use `.env` or the proxy configuration above.
+and use `docker compose up -d --build` instead. After explicit confirmation, the confirmed
+policy takes precedence over `.env`, including after container recreation. Previously
+saved drafts are never promoted by an ordinary Save or restart.
+
+If nginx fails to start during Apply, GlassOps restores the previous confirmed policy
+and attempts recovery once. A timeout is treated as unknown because the restart may still
+be in progress; use **Refresh IP status**, rather than assuming it failed.
+
+For host-side recovery, back up the data volume, stop only the dashboard and remove only
+the confirmed policy row. This leaves the saved draft and other settings intact; next
+startup uses `.env` again. The example assumes the default database path and refuses to
+create a missing database. Adapt the path if needed and use your
+[complete Compose file selection](#keeping-deployment-options) for **every** command:
+
+```bash
+docker compose stop glassops
+docker compose run --rm --no-deps -T --user appuser --entrypoint "" glassops python3 - <<'EOF'
+import sqlite3
+from contextlib import closing
+with closing(sqlite3.connect("file:/app/data/glassops.db?mode=rw", uri=True)) as db:
+    db.execute("DELETE FROM runtime_config WHERE key = 'allowed_ips_confirmed'")
+    db.commit()
+EOF
+docker compose up -d --no-deps glassops
+```
 
 > **Behind a reverse proxy?** GlassOps matches the real client IP. If you front it with an
 > LB/TLS proxy, set `GLASSOPS_TRUSTED_PROXIES` to the direct proxy peer's CIDR **as seen by
@@ -611,8 +656,9 @@ The web terminal is admin-only and runs as a host user, resolved in this order:
 
 1. **Per-user host mappings** in the **Users** app give each dashboard user a specific host
    account per host. This is the only option for remote hosts.
-2. `GLASSOPS_TERMINAL_USER=ubuntu` — one host user for the local terminal, used when the
-   dashboard user has no mapping.
+2. **Settings > Server > Terminal User** — the saved fallback for new local terminals.
+   If no value has been saved, `GLASSOPS_TERMINAL_USER=ubuntu` supplies the fallback.
+   Saving an empty value clears the fallback; it does not restore the environment user.
 3. `GLASSOPS_ALLOW_LOGIN_PROMPT=true` opts into a host `login` prompt, which lets an admin
    authenticate as **any** host account, including root. **Off by default** — with none of
    the above configured, the terminal is refused rather than exposing a login prompt.
@@ -948,10 +994,10 @@ The module docstrings of `backend/app/wal_recovery_cli.py`, `wal_fence.py` and
   `501` until the login screen can prompt for a code (see below)
 - SMTP passwords encrypted at rest (Fernet, key derived from `GLASSOPS_SECRET_KEY`)
 - Environment variables masked in container details
-- IP allowlist configured at the proxy or through `.env` and container recreation;
-  review your client/proxy addresses before applying it
-- Saved Server values are format-validated; only the GPU switch is currently consumed
-  live (see [Applying settings](#applying-settings))
+- IP allowlist configured at the proxy or explicitly confirmed in Settings; `.env`
+  supplies the initial policy. Review client/proxy and remote agent addresses before applying
+- Saved Server values are format-validated and consumed by the built-in agent;
+  IP drafts require separate confirmation (see [Applying settings](#applying-settings))
 
 ### Two-factor authentication (not available yet)
 

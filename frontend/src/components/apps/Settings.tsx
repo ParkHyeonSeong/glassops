@@ -1,4 +1,4 @@
-import { useState, useEffect, useId } from "react";
+import { useState, useEffect, useId, useRef } from "react";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { useAuthStore } from "../../stores/authStore";
 import {
@@ -149,30 +149,55 @@ function AlertsTab() {
   );
 }
 
+interface IpRulesState {
+  active: string | null;
+  pending: boolean;
+  has_saved_draft: boolean;
+  client_ip: string | null;
+  nginx_ready: boolean;
+}
+
 function ServerTab() {
   const [config, setConfig] = useState<Record<string, string>>({});
   const [savedConfig, setSavedConfig] = useState<Record<string, string>>({});
   const [gpuAvailable, setGpuAvailable] = useState(false);
+  const [ipRules, setIpRules] = useState<IpRulesState | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
-  const [restarting, setRestarting] = useState(false);
-  const [showConfirm, setShowConfirm] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const lifecycle = useRef<AbortController | null>(null);
+  const fieldId = useId();
 
   useEffect(() => {
-    fetchWithAuth("/api/settings/runtime").then(async (r) => {
+    const controller = new AbortController();
+    lifecycle.current = controller;
+    fetchWithAuth("/api/settings/runtime", { signal: controller.signal }).then(async (r) => {
       const d = await r.json();
       if (!r.ok) throw new Error(formatApiDetail(d.detail, "Could not load server settings."));
+      if (controller.signal.aborted) return;
       setConfig(d.config || {});
       setSavedConfig(d.config || {});
       setGpuAvailable(d.gpu_available === true);
+      setIpRules(d.ip_rules || null);
     }).catch((error) => {
-      setMsg(error instanceof Error ? error.message : "Could not load server settings.");
-    }).finally(() => setLoaded(true));
+      if (!controller.signal.aborted) setMsg(error instanceof Error ? error.message : "Could not load server settings.");
+    }).finally(() => { if (!controller.signal.aborted) setLoaded(true); });
+    return () => controller.abort();
   }, []);
 
   const changes = Object.fromEntries(Object.entries(config).filter(([key, value]) => savedConfig[key] !== value));
   const dirty = Object.keys(changes).length > 0;
+  const busy = saving || applying || refreshing;
+  const ipLabel = (value: string | null | undefined) => value == null ? "Not verified" : value || "Allow all";
+
+  const readRuntime = async (signal = lifecycle.current?.signal) => {
+    const response = await fetchWithAuth("/api/settings/runtime", { signal });
+    if (!response.ok) throw new Error("Could not verify current IP rules.");
+    return response.json();
+  };
 
   const update = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
@@ -184,56 +209,129 @@ function ServerTab() {
     setSaving(true);
     try {
       const res = await fetchWithAuth("/api/settings/runtime", {
-        method: "POST",
-        body: JSON.stringify(changes),
+        method: "POST", body: JSON.stringify(changes), signal: lifecycle.current?.signal,
       });
-      if (res.ok) {
-        setSavedConfig({ ...config });
-        setMsg("enable_gpu" in changes
-          ? "Saved. GPU monitoring updates on the next collection cycle; no restart is needed for GPU changes."
-          : "Saved. Click Apply to restart services.");
-      } else {
+      if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         setMsg(formatApiDetail(d.detail, "Save failed"));
+        return;
       }
+      setSavedConfig({ ...config });
+      const notices = ["Saved."];
+      if ("enable_gpu" in changes) notices.push("GPU monitoring updates on the next collection cycle; no restart is needed.");
+      if ("enable_docker" in changes) notices.push("Docker monitoring updates on the next collection cycle; containers keep running.");
+      if ("collect_interval" in changes) notices.push("The collection interval updates after the current wait finishes.");
+      if ("terminal_user" in changes) notices.push("The terminal user applies to new local terminals; existing sessions stay open.");
+      if ("allowed_ips" in changes) {
+        notices.push("IP draft saved, not applied. Review and apply it separately.");
+        try {
+          const d = await readRuntime();
+          if (!lifecycle.current?.signal.aborted) setIpRules(d.ip_rules || null);
+        } catch {
+          setIpRules(null);
+          notices.push("Refresh IP status before applying.");
+        }
+      }
+      if (!lifecycle.current?.signal.aborted) setMsg(notices.join(" "));
     } catch {
-      setMsg("Save failed. Check the connection and try again.");
+      if (!lifecycle.current?.signal.aborted) setMsg("Save failed. Check the connection and try again.");
     } finally {
-      setSaving(false);
+      if (!lifecycle.current?.signal.aborted) setSaving(false);
     }
   };
 
-  const handleApply = async (service: string) => {
-    setShowConfirm(null);
-    setRestarting(true);
-    setMsg(`Restarting ${service}...`);
-    const res = await fetchWithAuth("/api/settings/restart", {
-      method: "POST",
-      body: JSON.stringify({ service }),
-    });
-    setRestarting(false);
-    if (res.ok) {
-      setMsg(`${service} restarted successfully`);
-    } else {
-      const d = await res.json().catch(() => ({}));
-      setMsg(d.detail || "Restart failed");
+  const verifyIpRules = async (submitted: string) => {
+    const controller = new AbortController();
+    const parent = lifecycle.current?.signal;
+    const abort = () => controller.abort();
+    parent?.addEventListener("abort", abort, { once: true });
+    const timer = window.setTimeout(abort, 15000);
+    try {
+      while (!controller.signal.aborted && !parent?.aborted) {
+        try {
+          const d = await readRuntime(controller.signal);
+          if (controller.signal.aborted || parent?.aborted) break;
+          const state: IpRulesState | null = d.ip_rules || null;
+          setIpRules(state);
+          if (state?.has_saved_draft && state.nginx_ready && state.active !== null
+              && !state.pending && d.config?.allowed_ips === submitted) {
+            setMsg("IP rules applied and verified. Reopen any web terminals that were disconnected.");
+            return;
+          }
+        } catch {
+          // A restarting edge may reject requests or return a proxy error briefly.
+        }
+        if (!controller.signal.aborted && !parent?.aborted) await new Promise((resolve) => window.setTimeout(resolve, 500));
+      }
+      if (!parent?.aborted) setMsg("Apply status needs verification. Refresh IP status. Confirmed rules may take effect on the next nginx start.");
+    } finally {
+      window.clearTimeout(timer);
+      parent?.removeEventListener("abort", abort);
+    }
+  };
+
+  const handleApply = async () => {
+    const submitted = savedConfig.allowed_ips;
+    setShowConfirm(false);
+    setApplying(true);
+    setMsg("Applying IP rules and checking the connection...");
+    const controller = new AbortController();
+    const parent = lifecycle.current?.signal;
+    const abort = () => controller.abort();
+    parent?.addEventListener("abort", abort, { once: true });
+    const timer = window.setTimeout(abort, 15000);
+    try {
+      let res: Response | undefined;
+      try {
+        // Exactly one mutation. A lost response is resolved by GET, never a repeat POST.
+        res = await fetchWithAuth("/api/settings/ip-rules/apply", {
+          method: "POST", body: JSON.stringify({ allowed_ips: submitted }), signal: controller.signal,
+        });
+      } catch {
+        // nginx restart can end the very connection carrying this response.
+      } finally {
+        window.clearTimeout(timer);
+        parent?.removeEventListener("abort", abort);
+      }
+      if (parent?.aborted) return;
+      if (res && !res.ok && ![502, 503, 504].includes(res.status)) {
+        const d = await res.json().catch(() => ({}));
+        setMsg(formatApiDetail(d.detail?.error || d.detail, "IP apply failed. Refresh IP status before trying again."));
+        return;
+      }
+      await verifyIpRules(submitted);
+    } finally {
+      if (!parent?.aborted) setApplying(false);
+    }
+  };
+
+  const refreshIpStatus = async () => {
+    setRefreshing(true);
+    try {
+      const d = await readRuntime();
+      if (lifecycle.current?.signal.aborted) return;
+      setIpRules(d.ip_rules || null);
+      setMsg(d.ip_rules?.nginx_ready && d.ip_rules.active !== null
+        ? "Current IP rules checked." : "Could not verify current IP rules. Try refreshing again.");
+    } catch {
+      if (!lifecycle.current?.signal.aborted) setMsg("Could not verify current IP rules. Try refreshing again.");
+    } finally {
+      if (!lifecycle.current?.signal.aborted) setRefreshing(false);
     }
   };
 
   if (!loaded) return <p className="settings-hint">Loading...</p>;
   if (Object.keys(config).length === 0) return <p role="alert" className="settings-msg">{msg || "Could not load server settings."}</p>;
 
-  const toggles = [
-    { key: "enable_gpu", label: "GPU Monitoring" },
-    { key: "enable_docker", label: "Docker Monitoring" },
-  ];
+  const canApply = !busy && !("allowed_ips" in changes) && ipRules?.has_saved_draft
+    && ipRules.pending && ipRules.nginx_ready && ipRules.active !== null && !!ipRules.client_ip;
 
   return (
     <div className="settings-section">
       <h3 className="settings-title">Server Configuration</h3>
       <p className="settings-hint">
-        GPU Monitoring controls this dashboard host only. Save to apply it on the next
-        collection cycle, without restarting the agent.
+        Collection and terminal settings control this dashboard host only. Remote agents keep their agent.env settings.
+        Save applies collection changes without restarting the agent. IP rules affect all incoming connections.
       </p>
       {!gpuAvailable && (
         <p className="settings-hint" role="status">
@@ -241,78 +339,62 @@ function ServerTab() {
           then recreate this container with <code>make up-gpu</code> before enabling GPU monitoring.
         </p>
       )}
-
-      {toggles.map((t) => (
+      {[
+        { key: "enable_gpu", label: "GPU Monitoring" },
+        { key: "enable_docker", label: "Docker Monitoring" },
+      ].map((t) => (
         <div key={t.key} className="settings-toggle-row">
           <span className="settings-toggle-label">{t.label}</span>
-          <button
-            role="switch"
-            aria-label={t.label}
-            aria-checked={config[t.key] === "true"}
-            disabled={saving || (t.key === "enable_gpu" && !gpuAvailable && config.enable_gpu !== "true")}
+          <button role="switch" aria-label={t.label} aria-checked={config[t.key] === "true"}
+            disabled={busy || (t.key === "enable_gpu" && !gpuAvailable && config.enable_gpu !== "true")}
             className={`settings-toggle ${config[t.key] === "true" ? "settings-toggle-on" : ""}`}
-            onClick={() => update(t.key, config[t.key] === "true" ? "false" : "true")}
-          >
+            onClick={() => update(t.key, config[t.key] === "true" ? "false" : "true")}>
             <span className="settings-toggle-knob" />
           </button>
         </div>
       ))}
-
       <div className="settings-field">
-        <label className="settings-label">Collection Interval (seconds)</label>
-        <input type="number" min="1" max="60" value={config.collect_interval || "1"}
-          disabled={saving}
-          onChange={(e) => update("collect_interval", e.target.value)}
+        <label className="settings-label" htmlFor={`${fieldId}-interval`}>Collection Interval (seconds)</label>
+        <input id={`${fieldId}-interval`} type="number" min="1" max="60" value={config.collect_interval || "1"}
+          disabled={busy} onChange={(e) => update("collect_interval", e.target.value)}
           className="settings-input" style={{ width: 80 }} />
       </div>
-
       <div className="settings-field">
-        <label className="settings-label">Terminal User</label>
-        <input type="text" value={config.terminal_user || ""}
-          disabled={saving}
-          onChange={(e) => update("terminal_user", e.target.value)}
-          placeholder="(login prompt)"
-          className="settings-input" />
+        <label className="settings-label" htmlFor={`${fieldId}-user`}>Terminal User</label>
+        <input id={`${fieldId}-user`} type="text" value={config.terminal_user || ""} disabled={busy}
+          onChange={(e) => update("terminal_user", e.target.value)} placeholder="No default host user" className="settings-input" />
+        <p className="settings-hint">For new local terminals. Users app host-account mappings take priority.
+          Empty requires a mapping, unless host login prompts are explicitly enabled.</p>
       </div>
-
       <div className="settings-field">
-        <label className="settings-label">IP Whitelist (comma-separated, empty = all)</label>
-        <input type="text" value={config.allowed_ips || ""}
-          disabled={saving}
-          onChange={(e) => update("allowed_ips", e.target.value)}
-          placeholder="10.0.0.0/8, 192.168.1.0/24"
-          className="settings-input" />
+        <label className="settings-label" htmlFor={`${fieldId}-ips`}>IP Whitelist (comma-separated, empty = all)</label>
+        <input id={`${fieldId}-ips`} type="text" value={config.allowed_ips || ""} disabled={busy}
+          onChange={(e) => update("allowed_ips", e.target.value)} placeholder="10.0.0.0/8, 192.168.1.0/24" className="settings-input" />
+        <p className="settings-hint">Active IP rules: {ipLabel(ipRules?.active)}</p>
+        <p className="settings-hint">{!ipRules ? "Refresh to verify IP status."
+          : !ipRules.has_saved_draft ? "No saved IP draft. Environment rules remain active until you explicitly apply a saved draft."
+            : ipRules.pending ? "IP draft saved, not applied. Previously saved drafts never apply automatically."
+              : "Saved IP draft matches the active rules."}</p>
+        {"allowed_ips" in changes && <p className="settings-hint">Save the IP draft before applying.</p>}
       </div>
-
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-        <button className="settings-btn" onClick={handleSave} disabled={!dirty || saving}>
-          {saving ? "Saving..." : "Save"}
-        </button>
-        <button className="settings-btn" onClick={() => setShowConfirm("agent")} disabled={restarting || saving}>
-          Apply (Restart Agent)
-        </button>
-        {config.allowed_ips !== undefined && (
-          <button className="settings-btn" onClick={() => setShowConfirm("nginx")} disabled={restarting || saving}>
-            Apply IP Rules (Restart Nginx)
-          </button>
-        )}
+        <button className="settings-btn" onClick={handleSave} disabled={!dirty || busy}>{saving ? "Saving..." : "Save"}</button>
+        <button className="settings-btn" onClick={() => setShowConfirm(true)} disabled={!canApply}>Apply IP Rules</button>
+        <button className="settings-btn" onClick={refreshIpStatus} disabled={busy}>Refresh IP status</button>
       </div>
-
       {msg && <p role="status" className="settings-msg">{msg}</p>}
-
-      {/* Confirm dialog */}
       {showConfirm && (
-        <div className="proc-kill-overlay" onClick={() => setShowConfirm(null)}>
-          <div className="proc-kill-modal" onClick={(e) => e.stopPropagation()}>
-            <p>Restart <strong>{showConfirm}</strong>?</p>
-            <p className="settings-hint" style={{ marginTop: 4 }}>
-              {showConfirm === "agent"
-                ? "Metrics collection will pause for a few seconds."
-                : "Active connections may be briefly interrupted."}
-            </p>
+        <div className="proc-kill-overlay" onClick={() => setShowConfirm(false)}>
+          <div className="proc-kill-modal" role="dialog" aria-modal="true" aria-label="Apply IP rules" onClick={(e) => e.stopPropagation()}>
+            <p>Apply the saved IP rules?</p>
+            <p className="settings-hint">Current rules: {ipLabel(ipRules?.active)}</p>
+            <p className="settings-hint">Saved draft: {ipLabel(savedConfig.allowed_ips)}</p>
+            <p className="settings-hint">Your current IP: {ipRules?.client_ip || "Unknown"}</p>
+            <p className="settings-hint">Open web terminal sessions will end when nginx restarts.
+              Remote agents will reconnect only if their addresses are allowed. All incoming connections use these rules.</p>
             <div className="proc-kill-actions">
-              <button className="settings-btn" onClick={() => setShowConfirm(null)}>Cancel</button>
-              <button className="settings-btn settings-btn-danger" onClick={() => handleApply(showConfirm)}>Restart</button>
+              <button className="settings-btn" onClick={() => setShowConfirm(false)}>Cancel</button>
+              <button className="settings-btn settings-btn-danger" onClick={handleApply}>Confirm and apply</button>
             </div>
           </div>
         </div>

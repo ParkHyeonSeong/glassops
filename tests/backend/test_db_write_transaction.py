@@ -278,6 +278,7 @@ def _write_path_calls(now):
         "delete_user": lambda: db.delete_user("u@x"),
         "set_user_host_accounts": lambda: db.set_user_host_accounts("u@x", {"a1": "root"}),
         "set_runtime_config": lambda: db.set_runtime_config("enable_gpu", "true"),
+        "set_confirmed_ip_rules": lambda: db.set_confirmed_ip_rules("10.0.0.0/8"),
         "blacklist_token": lambda: db.blacklist_token("tok2", now + 60),
         "init_db": lambda: db.init_db(),
         # These two were previously added to the inventory as bare strings; a
@@ -311,6 +312,7 @@ CANONICAL_WRITE_PATHS = {
     ("database",      "update_user"):             "shared",
     ("database",      "set_user_host_accounts"):  "shared",
     ("database",      "set_runtime_config"):      "shared",
+    ("database",      "set_confirmed_ip_rules"):  "shared",
     ("database",      "set_runtime_configs"):     "shared",   # loops the singular
     ("database",      "blacklist_token"):         "shared",
     ("database",      "cleanup_blacklist"):       "shared",
@@ -346,10 +348,8 @@ def test_canonical_write_path_inventory_matches_the_code():
         f"write-path inventory drifted.\n  missing from inventory: {sorted(found - listed)}"
         f"\n  listed but not found:   {sorted(listed - found)}"
     )
-    # 17, not 16: an earlier count listed the 15 mutating functions in
-    # database.py plus save_smtp_config, but omitted set_runtime_configs, which
-    # mutates by delegating to set_runtime_config in a loop.
-    assert len(listed) == 17, f"expected 17 write paths, inventory has {len(listed)}"
+    # Includes the dedicated confirmed-IP setter and the batch runtime setter.
+    assert len(listed) == 18, f"expected 18 write paths, inventory has {len(listed)}"
     by_conn = {}
     for (_, name), conn in CANONICAL_WRITE_PATHS.items():
         by_conn.setdefault(conn, []).append(name)
@@ -366,7 +366,7 @@ def test_every_canonical_write_path_is_actually_driven():
         f"\n  listed but not driven: {sorted(listed - driven)}"
         f"\n  driven but not listed: {sorted(driven - listed)}"
     )
-    assert len(driven) == 17, f"expected 17 driven write paths, got {len(driven)}"
+    assert len(driven) == 18, f"expected 18 driven write paths, got {len(driven)}"
 
 
 async def test_every_write_path_reaches_its_injected_fault(fresh_db):
@@ -412,8 +412,8 @@ async def test_every_write_path_reaches_its_injected_fault(fresh_db):
     for name in sorted(hits):
         print(f"  {name:<26} {hits[name]}")
     assert not missed, f"these write paths never reached the injected fault: {missed}"
-    assert len(hits) == 17, hits
-    assert sum(hits.values()) >= 17
+    assert len(hits) == 18, hits
+    assert sum(hits.values()) >= 18
 
 
 WRITE_PATHS = sorted(_write_path_calls(0.0))
