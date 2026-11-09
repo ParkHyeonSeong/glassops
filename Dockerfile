@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV TERM=xterm-256color
 ENV SHELL=/bin/bash
+# The backend and bundled agent share saved GPU settings in this existing DB.
+# The standalone agent image deliberately has no database path.
+ENV GLASSOPS_DB_PATH=/app/data/glassops.db
 
 # Python deps (backend + agent)
 COPY backend/requirements.txt /tmp/backend-requirements.txt

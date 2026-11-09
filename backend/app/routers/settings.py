@@ -1,5 +1,6 @@
 """Runtime settings API — manage server config from web UI."""
 
+import asyncio
 import ipaddress
 import os
 from typing import Literal
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Defaults match .env defaults
 DEFAULTS = {
-    "enable_gpu": os.getenv("GLASSOPS_ENABLE_GPU", "false"),
+    "enable_gpu": "true" if os.getenv("GLASSOPS_ENABLE_GPU", "false").lower() == "true" else "false",
     "enable_docker": os.getenv("GLASSOPS_ENABLE_DOCKER", "true"),
     "collect_interval": os.getenv("GLASSOPS_COLLECT_INTERVAL", "1"),
     "terminal_user": os.getenv("GLASSOPS_TERMINAL_USER", ""),
@@ -37,12 +38,25 @@ class RestartRequest(BaseModel):
     service: Literal["agent", "nginx", "all"]
 
 
+def gpu_access_available() -> bool:
+    """Probe the dashboard container, even when collection is switched off."""
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        try:
+            return pynvml.nvmlDeviceGetCount() > 0
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        return False
+
+
 @router.get("/runtime")
 async def get_config(_: str = Depends(require_admin)):
     db_config = await get_runtime_config()
     # Merge: DB overrides defaults
     merged = {**DEFAULTS, **db_config}
-    return {"config": merged}
+    return {"config": merged, "gpu_available": await asyncio.to_thread(gpu_access_available)}
 
 
 @router.post("/runtime")
@@ -70,6 +84,11 @@ async def update_config(body: RuntimeConfigUpdate, request: Request,
                     raise HTTPException(400, f"Your IP ({client_ip}) would be blocked. Add it to the whitelist.")
 
         updates[key] = value
+
+    if updates.get("enable_gpu") == "true" and not await asyncio.to_thread(gpu_access_available):
+        raise HTTPException(409, "GPU access is unavailable in the dashboard container. "
+                            "Check the host NVIDIA driver and Container Toolkit, then recreate "
+                            "the container with make up-gpu.")
 
     if updates:
         await set_runtime_configs(updates)

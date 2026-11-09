@@ -108,14 +108,15 @@ make up-gpu
 
 This loads `docker-compose.gpu.yml` alongside the base Compose file. It grants the
 dashboard container access to all NVIDIA GPUs and sets `GLASSOPS_ENABLE_GPU=true`,
-even if `.env` still contains the default `false`. The built-in agent collects this
-host's GPU metrics; a separate agent container is not needed on the dashboard host.
+even if `.env` still contains the default `false`. This is the initial collection
+default; a choice saved in Settings takes precedence. The built-in agent collects
+this host's GPU metrics; a separate agent container is not needed on the dashboard host.
 Existing host settings in `docker-compose.override.yml` (or `.yaml` if `.yml` is
 absent) are included, so custom port bindings and mounts are preserved.
 
 The command builds the image and starts or recreates only the `glassops` service,
 preserving its data volume. A recreation briefly interrupts the dashboard and metric
-collection. The environment flag `GLASSOPS_ENABLE_GPU` controls collection but does
+collection. The environment flag `GLASSOPS_ENABLE_GPU` sets the initial collection default but does
 **not** grant GPU device access; adding device access requires recreating the container,
 not just restarting it.
 
@@ -133,6 +134,17 @@ The count should match the host's GPUs. In the dashboard, select the dashboard h
 (`local` by default) and open **GPU Monitor** to check utilization and VRAM. If NVML
 fails inside the container while `nvidia-smi` works on the host, check the Toolkit
 configuration and recreate with `make up-gpu`.
+
+To pause or resume collection, open **Settings > Server**, change **GPU Monitoring**,
+and click **Save**. The built-in agent reads the saved choice on the next collection
+cycle; no agent restart is needed. The choice survives agent and container restarts,
+including a saved OFF choice when starting again with `make up-gpu`. Existing history
+is retained. This switch applies only to the dashboard host, regardless of which host
+is selected in the menu bar.
+
+If the dashboard container cannot access an NVIDIA GPU, Settings blocks enabling
+collection and explains that the host driver/Toolkit must be checked and the container
+recreated with `make up-gpu`. An existing ON setting can still be switched OFF.
 
 For an additional, remote GPU host, set `GLASSOPS_ENABLE_GPU=true` in `agent.env` and
 use `make agent-up-gpu` there. The driver and Toolkit requirements also apply to that
@@ -164,7 +176,7 @@ cp .env.example .env
 |----------|---------|--------------|
 | `GLASSOPS_COLLECT_INTERVAL` | `1` | Seconds between metric snapshots (1–60) |
 | `GLASSOPS_ENABLE_DOCKER` | `true` | Collect container metrics and enable the Docker app |
-| `GLASSOPS_ENABLE_GPU` | `false` | Collect NVIDIA GPU metrics; also needs container GPU access. `make up-gpu` enables both for the dashboard |
+| `GLASSOPS_ENABLE_GPU` | `false` | Initial GPU collection default; saved Settings choice takes precedence for the dashboard. `make up-gpu` sets this to true and grants device access |
 | `GLASSOPS_LOCAL_AGENT_ID` | `local` | Id of the built-in agent. Requests for this id skip RPC and use the local Docker socket directly |
 | `GLASSOPS_AGENT_ID` | `local` | Remote agents only (`agent.env`): a unique name per host. Inside the dashboard container it is always overridden with `GLASSOPS_LOCAL_AGENT_ID` |
 | `GLASSOPS_AGENT_KEY` | *(derived)* | Remote agents only: the key a remote agent presents. Get it from the dashboard host with `docker compose exec glassops python -m app.secret_bootstrap agent`. The built-in agent derives it itself |
@@ -200,8 +212,8 @@ cp .env.example .env
 
 > `.env` changes take effect when the container is recreated: use `make up` or
 > `make up-gpu` for GPU deployments. A plain restart keeps the old environment.
-> The built-in agent reads its GPU collection flag at startup; the GPU value saved
-> in **Settings > Server** does not change that flag or add device access.
+> GPU collection is the exception: the built-in agent reads its saved **Settings > Server**
+> choice each cycle. Saving that switch does not add container device access.
 
 ## Make Commands
 
@@ -209,7 +221,7 @@ Dashboard host:
 
 ```bash
 make up          # Build if needed, then start (also applies .env changes)
-make up-gpu      # Build/start the dashboard with NVIDIA GPU access and collection
+make up-gpu      # Build/start with NVIDIA GPU access (saved monitoring choice retained)
 make down        # Stop
 make restart     # Restart the container (does not re-read .env)
 make logs        # Follow logs

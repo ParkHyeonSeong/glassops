@@ -7,7 +7,7 @@ import os
 import signal
 import time as _time
 
-from agent.config import AGENT_ID, COLLECT_INTERVAL, ENABLE_GPU, ENABLE_DOCKER, ENABLE_NET_AUDIT
+from agent.config import AGENT_ID, COLLECT_INTERVAL, ENABLE_GPU, ENABLE_DOCKER, ENABLE_NET_AUDIT, gpu_collection_enabled
 from agent.collectors.system import collect_all as collect_system
 from agent.collectors.gpu import collect_gpu, shutdown_nvml
 from agent.collectors.docker_collector import collect_containers
@@ -93,10 +93,12 @@ async def collect_metrics() -> dict:
     metrics = collect_system()
 
     gpu_data = None
-    if ENABLE_GPU:
+    if gpu_collection_enabled(ENABLE_GPU):
         gpu_data = collect_gpu()
         if gpu_data is not None:
             metrics["gpu"] = gpu_data
+    else:
+        shutdown_nvml()
 
     if ENABLE_DOCKER:
         containers = collect_containers(gpu_data, OWN_CONTAINER_ID)

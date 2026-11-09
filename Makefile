@@ -23,7 +23,7 @@ up: ## Start GlassOps (build if needed; applies .env changes)
 	@echo "  GlassOps is running at http://localhost:$(PORT)"
 	@echo ""
 
-up-gpu: ## Start GlassOps with NVIDIA GPU access and collection enabled
+up-gpu: ## Start GlassOps with NVIDIA GPU access (saved monitoring choice retained)
 	@test -f .env || (echo "  Missing .env — copy .env.example and edit" && exit 1)
 	docker compose -f docker-compose.yml $(if $(GPU_HOST_OVERRIDE),-f $(GPU_HOST_OVERRIDE)) -f docker-compose.gpu.yml up -d --build --no-deps glassops
 	@echo ""
