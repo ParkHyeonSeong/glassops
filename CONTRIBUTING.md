@@ -3,11 +3,11 @@
 ## Prerequisites
 
 - Python 3.12
-- Node.js 22
-- Docker with Docker Compose v2
+- Node.js 22.13 or newer within the 22.x series
+- Docker with Docker Compose v2.24.4+ for the full quality checks (the socket-proxy overlay uses `!override`)
 
-These are the versions CI uses (`.github/workflows/ci.yml`) and the pinned base images in
-the Dockerfiles.
+CI and the pinned base images use Python 3.12 and Node.js 22. The frontend lockfile's
+jsdom version requires at least Node.js 22.13 on that release line.
 
 ## Install development dependencies
 
@@ -31,16 +31,34 @@ npm ci --prefix frontend
 
 ## Running your changes
 
-`make dev` starts the same container as production (it needs a `.env`, see the README) with
-`backend/app` and `agent/agent` bind-mounted, so the container sees your edits. There is no
-automatic reload: after editing backend or agent code, restart the processes:
+Use a separate development checkout with its own `.env` created from `.env.example`.
+Run the development stack under a dedicated Compose project and an unused localhost port.
+Both Compose files use the `glassops` service and `glassops_data` volume, so using the same
+project name would reuse the service and its data. The examples below use `glassops-dev`
+and port `7441`. Use the same project name for start, restart, and teardown.
 
 ```bash
-docker compose -f docker-compose.dev.yml restart
+COMPOSE_PROJECT_NAME=glassops-dev GLASSOPS_PORT=7441 make dev PORT=7441
 ```
 
-The frontend is compiled into the image, so frontend changes need a rebuild — run `make dev`
-again. `make dev-down` stops the dev container.
+Open `http://localhost:7441`. `make dev` builds from the same dashboard Dockerfile as
+production, using the development Compose configuration. The development configuration
+bind-mounts `backend/app` and `agent/agent` and omits production's host cgroup namespace
+and readiness check. It has no GPU device access. Use a trusted development machine
+because the stack mounts the host Docker socket.
+
+Restart after editing backend or agent code to load the mounted changes.
+
+```bash
+COMPOSE_PROJECT_NAME=glassops-dev GLASSOPS_PORT=7441 docker compose -f docker-compose.dev.yml restart
+```
+
+Frontend changes require an image rebuild. Repeat the `make dev` command above. To stop
+the development stack, run the following command.
+
+```bash
+COMPOSE_PROJECT_NAME=glassops-dev GLASSOPS_PORT=7441 make dev-down
+```
 
 Most work does not need the container at all: the Python tests run against an in-process
 SQLite database, and the frontend tests run under Vitest with jsdom.
@@ -51,13 +69,15 @@ SQLite database, and the frontend tests run under Vitest with jsdom.
 make quality
 ```
 
-The aggregate target runs the same three gates as CI:
+The aggregate target runs three local gates that CI also runs.
 
 - `make quality-python` — `pip check`, `compileall`, and pytest over `tests/`
 - `make quality-frontend` — `npm run quality`: ESLint with `--max-warnings=0`, Vitest, and
   the production build
 - `make quality-compose` — Dockerfile base-image pin validation, every supported Compose
   file combination, and entrypoint shell syntax
+
+The Compose CI job also builds and smoke-checks the dashboard and standalone agent images.
 
 While developing, run the focused command for what you touched, then `make quality` before
 opening a pull request:

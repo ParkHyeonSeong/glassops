@@ -18,20 +18,19 @@ belongs in the unit-test gate.
 
 | Exit | Meaning |
 |---|---|
-| `0` | PASS — the sink received the expected message |
+| `0` | PASS — the sink received the expected message and teardown succeeded |
 | `1` | FAIL — build, startup, login, config save, send, or an assertion failed |
 | `2` | BLOCKED — could not run at all |
+| `129`, `130`, `143` | Interrupted by `HUP`, `INT`, or `TERM`, respectively |
 
-**BLOCKED is not a pass.** It means the SMTP path was never exercised, so the unit
-suites must not be reported as covering it. The causes are: a missing `docker`,
-`git` or `python3`; no `timeout`/`gtimeout`; no Docker Compose v2; an unreachable
-Docker daemon; or an unpinned Mailpit digest. Host `curl` is *not* among them — see
-Prerequisites. Everything else — build, startup, login, config save, send, an
-assertion, or a failed teardown — is FAIL (1).
+**BLOCKED means the SMTP path was never exercised.** It covers missing `docker`,
+`git`, or `python3`, the absence of both `timeout` and `gtimeout`, an unavailable
+`docker compose` plugin, an unreachable Docker daemon, an unpinned Mailpit digest,
+or a failure to export `HEAD`. A failed teardown turns an otherwise passing run
+into FAIL (1).
 
-Exit codes are normalised: every `curl`, `docker` and `docker compose` call is
-guarded, so a raw status like curl's `7` (connection refused) or `28` (timeout) can
-never escape as the script's exit code.
+The script handles Docker and curl errors within the relevant check instead of
+returning their raw exit codes.
 
 ### Prerequisites
 
@@ -140,10 +139,10 @@ into something that damages a real deployment.
   Every HTTP call is therefore made **inside** the network with
   `docker compose exec … curl`, so isolation is kept rather than traded away for
   reachability. The app image already ships curl for its own healthcheck.
-- **Build context is `git archive HEAD`,** not `${REPO_ROOT}`. The repo has no
-  `.dockerignore`, so a directory context would ship `.env`, `data/secret.key`, `.git`
-  and ~200 MB of `node_modules` into the build daemon — a real secret-exposure risk,
-  worse against a remote Docker context.
+- **Build context comes from `git archive HEAD`.** The archive includes committed
+  files and excludes working-tree edits and untracked files. The repository's
+  `.dockerignore` also excludes local configuration, data, and build output from
+  the Docker context.
 - **Pinned image digest.** `axllent/mailpit:v1.21.8@sha256:8137…` (an OCI multi-arch
   index including `linux/arm64`). `:latest` would make the check non-reproducible.
   Re-pin with
@@ -155,8 +154,8 @@ Out of scope for this script and **not to be run without an explicit, in-the-mom
 request from the operator**, using a throwaway account and mailbox they supply. If it
 is ever done:
 
-- Credentials go in the UI or the environment — never into the repo, a compose file,
-  shell history, a command line, or any log or transcript.
+- Enter credentials through **Settings > Email** or the admin API. Keep them out
+  of the repo, Compose files, shell history, command lines, logs, and transcripts.
 - An HTTP 200 from `/api/alerts/test` means the relay accepted the message. It is not
   delivery evidence.
 - Final success is the actual inbox, or the provider's delivery log, showing the
