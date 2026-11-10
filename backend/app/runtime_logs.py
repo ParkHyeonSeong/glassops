@@ -36,9 +36,10 @@ def _owned_file(path: Path) -> None:
     path.touch(exist_ok=True)
     if not path.is_file():
         raise OSError(f"Runtime log must be a regular file: {path.name}")
-    path.chmod(0o640)
     if os.geteuid() == 0:
+        # Compose grants CHOWN but not FOWNER; nginx can own an empty file.
         os.chown(path, 0, grp.getgrnam("appuser").gr_gid)
+    path.chmod(0o640)
 
 
 def _archive_time(path: Path) -> float | None:
@@ -94,9 +95,9 @@ def prepare_runtime_logs(root: Path = ROOT, now: float | None = None) -> None:
     # nginx workers must traverse this directory to reopen their own logs.
     # Other users cannot list it or read the 0640 log files.
     root.mkdir(parents=True, exist_ok=True, mode=0o751)
-    root.chmod(0o751)
     if os.geteuid() == 0:
         os.chown(root, 0, grp.getgrnam("appuser").gr_gid)
+    root.chmod(0o751)
     for channel in CHANNELS:
         _close_active(root, channel, None)
     _prune(root, now, set())

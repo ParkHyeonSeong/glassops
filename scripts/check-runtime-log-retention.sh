@@ -23,7 +23,7 @@ trap cleanup EXIT
 
 docker volume create "$volume" >/dev/null
 start() {
-  docker run -d --name "$container" --cap-add SYS_PTRACE \
+  docker run -d --name "$container" --cap-drop FOWNER --cap-add SYS_PTRACE \
     --mount "type=volume,source=$volume,target=/app/data" \
     --env GLASSOPS_SECRET_KEY=retention-test-only-secret-0123456789abcdef \
     --env GLASSOPS_ENABLE_GPU=false --env GLASSOPS_ENABLE_DOCKER=false \
@@ -43,7 +43,22 @@ start
 
 docker exec -i "$container" python - <<'PY'
 from pathlib import Path
-import subprocess, time
+import os, pwd, subprocess, tempfile, time
+from app.runtime_logs import prepare_runtime_logs
+# Compose does not grant FOWNER. nginx owns its empty error file, and an
+# older dashboard can have chowned the archive directory to appuser.
+with tempfile.TemporaryDirectory() as directory:
+    quiet = Path(directory)
+    prepare_runtime_logs(quiet)
+    os.chown(quiet / 'nginx-error.log', pwd.getpwnam('www-data').pw_uid, -1)
+    prepare_runtime_logs(quiet)
+    assert (quiet / 'nginx-error.log').stat().st_uid == 0
+    assert (quiet / 'nginx-error.log').read_bytes() == b''
+    (quiet / 'backend.log').write_text('PRESERVE-OWNERSHIP-RECOVERY')
+    os.chown(quiet, pwd.getpwnam('appuser').pw_uid, -1)
+    prepare_runtime_logs(quiet)
+    assert quiet.stat().st_uid == 0
+    assert any('PRESERVE-OWNERSHIP-RECOVERY' in p.read_text() for p in quiet.glob('backend.*.log'))
 root = Path('/app/data/logs')
 assert any('NVIDIA GPU:' in p.read_text() for p in root.glob('bootstrap*.log'))
 assert any('spawned:' in p.read_text() for p in root.glob('supervisor*.log'))
