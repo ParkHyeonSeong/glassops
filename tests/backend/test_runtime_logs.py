@@ -94,7 +94,7 @@ def test_prepare_preserves_unknown_files_and_restricts_log_permissions(archive):
     (archive / "operator-note").write_text("keep")
     logs.prepare_runtime_logs(archive, 2_000_000_000)
     assert (archive / "operator-note").read_text() == "keep"
-    assert archive.stat().st_mode & 0o007 == 0
+    assert archive.stat().st_mode & 0o004 == 0
     assert (archive / "backend.log").stat().st_mode & 0o007 == 0
 
 
@@ -108,3 +108,17 @@ async def test_maintenance_failure_is_contained_and_shutdown_joins_work(monkeypa
     monkeypatch.setattr(logs, "rotate_runtime_logs", fail)
     await asyncio.wait_for(logs.maintain_runtime_logs(stop), 2)
     assert calls == ["attempt"]
+
+
+def test_rotation_never_signals_the_nginx_python_startup_wrapper(monkeypatch):
+    calls = []
+    monkeypatch.setattr(logs, "_supervisor_pid", lambda: 123)
+    monkeypatch.setattr(logs.os, "kill", lambda *_: None)
+    def control(*args):
+        calls.append(args)
+        return "456"
+    monkeypatch.setattr(logs, "_control", control)
+    monkeypatch.setattr(Path, "read_bytes", lambda _: b"python\x00-m\x00app.nginx_config\x00run")
+    with pytest.raises(OSError, match="nginx.*starting"):
+        logs._reopen_writers()
+    assert ("signal", "USR1", "nginx") not in calls

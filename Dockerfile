@@ -46,7 +46,8 @@ COPY --from=frontend-build /build/dist /app/static
 
 # Nginx config
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
-RUN rm -f /etc/nginx/sites-enabled/default
+RUN rm -f /etc/nginx/sites-enabled/default \
+    && sed -i 's@/var/log/nginx/error.log@/app/data/logs/nginx-error.log@g; s@/var/log/nginx/access.log@/app/data/logs/nginx-access.log@g' /etc/nginx/nginx.conf
 
 # Supervisord config
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/glassops.conf

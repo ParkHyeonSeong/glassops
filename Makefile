@@ -33,8 +33,8 @@ up-gpu: ## Start GlassOps with NVIDIA GPU access (saved monitoring choice retain
 down: ## Stop GlassOps
 	docker compose down
 
-logs: ## Show logs (follow)
-	docker compose logs -f
+logs: ## Follow the dashboard runtime archive (latest 200 lines per active file)
+	docker compose exec -T glassops python -m app.runtime_logs follow --tail 200
 
 restart: ## Restart GlassOps (does not re-read .env; use make up for that)
 	docker compose restart
