@@ -118,3 +118,44 @@ def test_saved_empty_terminal_user_does_not_restore_environment_user(saved, monk
     monkeypatch.setattr(terminal.pty, "openpty", forbidden_pty)
     with pytest.raises(RuntimeError, match="No terminal user"):
         terminal.TerminalSession().spawn()
+
+
+@pytest.mark.parametrize("bundled", [True, False])
+async def test_runtime_archive_task_is_bundled_only_and_drained_on_shutdown(monkeypatch, bundled):
+    from app import runtime_logs
+    stop = asyncio.Event()
+    maintenance_started = asyncio.Event()
+    finished = []
+
+    async def maintain(event):
+        maintenance_started.set()
+        try:
+            await event.wait()
+        finally:
+            finished.append("joined")
+
+    class Pusher:
+        connected = False
+        async def connect(self):
+            try:
+                if bundled:
+                    await asyncio.wait_for(maintenance_started.wait(), 0.2)
+            finally:
+                stop.set()
+            raise asyncio.TimeoutError
+        async def close(self):
+            pass
+
+    async def rpc(*_):
+        await stop.wait()
+
+    monkeypatch.setenv("GLASSOPS_BUNDLED_RUNTIME_LOGS", "1" if bundled else "0")
+    monkeypatch.setattr(runtime_logs, "maintain_runtime_logs", maintain)
+    monkeypatch.setattr(main, "MetricsPusher", Pusher)
+    monkeypatch.setattr(main, "serve_rpc", rpc)
+    monkeypatch.setattr(main, "check_transport_security", lambda: None)
+    monkeypatch.setattr(main.asyncio, "Event", lambda: stop)
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", lambda *_: None)
+    await main.main()
+    assert maintenance_started.is_set() is bundled
+    assert finished == (["joined"] if bundled else [])

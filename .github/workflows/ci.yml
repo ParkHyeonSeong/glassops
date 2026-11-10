@@ -79,10 +79,12 @@ jobs:
             "glassops-ci:${GITHUB_SHA}" sh -ec '
             python -m pip check
             test -s /app/static/index.html
-            nginx -t
+            python -c "from app.nginx_config import prepare_ip_rules; prepare_ip_rules()"
             supervisord --version >/dev/null
             ! command -v node
           '
+      - name: Verify runtime log retention and container recreation
+        run: bash scripts/check-runtime-log-retention.sh "glassops-ci:${GITHUB_SHA}"
       - name: Build standalone agent image
         run: docker build --pull --tag "glassops-agent-ci:${GITHUB_SHA}" --file agent/Dockerfile agent
       - name: Verify standalone agent image

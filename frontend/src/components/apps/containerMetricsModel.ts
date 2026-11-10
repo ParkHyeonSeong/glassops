@@ -70,7 +70,7 @@ export function sampleOrigin(raw: {
  * Dedup identity. Distinct prefixes ("id:" vs "t:") keep the server-issued
  * namespace and the legacy raw-t namespace collision-free by construction.
  */
-export function sampleIdentity(sample: ContainerSample): string {
+export function sampleIdentity(sample: SampleOrigin & { t: number }): string {
   return sample.sample_id !== undefined ? `id:${sample.sample_id}` : `t:${sample.t}`;
 }
 
@@ -99,13 +99,13 @@ export function containerMetricsKey(
     truth: mergeSamplesByIdentity orders by it, boundContainerSamples
     re-seats ranked samples by it before capping (array position is not
     reliable — REST and WS race), and same-X collapse compares by it. */
-function arrivalRank(sample: ContainerSample): readonly [number, number] | undefined {
+function arrivalRank(sample: SampleOrigin): readonly [number, number] | undefined {
   if (sample.arrival_seq !== undefined) return [sample.arrival_seq, 0];
   if (sample.after_seq !== undefined) return [sample.after_seq, 1];
   return undefined;
 }
 
-function compareArrival(a: ContainerSample, b: ContainerSample): number {
+function compareArrival(a: SampleOrigin, b: SampleOrigin): number {
   const [seqA, kindA] = arrivalRank(a) as readonly [number, number];
   const [seqB, kindB] = arrivalRank(b) as readonly [number, number];
   return seqA !== seqB ? seqA - seqB : kindA - kindB;
@@ -123,10 +123,10 @@ function compareArrival(a: ContainerSample, b: ContainerSample): number {
  * With no metadata anywhere the legacy fetched-first pseudo-order is
  * preserved verbatim.
  */
-export function mergeSamplesByIdentity(
-  fetched: ContainerSample[],
-  existing: ContainerSample[],
-): ContainerSample[] {
+export function mergeSamplesByIdentity<T extends SampleOrigin & { t: number }>(
+  fetched: T[],
+  existing: T[],
+): T[] {
   const fetchedIds = new Set(
     fetched.flatMap((s) => (s.sample_id !== undefined ? [s.sample_id] : [])),
   );
@@ -166,12 +166,12 @@ export function effectiveSampleTime(t: number, serverNow: number): number {
  * buffer is returned untouched and the pre-identity contract is preserved.
  * Time-window membership is a render concern (constrainContainerSamples).
  */
-export function boundContainerSamples(
-  samples: ContainerSample[],
+export function boundContainerSamples<T extends SampleOrigin & { t: number }>(
+  samples: T[],
   range: TimeRange,
-): ContainerSample[] {
+): T[] {
   const seen = new Set<string>();
-  const deduped: ContainerSample[] = [];
+  const deduped: T[] = [];
   for (const sample of samples) {
     const key = sampleIdentity(sample);
     if (seen.has(key)) continue;

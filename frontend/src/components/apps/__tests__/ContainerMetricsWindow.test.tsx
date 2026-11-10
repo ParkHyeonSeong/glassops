@@ -19,10 +19,10 @@ vi.mock("../../../utils/api", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("recharts", () => {
   const Pass = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   const AreaChart = ({ children, data }: { children?: ReactNode; data?: unknown }) => (
-    <div data-testid="area-chart" data-points={JSON.stringify(data)}>{children}</div>
+    <svg data-testid="area-chart" data-points={JSON.stringify(data)}>{children}</svg>
   );
   const XAxis = ({ type, domain }: { type?: string; domain?: unknown }) => (
-    <div data-testid="x-axis" data-type={type} data-domain={JSON.stringify(domain)} />
+    <g data-testid="x-axis" data-type={type} data-domain={JSON.stringify(domain)} />
   );
   return {
     AreaChart,
@@ -53,6 +53,28 @@ describe("ContainerMetricsWindow", () => {
   afterEach(() => {
     _resetServerClockForTest();
     vi.unstubAllGlobals();
+  });
+
+  it("restores the matching container's Live history on hydration and re-entry", async () => {
+    vi.mocked(fetchWithAuth).mockReturnValue(deferred<Response>().promise);
+    const snapshot = (id: number, cpu: number) => makeMetricSnapshot({
+      timestamp: id, sample_id: `raw:${id}`, arrival_seq: id,
+      containers: [makeContainer({ name: "worker", cpu_percent: cpu }), makeContainer({ name: "other", cpu_percent: 99 })],
+    });
+    act(() => {
+      useMetricsStore.getState().pushMetrics("agent-a", snapshot(3, 30));
+      useMetricsStore.getState().pushMetrics("agent-b", snapshot(4, 90));
+    });
+    render(<ContainerMetricsWindow agentId="agent-a" containerName="worker" />);
+    expect(fetchWithAuth).toHaveBeenCalledWith(expect.stringContaining("duration=1h"));
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+    act(() => useMetricsStore.getState().mergeHistory("agent-a", [snapshot(1, 10), snapshot(2, 20)]));
+    expect(screen.getByText(/avg 20\.0% · peak 30\.0%/)).toBeInTheDocument();
+    act(() => useMetricsStore.getState().selectAgent("agent-b"));
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+    const cpuPoints = JSON.parse(screen.getAllByTestId("area-chart")[0].dataset.points ?? "[]");
+    expect(cpuPoints).toEqual([{ t: 1, value: 10 }, { t: 2, value: 20 }, { t: 3, value: 30 }]);
   });
 
   it("merges a live push that arrives before history resolves", async () => {

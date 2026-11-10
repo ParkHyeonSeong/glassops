@@ -70,15 +70,27 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     error: null,
   });
   const seriesIsCurrent = series.activation === activation;
+  const hostHistory = useMetricsStore((s) => s.agents[agentId]?.history);
   const samples = useMemo(
-    () => (seriesIsCurrent ? series.samples : []),
-    [seriesIsCurrent, series.samples],
+    () => {
+      if (range !== "live") return seriesIsCurrent ? series.samples : [];
+      return boundContainerSamples((hostHistory ?? []).flatMap((snap): ContainerSample[] => {
+        const c = snap.containers?.find((item) => item.name === containerName);
+        if (!c) return [];
+        return [{
+          t: snap.timestamp, cpu: c.cpu_percent, mem: c.mem_usage, mem_limit: c.mem_limit,
+          vram: c.gpu?.vram_bytes ?? 0, gpu_util: c.gpu?.gpu_util ?? 0,
+          gpu_present: Boolean(c.gpu), ...sampleOrigin(snap),
+        }];
+      }), "live");
+    },
+    [range, hostHistory, containerName, seriesIsCurrent, series.samples],
   );
   const loading = range !== "live" && (!seriesIsCurrent || series.loading);
   const error = seriesIsCurrent ? series.error : null;
   const action = useContainerAction(agentId, containerId);
 
-  // History fetch on range change (skipped for "live" — it builds from pushes only).
+  // Ranged history uses its own query; Live projects the hydrated host buffer.
   // Pushes that land during the fetch are preserved by merging on resolve.
   useEffect(() => {
     if (range === "live" || !agentId || !containerName) return;
@@ -133,12 +145,12 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
     };
   }, [activation, agentId, containerName, range]);
 
-  // Live tail — applies to every range. Manual identity check on the per-agent
+  // Live tail for historical ranges. Manual identity check on the per-agent
   // snapshot so the listener body only runs when this window's data changes,
   // not on unrelated store mutations (selectAgent / setConnected / loadHistory).
   const prevSnapRef = useRef<unknown>(null);
   useEffect(() => {
-    if (!containerName) return;
+    if (!containerName || range === "live") return;
     // Seed with the CURRENT snapshot, not null: an unrelated store mutation
     // (setConnected / selectAgent / loadHistory) fires this subscriber with
     // the same, unchanged snapshot object. Seeding null would make that
@@ -183,7 +195,7 @@ export default function ContainerMetricsWindow({ agentId, containerName }: Conta
         return {
           activation,
           samples: boundContainerSamples([...previousSamples, sample], range),
-          loading: previousIsCurrent ? previous.loading : range !== "live",
+          loading: previousIsCurrent ? previous.loading : true,
           error: null,
         };
       });

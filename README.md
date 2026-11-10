@@ -302,7 +302,7 @@ make up          # Stop the Compose project, then build/start; applies .env chan
 make up-gpu      # Build/start with NVIDIA GPU access (saved monitoring choice retained)
 make down        # Stop
 make restart     # Restart the container (does not re-read .env)
-make logs        # Follow logs
+make logs        # Follow persistent dashboard logs (latest 200 lines per active file)
 make status      # Container status and /health at localhost:7440 by default
 make shell       # Shell inside the container
 make build       # Build the image only
@@ -310,7 +310,7 @@ make prod        # Rebuild from scratch (no cache) and start
 make update      # Basic deployment: git pull, rebuild without cache, start
 make dev         # Start with backend/agent source mounted (see CONTRIBUTING.md)
 make dev-down    # Stop the dev container
-make clean       # Stop AND delete the data volume — accounts, settings and history are gone
+make clean       # Stop AND delete the data volume — accounts, settings, history and runtime logs are gone
 make help        # List all targets
 ```
 
@@ -353,6 +353,77 @@ summaries still needed by unfinished aggregation/cleanup are retained longer. Ra
 eligible for cleanup only once both summaries cover them; incomplete aggregation can
 retain raw rows longer. These retention rules are separate from the query resolution:
 a short query far in the past may have no raw rows left.
+
+On login, refresh or reconnection, **Live** views restore up to the latest **120
+stored samples** for each connected agent, then continue receiving new readings.
+System, GPU, Network and container Live charts use this recent buffer. The time
+covered depends on collection cadence; it is not the seven-day history view.
+Restoration merges with incoming readings without duplicating samples or replacing
+a newer reading. A failed lookup shows a warning while Live continues, and retries
+on the next connection. Samples never collected/stored cannot be reconstructed.
+Container details still open at **1h** by default. Existing monitoring and
+user-action audit retention policies are unchanged.
+
+## Runtime Logs
+
+The dashboard's own execution and error logs are stored under **`/app/data/logs`**
+in the **existing `glassops_data` volume**, alongside the database. This is a Docker
+named volume, not a new folder mounted from the Git checkout or a separate service.
+It includes backend and bundled-agent output, nginx access/error and startup
+diagnostics, Supervisor activity, and container startup diagnostics.
+
+- Keep the most recent **seven days (168 hours)**. Do not delete younger logs to
+  satisfy a byte-size or file-count quota. Provision enough free disk space;
+  a full or unwritable volume can interrupt recording.
+- Rotate active files hourly. Delete a closed file only after all its records
+  are outside the retention period. Hourly file intervals and cleanup can leave
+  expired records on disk for approximately two additional hours in normal operation.
+- Cleanup runs at container startup and while the bundled agent runs, independently
+  of its backend connection. If the container/agent stops or maintenance fails,
+  cleanup catches up when it resumes; readers omit wholly expired archives.
+- Normal rebuilds, restarts and container replacements **preserve logs when the
+  same volume is reused**. Removing that volume, including `make clean` or
+  `docker compose down -v`, deletes the logs and other stored data.
+- This policy starts with this version. Previously removed logs cannot be recovered;
+  preserve any required old Docker/container-filesystem logs before the first update.
+  Operator exports and backups have their own retention and are not auto-deleted.
+
+Administrators select the **dashboard host**, then open **Logs → [app] glassops**
+to read recent output, even when its agent is disconnected. Search filters the
+recent tail; it is not indexed seven-day search. Each line identifies its source
+file. Use the CLI to inspect retained files from an older incident:
+
+```bash
+make logs  # follow active files across hourly rotation; rerun after container replacement
+docker compose exec -T glassops python -m app.runtime_logs read --tail 500
+docker compose exec -T glassops python -m app.runtime_logs list
+docker compose exec -T glassops python -m app.runtime_logs read --file <filename-from-list>
+```
+
+`docker logs` is not the runtime archive: normal output goes to these files.
+Early failures that prevent log initialization still appear on stderr. If the
+dashboard cannot start, read its existing volume without starting services:
+
+```bash
+# Default Compose project names; substitute the actual existing volume/image.
+GLASSOPS_LOG_VOLUME=glassops_glassops_data
+GLASSOPS_LOG_IMAGE=glassops-glassops
+docker volume inspect "$GLASSOPS_LOG_VOLUME" >/dev/null &&
+docker run --rm --entrypoint python \
+  --mount "type=volume,source=$GLASSOPS_LOG_VOLUME,target=/app/data,readonly" \
+  "$GLASSOPS_LOG_IMAGE" -m app.runtime_logs read --tail 500
+```
+
+The reader does not initialize a database, create a secret or prune files.
+Use the same Compose file/project selection as your deployment for normal commands.
+The [data-volume backup](#backup-and-restore) includes this archive.
+
+This policy covers only the dashboard container and its bundled services. Remote
+standalone-agent output, monitored applications' Docker logs, host OS/nginx logs,
+terminal transcripts and browser-alert/email-delivery histories keep their existing
+behavior. Deploy this change by rebuilding/replacing **the dashboard container**;
+its bundled agent updates with it. Remote standalone agents do not need an update
+for this feature.
 
 ## Email Alerts
 
@@ -776,6 +847,10 @@ This replaces whatever is in the volume with the backup. Use the same `.env` the
 taken with: a different `GLASSOPS_SECRET_KEY` would log everyone out, break stored SMTP
 passwords and disconnect remote agents. This is also how you move GlassOps to another
 server — the transfer tool two sections below is only for the old-schema upgrade.
+
+The full-volume backup also includes the [runtime log archive](#runtime-logs).
+Restored expired logs are cleaned at startup; the backup file itself is not pruned.
+The account-only transfer tool does not export runtime log files.
 
 ### Updating
 

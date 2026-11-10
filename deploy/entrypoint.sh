@@ -4,6 +4,15 @@
 # group grant. The data dir is chowned to appuser after the secret bootstrap below.
 mkdir -p /app/data
 
+# Keep this container's diagnostics in the same persistent volume as the DB.
+# Prepare before the first normal message; initialization errors stay on stderr.
+cd /app || exit 1
+python3 -m app.runtime_logs prepare || exit 1
+exec 3>&1 4>&2
+exec >>/app/data/logs/bootstrap.log 2>&1
+trap 'code=$?; if [ "$code" -ne 0 ]; then echo "GlassOps startup failed; inspect /app/data/logs/bootstrap logs" >&4; fi' 0
+export GLASSOPS_BUNDLED_RUNTIME_LOGS=1
+
 # NVIDIA GPU: copy host libnvidia-ml into container if available via /proc
 # privileged mode gives access to host /proc where we can find nvidia libs
 NVIDIA_LIB=""
@@ -67,6 +76,11 @@ export GLASSOPS_AGENT_ID="${GLASSOPS_LOCAL_AGENT_ID:-local}"
 
 # Make the data dir (incl. any root-owned glassops.db / secret.key from older
 # images) writable by the now-unprivileged backend.
-chown -R appuser:appuser /app/data
+# Runtime logs keep root ownership with appuser group-read access.
+find /app/data -path /app/data/logs -prune -o -exec chown appuser:appuser {} +
 
+exec 1>&3 2>&4
+python3 -m app.runtime_logs finish-bootstrap || exit 1
+trap - 0
+exec 3>&- 4>&-
 exec "$@"
