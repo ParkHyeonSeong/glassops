@@ -132,6 +132,11 @@ async def main() -> None:
 
     pusher = MetricsPusher()
     rpc_task = asyncio.create_task(serve_rpc(pusher, stop))
+    runtime_log_task = None
+    if os.getenv("GLASSOPS_BUNDLED_RUNTIME_LOGS") == "1":
+        # The standalone image has no backend package or dashboard archive.
+        from app.runtime_logs import maintain_runtime_logs
+        runtime_log_task = asyncio.create_task(maintain_runtime_logs(stop))
 
     # Initial CPU percent call to prime psutil (first call always returns 0)
     import psutil
@@ -181,7 +186,10 @@ async def main() -> None:
         # best-effort (a hard cancel finalizes the tasks via asyncio.run instead).
         stream_tasks = teardown_all_streams()
         rpc_task.cancel()
-        for t in (rpc_task, *stream_tasks):
+        if runtime_log_task is not None:
+            runtime_log_task.cancel()
+        tasks = (rpc_task, *stream_tasks, *([runtime_log_task] if runtime_log_task is not None else []))
+        for t in tasks:
             try:
                 await t  # terminal_open's finally: session.kill() runs here
             except (asyncio.CancelledError, Exception):
