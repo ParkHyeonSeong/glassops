@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useMetricsStore, type MetricSnapshot } from "../stores/metricsStore";
 import { useAuthStore } from "../stores/authStore";
+import { useAlertStore } from "../stores/alertStore";
+import { fetchWithAuth } from "../utils/api";
 
 // Auto-detect WebSocket URL from current page location
 const WS_URL = (
@@ -19,6 +21,7 @@ interface WsMessage {
 export function useWebSocket() {
   const pushMetrics = useMetricsStore((s) => s.pushMetrics);
   const setConnected = useMetricsStore((s) => s.setConnected);
+  const mergeHistory = useMetricsStore((s) => s.mergeHistory);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triedRefresh = useRef(false);
@@ -26,6 +29,19 @@ export function useWebSocket() {
 
   useEffect(() => {
     let unmounted = false;
+    let abortHistory: (() => void) | undefined;
+
+    function dispose() {
+      unmounted = true;
+      clearTimeout(reconnectTimer.current);
+      abortHistory?.();
+      wsRef.current?.close();
+    }
+    // Invalidate synchronously on logout, before a queued REST response can
+    // apply to another login. Token refresh inside the same session is allowed.
+    const unsubscribeAuth = useAuthStore.subscribe((state, previous) => {
+      if (!state.isAuthenticated || state.email !== previous.email) dispose();
+    });
 
     function connect() {
       if (unmounted) return;
@@ -36,8 +52,36 @@ export function useWebSocket() {
       const ws = new WebSocket(`${WS_URL}/client`, token ? ["bearer", token] : undefined);
       wsRef.current = ws;
       let opened = false;
+      let closed = false;
+      let warned = false;
+      const requested = new Set<string>();
+      const controller = new AbortController();
+      abortHistory = () => controller.abort();
+      const currentConnection = () => !unmounted && wsRef.current === ws;
+      const active = () => currentConnection() && !closed && !controller.signal.aborted;
+
+      async function restoreHistory(agentId: string) {
+        if (requested.has(agentId)) return;
+        requested.add(agentId);
+        try {
+          const response = await fetchWithAuth(
+            `/api/metrics/${encodeURIComponent(agentId)}/history?limit=120`,
+            { signal: controller.signal },
+          );
+          if (!response.ok) throw new Error(`History HTTP ${response.status}`);
+          const payload = await response.json();
+          if (payload.agent_id !== agentId || !Array.isArray(payload.metrics)) throw new Error("Invalid history response");
+          if (active()) mergeHistory(agentId, payload.metrics);
+        } catch {
+          if (active() && !warned) {
+            warned = true;
+            useAlertStore.getState().push("warning", "Recent history could not be restored. Live updates are continuing.", "live-history");
+          }
+        }
+      }
 
       ws.onopen = () => {
+        if (!active()) return;
         opened = true;
         triedRefresh.current = false;
         attempt.current = 0;  // reset backoff on a successful connection
@@ -45,10 +89,12 @@ export function useWebSocket() {
       };
 
       ws.onmessage = (event) => {
+        if (!active()) return;
         try {
           const msg: WsMessage = JSON.parse(event.data);
           if (msg.agent_id && msg.metrics) {
             pushMetrics(msg.agent_id, msg.metrics);
+            void restoreHistory(msg.agent_id);
           }
         } catch {
           // ignore malformed messages
@@ -56,7 +102,9 @@ export function useWebSocket() {
       };
 
       ws.onclose = (ev: CloseEvent) => {
-        if (unmounted) return;
+        closed = true;
+        controller.abort();
+        if (!currentConnection()) return;
         setConnected(false);
         // 4401 = token revoked (logout / password / role change / deactivation). The
         // server closes with this BEFORE the handshake opens, and a refresh can't
@@ -78,7 +126,7 @@ export function useWebSocket() {
         if (!opened && !triedRefresh.current) {
           triedRefresh.current = true;
           useAuthStore.getState().refresh().finally(() => {
-            if (!unmounted) reconnectTimer.current = setTimeout(connect, RECONNECT_BASE);
+            if (currentConnection()) reconnectTimer.current = setTimeout(connect, RECONNECT_BASE);
           });
           return;
         }
@@ -99,9 +147,8 @@ export function useWebSocket() {
     connect();
 
     return () => {
-      unmounted = true;
-      clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      unsubscribeAuth();
+      dispose();
     };
-  }, [pushMetrics, setConnected]);
+  }, [pushMetrics, setConnected, mergeHistory]);
 }

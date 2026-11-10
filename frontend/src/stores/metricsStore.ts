@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { boundContainerSamples, mergeSamplesByIdentity, sampleOrigin } from "../components/apps/containerMetricsModel";
 
 export interface CpuMetrics {
   percent_total: number;
@@ -183,6 +184,11 @@ interface MetricsStore {
   setConnected: (value: boolean) => void;
   selectAgent: (agentId: string) => void;
   loadHistory: (agentId: string, data: MetricSnapshot[]) => void;
+  mergeHistory: (agentId: string, data: MetricSnapshot[]) => void;
+}
+
+function asHistorySample(snapshot: MetricSnapshot) {
+  return { t: snapshot.timestamp, snapshot, ...sampleOrigin(snapshot) };
 }
 
 function deriveSelected(agents: Record<string, AgentData>, selectedId: string | null) {
@@ -207,8 +213,13 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
   pushMetrics: (agentId, data) => {
     set((state) => {
       const existing = state.agents[agentId] ?? { current: null, history: [] };
-      const history = [...existing.history, data].slice(-MAX_HISTORY);
-      const agents = { ...state.agents, [agentId]: { current: data, history } };
+      const appended = [...existing.history, data];
+      // A REST response can get ahead of a delayed WS message. Keep the server
+      // ingest order and identity for current backends; retain legacy push order.
+      const history = sampleOrigin(data).sample_id
+        ? boundContainerSamples(appended.map(asHistorySample), "live").map((entry) => entry.snapshot)
+        : appended.slice(-MAX_HISTORY);
+      const agents = { ...state.agents, [agentId]: { current: history[history.length - 1], history } };
       const agentIds = Object.keys(agents);
       const selectedAgentId = state.selectedAgentId ?? agentId;
       return { agents, agentIds, selectedAgentId, ...deriveSelected(agents, selectedAgentId) };
@@ -236,6 +247,22 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
       const agentIds = Object.keys(agents);
       const selectedAgentId = state.selectedAgentId ?? agentId;
       return { agents, agentIds, selectedAgentId, ...deriveSelected(agents, selectedAgentId) };
+    });
+  },
+
+  mergeHistory: (agentId, data) => {
+    set((state) => {
+      const existing = state.agents[agentId] ?? { current: null, history: [] };
+      const history = boundContainerSamples(
+        mergeSamplesByIdentity(data.map(asHistorySample), existing.history.map(asHistorySample)),
+        "live",
+      ).map((entry) => entry.snapshot);
+      const agents = { ...state.agents, [agentId]: {
+        current: history[history.length - 1] ?? existing.current,
+        history,
+      } };
+      const selectedAgentId = state.selectedAgentId ?? agentId;
+      return { agents, agentIds: Object.keys(agents), selectedAgentId, ...deriveSelected(agents, selectedAgentId) };
     });
   },
 }));
